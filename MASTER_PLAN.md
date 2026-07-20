@@ -1,0 +1,250 @@
+# Plan Maestro — Plataforma de Ventas Asistida por IA (WhatsApp + Claude)
+
+## Contexto
+
+El objetivo es construir una plataforma que atienda clientes de PyMEs por WhatsApp (API oficial de Meta), usando Claude como agente principal con Tool Calling para consultar inventario en tiempo real, responder preguntas de producto, generar cotizaciones, crear pedidos, recomendar productos, aplicar promociones, recordar el contexto conversacional y escalar a un asesor humano cuando la conversación lo requiera. Debe soportar miles de conversaciones simultáneas, ser modular, de bajo costo, usar PostgreSQL, GitHub y CI/CD.
+
+Este plan es el resultado de la discusión previa sobre riesgos, cambios de arquitectura, qué quitar/agregar y errores comunes del sector. Las decisiones clave ya tomadas y que este plan asume:
+
+- **No construir el gateway de WhatsApp desde cero** — integrar un BSP existente (Gupshup, 360dialog, Twilio) sobre la API oficial de Meta.
+- **Monolito modular** al inicio (no microservicios/Kubernetes desde el día 1).
+- **Multi-tenancy con Row Level Security en Postgres desde la primera tabla**, no como añadido posterior.
+- **Tool calling con validación estricta**: el LLM propone, las tools deciden contra datos reales (sin alucinaciones de precio/stock).
+- **pgvector dentro de Postgres** para recomendaciones, en vez de una vector DB separada.
+- **Cola simple** (Redis Streams/SQS) en vez de Kafka, hasta que el volumen lo justifique.
+- **Escalamiento a humano por máquina de estados con reglas explícitas**, no delegado al criterio libre del LLM.
+- **Idempotencia, auditoría de decisiones del agente, observabilidad y guardrails** como requisitos desde el diseño, no como mejoras posteriores.
+
+Este documento **no incluye código ni pasos de implementación** — es la planificación de fases para llevar el proyecto desde la validación de negocio hasta un piloto operando a escala.
+
+---
+
+## Fase 0 — Descubrimiento y Validación de Negocio
+
+**Objetivo:** Confirmar el problema, el perfil de PyME objetivo y los flujos de venta concretos que el agente debe cubrir, antes de diseñar nada técnico.
+
+**Entregables:**
+- Documento de casos de uso priorizados (3-5 flujos de venta reales, ej. "cliente pregunta por producto → cotiza → pide descuento → confirma pedido").
+- Perfil de PyME piloto identificado y comprometida a probar el sistema.
+- Catálogo de ejemplo (productos, precios, promociones típicas) recopilado de al menos un negocio real.
+- Criterios de éxito del MVP (métricas de negocio: tasa de conversión, tiempo de respuesta, % de escalamiento aceptable).
+
+**Dependencias:** Ninguna (fase inicial).
+
+**Riesgos:** Diseñar para un caso de uso genérico que no encaje con ningún negocio real; falta de acceso a un negocio piloto retrasa la validación.
+
+**Estimación:** 1-2 semanas.
+
+**Definición de terminado:** Documento de casos de uso aprobado, con al menos un negocio piloto comprometido y catálogo de ejemplo recopilado.
+
+---
+
+## Fase 1 — Arquitectura Técnica y Diseño de Datos
+
+**Objetivo:** Formalizar el documento de arquitectura (diagramas, decisiones, modelo de datos) sobre las decisiones ya tomadas: monolito modular, Postgres multi-tenant con RLS, BSP para WhatsApp, Claude + tool calling, pgvector, colas simples.
+
+**Entregables:**
+- Documento de arquitectura con diagramas (vista de contenedores/componentes).
+- Modelo entidad-relación de Postgres: tenants, conversaciones, mensajes, productos, inventario, cotizaciones, pedidos, promociones, handoff_queue, audit_log.
+- Contratos de las tools (schemas de entrada/salida) que usará Claude.
+- ADRs (Architecture Decision Records) para decisiones clave: BSP elegido, broker de colas, estrategia de caché.
+
+**Dependencias:** Fase 0 (casos de uso definidos).
+
+**Riesgos:** Sobre-diseñar antes de validar con datos reales; elegir BSP sin comparar costos reales entre proveedores.
+
+**Estimación:** 2 semanas.
+
+**Definición de terminado:** Documento de arquitectura revisado y aprobado; modelo de datos validado contra los casos de uso de la Fase 0.
+
+---
+
+## Fase 2 — Fundaciones de Plataforma (Infra base, CI/CD, Multi-tenant)
+
+**Objetivo:** Levantar el esqueleto operativo: repositorio, pipeline CI/CD, entornos, Postgres con RLS multi-tenant, gestión de secretos.
+
+**Entregables:**
+- Repositorio en GitHub con estructura modular por dominio.
+- Pipeline CI/CD (lint, test, build, deploy a staging automático).
+- Postgres provisionado con políticas RLS por tenant.
+- Gestión de secretos (vault/secret manager del proveedor de nube).
+- Entorno de staging funcional, separado de producción.
+
+**Dependencias:** Fase 1 (modelo de datos y decisiones de infra).
+
+**Riesgos:** RLS mal configurado deja fugas de datos entre tenants; pipeline CI/CD mal diseñado ralentiza la iteración futura.
+
+**Estimación:** 2 semanas.
+
+**Definición de terminado:** Un tenant de prueba no puede ver datos de otro tenant (verificado con test de aislamiento); el pipeline despliega a staging automáticamente en cada merge a main.
+
+---
+
+## Fase 3 — Integración con WhatsApp (BSP) y Gateway de Mensajería
+
+**Objetivo:** Conectar la plataforma a WhatsApp Business API a través de un BSP, con verificación de firma de webhooks y manejo de la ventana de 24h.
+
+**Entregables:**
+- Cuenta de BSP configurada y verificada ante Meta.
+- Webhook receptor con verificación de firma (`X-Hub-Signature-256`).
+- Cola de mensajes entrantes/salientes (Redis Streams o SQS).
+- Plantillas de mensajes pre-aprobadas para comunicación fuera de la ventana de 24h.
+- Manejo de idempotencia de eventos de webhook.
+
+**Dependencias:** Fase 2 (infra base y colas).
+
+**Riesgos:** El proceso de verificación de negocio de Meta puede tardar semanas (no controlable); mal manejo de idempotencia duplica mensajes o pedidos.
+
+**Estimación:** 2-3 semanas (incluye tiempo de espera de aprobación de Meta).
+
+**Definición de terminado:** Mensaje de prueba enviado y recibido end-to-end (WhatsApp real → cola → confirmación); reenvíos duplicados del webhook no generan efectos duplicados.
+
+---
+
+## Fase 4 — Motor del Agente: Claude + Tool Calling + Memoria de Conversación
+
+**Objetivo:** Construir el orquestador conversacional: integración con Claude, tools con validación estricta, y memoria/estado de conversación persistido en Postgres.
+
+**Entregables:**
+- Orquestador (mensaje → contexto → Claude → ejecución de tools → respuesta).
+- Tools iniciales: `consultar_inventario`, `responder_pregunta_producto`.
+- Esquema de memoria conversacional estructurada en Postgres (estado, no solo texto crudo).
+- Estrategia de prompt caching para reducir costo por conversación.
+- Log de auditoría de cada decisión/tool call del agente.
+
+**Dependencias:** Fase 3 (mensajes fluyendo), Fase 2 (Postgres disponible).
+
+**Riesgos:** Alucinaciones si las tools no validan contra datos reales; costo de tokens descontrolado sin caching; memoria mal diseñada pierde contexto entre turnos.
+
+**Estimación:** 3 semanas.
+
+**Definición de terminado:** El agente sostiene una conversación de prueba de al menos 10 turnos manteniendo contexto correcto; toda respuesta sobre producto/inventario queda respaldada por una tool call verificable en el log de auditoría.
+
+---
+
+## Fase 5 — Dominio de Catálogo e Inventario en Tiempo Real
+
+**Objetivo:** Modelar y exponer el catálogo/inventario como fuente de verdad consultable en tiempo real.
+
+**Entregables:**
+- Modelo de datos de productos/inventario en Postgres.
+- Mecanismo de sincronización con la fuente real de inventario (API del cliente, carga CSV, o integración con ERP del piloto).
+- Capa de caché (Redis) con invalidación por evento.
+- Tool `consultar_inventario` conectada a esta capa.
+
+**Dependencias:** Fase 4 (motor del agente listo para usar tools).
+
+**Riesgos:** Inventario desactualizado si la sincronización falla silenciosamente; integración con el ERP real varía por cliente y puede no estar definida aún.
+
+**Estimación:** 2 semanas.
+
+**Definición de terminado:** Una consulta de stock del agente refleja el inventario real con un desfase máximo documentado y aceptado (ej. 5 minutos).
+
+---
+
+## Fase 6 — Dominio Comercial: Cotizaciones, Pedidos, Promociones, Recomendaciones
+
+**Objetivo:** Construir las tools de negocio que generan valor de venta.
+
+**Entregables:**
+- Tool `generar_cotizacion`.
+- Tool `crear_pedido` (con idempotency key).
+- Tool `aplicar_promocion` (motor de reglas explícito).
+- Tool `recomendar_producto` (pgvector + reglas simples, sin ML propio al inicio).
+- Tablas de cotizaciones/pedidos/promociones en Postgres con RLS.
+
+**Dependencias:** Fase 5 (catálogo/inventario disponible), Fase 4 (orquestador y memoria).
+
+**Riesgos:** Doble creación de pedidos por falta de idempotencia; promociones mal aplicadas sin motor de reglas claro; recomendaciones irrelevantes si el embedding no está bien curado.
+
+**Estimación:** 3 semanas.
+
+**Definición de terminado:** Flujo completo (preguntar → cotizar → aplicar promoción → confirmar pedido) ejecutado sin duplicados ni datos inconsistentes; reenvío del mismo mensaje no duplica el pedido.
+
+---
+
+## Fase 7 — Escalamiento a Humano (Handoff)
+
+**Objetivo:** Implementar la máquina de estados de escalamiento y la bandeja donde un asesor humano recibe la conversación.
+
+**Entregables:**
+- Reglas explícitas de escalamiento (intentos fallidos, palabras clave, monto alto, solicitud explícita del cliente).
+- Tabla `handoff_queue`.
+- Notificación al asesor (email/webhook/canal simple).
+- Vista mínima para que el asesor vea el historial completo y tome la conversación.
+
+**Dependencias:** Fase 4 (memoria conversacional), Fase 6 (contexto comercial disponible).
+
+**Riesgos:** Reglas de escalamiento mal calibradas (escalan de más o de menos); falta de interfaz usable para el asesor.
+
+**Estimación:** 2 semanas.
+
+**Definición de terminado:** Una conversación de prueba dispara escalamiento correctamente según cada regla definida, y aparece en la bandeja del asesor con el contexto completo.
+
+---
+
+## Fase 8 — Observabilidad, Seguridad y Guardrails
+
+**Objetivo:** Instrumentar la plataforma para operar con confianza a escala.
+
+**Entregables:**
+- Dashboard de métricas (latencia, tasa de escalamiento, tokens/costo por tenant).
+- Tracing end-to-end de la conversación.
+- Guardrails de contenido (evitar precios inventados, temas fuera de alcance).
+- Alertas de costo por tenant.
+- Revisión de seguridad formal (RLS, secretos, firma de webhooks).
+
+**Dependencias:** Fases 3-7 (debe existir flujo real que observar).
+
+**Riesgos:** Instrumentar tarde impide diagnosticar incidentes durante el piloto; guardrails insuficientes permiten respuestas fuera de política.
+
+**Estimación:** 2 semanas.
+
+**Definición de terminado:** Dashboard operativo con datos reales de al menos una semana de tráfico de prueba; auditoría de seguridad sin hallazgos críticos abiertos.
+
+---
+
+## Fase 9 — Piloto Controlado (Beta con 1-2 PyMEs)
+
+**Objetivo:** Validar la plataforma completa con tráfico real de uno o dos negocios piloto, en ambiente controlado.
+
+**Entregables:**
+- Al menos una PyME operando en producción con tráfico real limitado.
+- Eval suite (golden set de conversaciones) corriendo en CI/CD antes de cada deploy.
+- Reporte de resultados del piloto vs. criterios de éxito definidos en la Fase 0.
+
+**Dependencias:** Fases 0-8 completas.
+
+**Riesgos:** Comportamiento inesperado del agente con clientes reales (ambigüedad, groserías, intentos de manipulación/prompt injection); fricción de adopción del negocio piloto.
+
+**Estimación:** 3-4 semanas (incluye período de observación).
+
+**Definición de terminado:** Métricas de éxito de la Fase 0 alcanzadas (o gap documentado), sin incidentes críticos de seguridad o de negocio (pedidos duplicados, fuga de datos entre tenants, precios erróneos) durante el piloto.
+
+---
+
+## Fase 10 — Preparación para Escala y Lanzamiento Multi-tenant
+
+**Objetivo:** Confirmar que la plataforma soporta miles de conversaciones simultáneas y habilitar la incorporación repetible de nuevos tenants.
+
+**Entregables:**
+- Prueba de carga simulando miles de conversaciones simultáneas.
+- Runbook de onboarding de nuevo tenant.
+- Plan de escalado de infraestructura (criterios para pasar de monolito modular a servicios separados).
+- Documentación operativa completa.
+
+**Dependencias:** Fase 9 (piloto validado).
+
+**Riesgos:** Cuellos de botella no identificados hasta la prueba de carga real; costo por conversación no sostenible a escala sin optimización adicional.
+
+**Estimación:** 2-3 semanas.
+
+**Definición de terminado:** La prueba de carga sostiene el volumen objetivo con latencia y tasa de error dentro de umbrales aceptables; un segundo tenant piloto se incorpora usando el runbook sin intervención manual fuera de lo documentado.
+
+---
+
+## Resumen de duración estimada
+
+Fase 0-10 en secuencia: **~24-28 semanas** (algunas fases pueden solaparse parcialmente, ej. Fase 8 con Fase 6-7, reduciendo el calendario real).
+
+Este plan cubre únicamente la planificación por fases solicitada. No incluye código ni pasos de implementación técnica detallados — esos se definirán al iniciar cada fase.
