@@ -26,10 +26,16 @@ exports.up = (pgm) => {
     // (creadas por la propia migración) — sin FORCE, RLS no aplicaría al
     // dueño y el test de aislamiento pasaría en falso.
     pgm.sql(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`);
+    // nullif(..., '') es necesario: en una conexión reciclada por el pool,
+    // una vez que app.tenant_id se seteó alguna vez vía SET LOCAL en una
+    // transacción ya terminada, current_setting(..., true) puede devolver
+    // '' (no NULL) para sesiones sin tenant activo — y ''::uuid revienta
+    // con "invalid input syntax for type uuid" en vez de simplemente no
+    // matchear ninguna fila. nullif convierte ese '' en NULL primero.
     pgm.sql(`
       CREATE POLICY tenant_isolation ON ${table}
-        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
-        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+        USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+        WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
     `);
   }
 };
