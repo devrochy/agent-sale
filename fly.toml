@@ -1,0 +1,20 @@
+# Configuración de despliegue (ADR-005). Stub: requiere `fly apps create` y
+# secrets reales (DATABASE_URL, REDIS_URL, ANTHROPIC_API_KEY, TWILIO_*) antes
+# de poder desplegar de verdad. No se activa en CI hasta que existan esos
+# secrets en GitHub Actions (ver .github/workflows/ci.yml).
+app = "agent-sale"
+primary_region = "bog"
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
