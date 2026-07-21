@@ -21,9 +21,11 @@ export const env = {
   // webhook — se usa fija en vez de reconstruirla de headers de request
   // para no depender de cómo un proxy (Fly.io) reescribe host/proto.
   publicWebhookUrl: required("PUBLIC_WEBHOOK_URL"),
-  // Sin uso todavía en este incremento (envío saliente llega con el
-  // orchestrator, Fase 4) — opcionales para no forzar credenciales que
-  // aún no existen (cuenta real de Twilio pendiente).
-  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
-  twilioWhatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER,
+  // El orchestrator los necesita para enviar la respuesta del agente
+  // (ver src/gateway/sendMessage.ts) — sin cuenta real de Twilio esto no
+  // se puede probar en vivo, pero el código ya los requiere.
+  twilioAccountSid: required("TWILIO_ACCOUNT_SID"),
+  twilioWhatsappNumber: required("TWILIO_WHATSAPP_NUMBER"),
+  // Clave de la API de Claude (ver ADR-008, Fase 4).
+  anthropicApiKey: required("ANTHROPIC_API_KEY"),
 };
