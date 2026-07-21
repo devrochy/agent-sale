@@ -18,6 +18,6 @@ Documentación de diseño, mismo criterio que las fases anteriores. Construye so
 - [x] Motor de reglas de promociones definido explícitamente (no delegado al LLM), cubriendo temporada, volumen, y beneficio no monetario (producto/servicio gratis).
 - [x] Tool `recomendar_producto` conectada a pgvector + reglas simples de complementariedad, con filtro de stock.
 - [x] Tablas de cotizaciones/pedidos/promociones ya cubiertas por el modelo de datos de la Fase 1 (`quotes`, `quote_items`, `orders`, `order_items`, `promotions`), con RLS ya definido en [ADR-004](../fase-1-arquitectura/adrs/ADR-004-multi-tenancy-rls.md).
-- [ ] **Pendiente:** confirmar con ForMotos si las promociones de temporada y volumen deben combinarse/apilarse o no — el diseño actual asume "no combinar, aplicar la mejor" como comportamiento seguro por defecto.
+- [x] Confirmado con ForMotos: las promociones **no se combinan** — se aplica la de mayor beneficio para el cliente.
 
-**Fase 6 completada**, con un pendiente de confirmación de negocio (no bloquea avanzar). Siguiente paso: Fase 7 — Escalamiento a Humano (Handoff).
+**Fase 6 completada, sin pendientes.** Siguiente paso: Fase 7 — Escalamiento a Humano (Handoff).
