@@ -45,6 +45,11 @@ afterAll(async () => {
 });
 
 async function post(params: Record<string, string>, signature: string) {
+  // app.inject() serializa cualquier payload que no sea string/Buffer como
+  // JSON, sin importar el content-type que se le ponga — hay que
+  // construir el string application/x-www-form-urlencoded a mano para que
+  // @fastify/formbody lo parsee igual que un webhook real de Twilio.
+  const body = new URLSearchParams(params).toString();
   return app.inject({
     method: "POST",
     url: "/webhooks/whatsapp",
@@ -52,7 +57,7 @@ async function post(params: Record<string, string>, signature: string) {
       "content-type": "application/x-www-form-urlencoded",
       "x-twilio-signature": signature,
     },
-    payload: params,
+    payload: body,
   });
 }
 
