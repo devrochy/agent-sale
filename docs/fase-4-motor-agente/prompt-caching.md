@@ -1,0 +1,30 @@
+# Estrategia de Prompt Caching
+
+## Por qué
+El prompt caching es la principal palanca de costo del agente (ver estimación en [ADR-008](./adrs/ADR-008-modelo-claude.md)): sin él, cada turno de conversación paga el precio completo por reprocesar el system prompt y las definiciones de tools, que son idénticos en cada llamada.
+
+## Qué se cachea
+- **Definiciones de tools** (las 6 tools de la Fase 1) — fijas, no cambian entre turnos ni entre tenants (el esquema es el mismo; solo los datos que devuelven cambian).
+- **System prompt** — persona del agente, reglas de negocio generales ("el LLM propone, la tool decide", cuándo escalar, tono de la marca). Se marca con `cache_control: {"type": "ephemeral"}` en el último bloque de texto del system prompt.
+
+Como el orden de renderizado de la API es `tools → system → messages`, un breakpoint al final del system prompt cachea **tools + system juntos** en una sola entrada.
+
+## Qué NO se cachea (va después del breakpoint)
+- El catálogo completo de ForMotos **no** se embebe en el system prompt — son 300+ productos, y cambiaría en cada actualización de inventario, invalidando el caché constantemente. El catálogo se consulta bajo demanda vía la tool `consultar_inventario` (Fase 1), no como contexto estático.
+- El historial de la conversación y el mensaje nuevo del cliente (ver [memoria-conversacional.md](./memoria-conversacional.md)) — cambian en cada turno por definición.
+
+## TTL
+Se usa el TTL por defecto de 5 minutos (`ephemeral`, sin especificar `ttl`), no el de 1 hora. Con ~430 conversaciones/mes reales pero concentradas en horario comercial, el tráfico dentro de una misma conversación normalmente llega en menos de 5 minutos entre turnos — suficiente para mantener el caché caliente durante una conversación activa, sin pagar el doble de costo de escritura que exige el TTL de 1 hora. Se revisita si en producción se observan muchas escrituras de caché por conversaciones con pausas largas entre mensajes.
+
+## Verificación
+Cada respuesta de Claude incluye en `usage`:
+- `cache_creation_input_tokens` — tokens escritos a caché (costo ~1,25×).
+- `cache_read_input_tokens` — tokens leídos desde caché (costo ~0,1×).
+
+Estos valores se registran en `audit_log` (o en una métrica agregada, ver Fase 8) por cada llamada — si `cache_read_input_tokens` es consistentemente cero, es señal de un invalidador silencioso (ej. el system prompt cambiando por accidente entre llamadas) y debe investigarse antes de asumir que el caching está funcionando.
+
+## Riesgo a vigilar: invalidadores silenciosos
+El system prompt debe ser **byte-idéntico** entre llamadas para que el caché funcione. Esto implica una regla de diseño para cuando se implemente el código: no interpolar fecha/hora, IDs de sesión, ni ningún valor variable dentro del texto del system prompt — cualquier contexto dinámico (ej. "son las 3pm, fuera de horario") debe ir en los `messages`, no en `system`.
+
+## Qué no cubre este documento
+- Los "mid-conversation system messages" (inyectar instrucciones sin invalidar caché) son una función disponible solo en Opus 4.8, no en Sonnet 5 (modelo elegido en el ADR-008) — no se diseña esa capacidad para este proyecto por ahora.
