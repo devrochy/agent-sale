@@ -19,8 +19,12 @@
     "test:all": "vitest run"
   },
   "dependencies": {
+    "@fastify/formbody": "^8.0.2",
     "dotenv": "^16.4.5",
-    "pg": "^8.13.1"
+    "fastify": "^5.10.0",
+    "ioredis": "^5.11.1",
+    "pg": "^8.13.1",
+    "twilio": "^6.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
