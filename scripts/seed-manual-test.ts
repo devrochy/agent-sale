@@ -7,7 +7,8 @@
  * Uso:
  *   npm run manual:seed-test-message -- "Hola, tienen cascos?"
  *
- * Después, en otra terminal (con ANTHROPIC_API_KEY real en .env):
+ * Después, en otra terminal (con las credenciales del proveedor LLM
+ * configurado en .env — ver LLM_PROVIDER en .env.example):
  *   npm run build && node dist/src/index.js
  */
 import "dotenv/config";
@@ -75,7 +76,7 @@ async function main() {
     console.log("Producto de prueba:", productId, `(sku=${TEST_SKU}, stock=5)`);
     console.log(`Mensaje encolado (message_sid=${messageSid}) en "${INBOUND_STREAM}":`);
     console.log(`  de ${TEST_CUSTOMER_PHONE}: "${body}"`);
-    console.log("\nAhora corré (en otra terminal, con ANTHROPIC_API_KEY real en .env):");
+    console.log("\nAhora corré (en otra terminal, con las credenciales del proveedor LLM en .env):");
     console.log("  npm run build && node dist/src/index.js");
   } finally {
     await pool.end();

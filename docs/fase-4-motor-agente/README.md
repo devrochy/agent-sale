@@ -9,6 +9,7 @@ Documentación de diseño, mismo criterio que las fases anteriores — sin códi
 ## Contenido de esta fase
 
 - [adrs/ADR-008-modelo-claude.md](./adrs/ADR-008-modelo-claude.md) — elección de **Claude Sonnet 5**, con estimación de costo real (~$12 USD/mes para el volumen de ForMotos).
+- [adrs/ADR-010-abstraccion-proveedor-llm.md](./adrs/ADR-010-abstraccion-proveedor-llm.md) — contrato neutro (`LLMProvider`) que permite swap a un proveedor de bajo costo compatible con OpenAI (DeepSeek por defecto) sin tocar tools, memoria ni el consumer; Claude sigue siendo la decisión de producción.
 - [orquestador.md](./orquestador.md) — diseño del loop manual de tool calling (no automático), con el flujo completo por turno de conversación.
 - [prompt-caching.md](./prompt-caching.md) — qué se cachea (tools + system prompt), qué no (catálogo, historial), y cómo se verifica.
 - [memoria-conversacional.md](./memoria-conversacional.md) — cómo se construye el array de mensajes por turno y qué guarda `conversations.state`.

@@ -1,7 +1,6 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
-import { claude } from "./claudeClient.js";
+import { llmProvider, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
@@ -18,9 +17,9 @@ export interface TurnResult {
   responseText: string;
 }
 
-function extractText(content: Anthropic.ContentBlock[]): string {
+function extractText(content: ContentBlock[]): string {
   return content
-    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
     .map((block) => block.text)
     .join("\n");
 }
@@ -59,24 +58,20 @@ export async function runTurn(tenantId: string, customerPhone: string, incomingB
   const messages = await loadHistory(tenantId, conversationId);
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    const response = await claude.messages.create({
-      model: "claude-sonnet-5",
-      max_tokens: 4096,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
-      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+    const response = await llmProvider.converse({
+      systemPrompt: SYSTEM_PROMPT,
       tools: TOOL_DEFINITIONS,
       messages,
     });
 
     await recordAudit(tenantId, conversationId, "agent", "turno_conversacion", null, {
-      stop_reason: response.stop_reason,
+      stop_reason: response.stopReason,
       usage: response.usage,
     });
 
-    if (response.stop_reason === "refusal") {
+    if (response.stopReason === "refusal") {
       await recordAudit(tenantId, conversationId, "orchestrator", "refusal", null, {
-        category: response.stop_details?.category ?? null,
+        category: response.refusalCategory ?? null,
       });
       return escalateAndReply(
         tenantId,
@@ -96,11 +91,11 @@ export async function runTurn(tenantId: string, customerPhone: string, incomingB
       response.content,
     );
 
-    if (response.stop_reason === "tool_use") {
+    if (response.stopReason === "tool_use") {
       const toolUseBlocks = response.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+        (block): block is Extract<ContentBlock, { type: "tool_use" }> => block.type === "tool_use",
       );
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      const toolResults: ContentBlock[] = [];
       for (const toolUse of toolUseBlocks) {
         toolResults.push(await executeTool(tenantId, conversationId, toolUse));
       }
@@ -109,11 +104,11 @@ export async function runTurn(tenantId: string, customerPhone: string, incomingB
       continue;
     }
 
-    if (response.stop_reason === "pause_turn") {
+    if (response.stopReason === "other") {
       continue;
     }
 
-    // end_turn (u otro stop_reason terminal): responder con el texto final.
+    // end_turn: responder con el texto final.
     const responseText = extractText(response.content);
     await updateState(tenantId, conversationId, { step: "resuelto" });
     return { responseText };

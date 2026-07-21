@@ -1,21 +1,24 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import {
   consultarInventario,
   type ConsultarInventarioInput,
 } from "../domains/catalog/consultarInventario.js";
 import { escalarHumano, type EscalarHumanoInput } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
+import type { ContentBlock } from "./llm/types.js";
+
+type ToolUseBlock = Extract<ContentBlock, { type: "tool_use" }>;
+type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>;
 
 /**
- * Ejecuta la tool que Claude propuso y devuelve el tool_result real (ver
+ * Ejecuta la tool que el LLM propuso y devuelve el tool_result real (ver
  * docs/fase-4-motor-agente/auditoria.md: el audit_log refleja lo que la
- * tool realmente hizo, no lo que Claude dijo que iba a hacer).
+ * tool realmente hizo, no lo que el modelo dijo que iba a hacer).
  */
 export async function executeTool(
   tenantId: string,
   conversationId: string,
-  toolUse: Anthropic.ToolUseBlock,
-): Promise<Anthropic.ToolResultBlockParam> {
+  toolUse: ToolUseBlock,
+): Promise<ToolResultBlock> {
   try {
     let output: unknown;
     switch (toolUse.name) {
