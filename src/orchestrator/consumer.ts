@@ -52,9 +52,13 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     return;
   }
 
+  console.log(`[orchestrator] mensaje ${id} de ${customerPhone}: "${message.body ?? ""}"`);
+
   try {
     const { responseText } = await runTurn(tenantId, customerPhone, message.body ?? "");
+    console.log(`[orchestrator] respuesta calculada para ${customerPhone}: "${responseText}"`);
     await sendWhatsAppMessage(customerPhone, responseText);
+    console.log(`[orchestrator] mensaje ${id} enviado por Twilio y confirmado (ack)`);
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
   } catch (error) {
     const pending = (await redis.xpending(INBOUND_STREAM, CONSUMER_GROUP, id, id, 1)) as Array<
