@@ -17,4 +17,4 @@ COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
 
 EXPOSE 3000
-CMD ["node", "dist/src/gateway/index.js"]
+CMD ["node", "dist/src/index.js"]
