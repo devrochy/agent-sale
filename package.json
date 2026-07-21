@@ -9,14 +9,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "lint": "eslint src tests",
+    "lint": "eslint src tests scripts",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "migrate": "node-pg-migrate -d MIGRATIONS_DATABASE_URL --migrations-dir migrations up",
     "migrate:down": "node-pg-migrate -d MIGRATIONS_DATABASE_URL --migrations-dir migrations down",
     "test": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:all": "vitest run"
+    "test:all": "vitest run",
+    "manual:seed-test-message": "tsx scripts/seed-manual-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.4",
