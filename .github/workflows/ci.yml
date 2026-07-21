@@ -37,6 +37,11 @@ jobs:
       MIGRATIONS_DATABASE_URL: postgres://agent_sale:agent_sale@localhost:5432/agent_sale
       DATABASE_URL: postgres://agent_sale_app:agent_sale_app@localhost:5432/agent_sale
       REDIS_URL: redis://localhost:6379
+      # Sin cuenta real de Twilio todavía (checklist pendiente) — la firma
+      # se verifica igual con un token de prueba, ver
+      # docs/fase-3-whatsapp-gateway/webhook-contrato.md.
+      TWILIO_AUTH_TOKEN: ci-test-fake-token
+      PUBLIC_WEBHOOK_URL: http://localhost:3000/webhooks/whatsapp
     steps:
       - uses: actions/checkout@v4
 
