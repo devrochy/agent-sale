@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+jobs:
+  lint-test-build:
+    name: Lint, tests, build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: agent_sale
+          POSTGRES_PASSWORD: agent_sale
+          POSTGRES_DB: agent_sale
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_sale"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MIGRATIONS_DATABASE_URL: postgres://agent_sale:agent_sale@localhost:5432/agent_sale
+      DATABASE_URL: postgres://agent_sale_app:agent_sale_app@localhost:5432/agent_sale
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Migraciones (esquema + RLS + rol de aplicación)
+        run: npm run migrate
+
+      - name: Tests unitarios
+        run: npm test
+
+      - name: Tests de integración + aislamiento RLS (bloqueante)
+        run: npm run test:integration
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build imagen Docker
+        run: docker build -t agent-sale:${{ github.sha }} .
+
+  deploy-staging:
+    name: Deploy a Staging (Fly.io)
+    needs: lint-test-build
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sin secrets de Fly.io/Supabase todavía (cuentas pendientes de crear
+      # por el usuario, igual que el checklist de BSP de la Fase 3). El
+      # deploy real se activa solo cuando FLY_API_TOKEN exista como secret.
+      - name: Deploy a Fly.io (staging)
+        if: ${{ secrets.FLY_API_TOKEN != '' }}
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: flyctl deploy
+        if: ${{ secrets.FLY_API_TOKEN != '' }}
+        run: flyctl deploy --config fly.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Deploy pendiente
+        if: ${{ secrets.FLY_API_TOKEN == '' }}
+        run: echo "FLY_API_TOKEN no configurado todavía — ver ADR-005. El pipeline queda listo, el deploy real se activa al crear la cuenta de Fly.io."
+
+  deploy-production:
+    name: Deploy a Producción (Fly.io, aprobación manual)
+    needs: lint-test-build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # "environment: production" habilita la regla de protección de GitHub
+    # (aprobación manual) una vez configurada en Settings > Environments —
+    # eso es un paso manual de GitHub, no de este workflow (pipeline-ci-cd.md).
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy a Fly.io (producción)
+        if: ${{ secrets.FLY_API_TOKEN != '' }}
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: flyctl deploy
+        if: ${{ secrets.FLY_API_TOKEN != '' }}
+        run: flyctl deploy --config fly.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Deploy pendiente
+        if: ${{ secrets.FLY_API_TOKEN == '' }}
+        run: echo "FLY_API_TOKEN no configurado todavía — ver ADR-005. El pipeline queda listo, el deploy real se activa al crear la cuenta de Fly.io."
