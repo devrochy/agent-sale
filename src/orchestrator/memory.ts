@@ -1,5 +1,5 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { withTenant } from "../shared/db/index.js";
+import type { LLMMessage } from "./llm/types.js";
 
 export interface ResolvedConversation {
   conversationId: string;
@@ -62,7 +62,7 @@ interface MessageRow {
 export async function loadHistory(
   tenantId: string,
   conversationId: string,
-): Promise<Anthropic.MessageParam[]> {
+): Promise<LLMMessage[]> {
   const rows = await withTenant(tenantId, async (client) => {
     const result = await client.query<MessageRow>(
       `SELECT direction, sender_type, content, tool_calls
@@ -74,7 +74,7 @@ export async function loadHistory(
 
   return rows.map((row) => ({
     role: row.direction === "inbound" ? "user" : "assistant",
-    content: (row.tool_calls ?? row.content) as Anthropic.MessageParam["content"],
+    content: (row.tool_calls ?? row.content) as LLMMessage["content"],
   }));
 }
 

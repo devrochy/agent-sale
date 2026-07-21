@@ -8,6 +8,14 @@ function required(name: string): string {
   return value;
 }
 
+// Proveedor de LLM (ver ADR-010): "anthropic" es el elegido para
+// producción (ADR-008); "openai_compatible" habilita cualquier API que
+// hable el formato de chat completions de OpenAI (DeepSeek, Groq, el
+// propio OpenAI) para pruebas reales de bajo costo sin tocar el resto
+// del orquestador. Solo se exige la credencial del proveedor realmente
+// seleccionado, para no bloquear el arranque con la del otro.
+const llmProvider = (process.env.LLM_PROVIDER ?? "anthropic") as "anthropic" | "openai_compatible";
+
 export const env = {
   databaseUrl: required("DATABASE_URL"),
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
@@ -26,6 +34,14 @@ export const env = {
   // se puede probar en vivo, pero el código ya los requiere.
   twilioAccountSid: required("TWILIO_ACCOUNT_SID"),
   twilioWhatsappNumber: required("TWILIO_WHATSAPP_NUMBER"),
-  // Clave de la API de Claude (ver ADR-008, Fase 4).
-  anthropicApiKey: required("ANTHROPIC_API_KEY"),
+  llmProvider,
+  // Clave de la API de Claude (ver ADR-008, Fase 4) — solo requerida si
+  // ese es el proveedor activo.
+  anthropicApiKey: llmProvider === "anthropic" ? required("ANTHROPIC_API_KEY") : (process.env.ANTHROPIC_API_KEY ?? ""),
+  // Config del proveedor openai_compatible (ver ADR-010). Los defaults
+  // apuntan a DeepSeek: cambiar de proveedor real solo requiere setear
+  // LLM_PROVIDER=openai_compatible y LLM_API_KEY.
+  llmBaseUrl: process.env.LLM_BASE_URL ?? "https://api.deepseek.com",
+  llmModel: process.env.LLM_MODEL ?? "deepseek-chat",
+  llmApiKey: llmProvider === "openai_compatible" ? required("LLM_API_KEY") : (process.env.LLM_API_KEY ?? ""),
 };

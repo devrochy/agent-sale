@@ -1,4 +1,3 @@
-import type Anthropic from "@anthropic-ai/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/domains/catalog/consultarInventario.js", () => ({
@@ -15,9 +14,10 @@ import { consultarInventario } from "../../../src/domains/catalog/consultarInven
 import { escalarHumano } from "../../../src/domains/escalation/escalarHumano.js";
 import { recordAudit } from "../../../src/shared/audit/auditLog.js";
 import { executeTool } from "../../../src/orchestrator/toolExecutor.js";
+import type { ContentBlock } from "../../../src/orchestrator/llm/types.js";
 
-function makeToolUse(name: string, input: unknown): Anthropic.ToolUseBlock {
-  return { type: "tool_use", id: "toolu_123", name, input, caller: { type: "direct" } };
+function makeToolUse(name: string, input: unknown): Extract<ContentBlock, { type: "tool_use" }> {
+  return { type: "tool_use", id: "toolu_123", name, input };
 }
 
 describe("executeTool", () => {
