@@ -15,7 +15,7 @@ Cuando se llama `aplicar_promocion` sobre una cotización (`quote_id`), el motor
 3. **Evaluar promociones de temporada** — si hay una activa (ej. "fin de año"), calcular su descuento sobre el mismo subtotal.
 4. **Elegir la de mayor beneficio para el cliente** — si tanto una promoción de volumen como una de temporada aplicarían, el motor compara el descuento resultante de cada una y aplica la que dé el mayor descuento al cliente. **No se combinan/apilan promociones** en este diseño — evita el caso de negocio ambiguo de "¿el 10% de volumen se aplica antes o después del 15% de temporada?", que ForMotos no definió en la Fase 0.
 
-Esta regla de "no combinar, elegir la mejor" es una decisión de diseño para evitar ambigüedad — **debe confirmarse con ForMotos** antes de implementar, ya que es posible que el negocio sí quiera combinarlas. Se documenta como el comportamiento por defecto más seguro (nunca cobrar de más ni generar un descuento no autorizado) mientras no haya una regla de combinación explícita.
+**Confirmado con ForMotos: las promociones no se combinan** — se aplica siempre la de mayor beneficio para el cliente. Esta es la regla definitiva, no un valor por defecto provisional.
 
 ## Producto/servicio gratis (beneficio no monetario)
 
@@ -33,4 +33,3 @@ La tool devuelve la cotización sin cambios (`promotion_applied: null`, `discoun
 
 ## Qué no cubre este documento
 - Implementación real del cálculo (código) — fuera del alcance de este plan de arquitectura.
-- Confirmación de la regla "no combinar promociones" con el dueño de ForMotos — pendiente, marcado arriba.
