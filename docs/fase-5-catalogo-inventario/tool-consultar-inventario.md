@@ -28,10 +28,12 @@ Cuando el cliente pregunta con lenguaje natural ("¿tienen algo para lluvia?", "
 
 Si la búsqueda devuelve más de un producto razonablemente relevante (ej. el cliente pide "guantes" y hay 5 modelos), la tool devuelve **todos los matches relevantes** (hasta un límite razonable, ej. 5) en vez de adivinar uno solo — es responsabilidad del agente, no de la tool, decidir si debe preguntar al cliente cuál prefiere o mostrar las opciones. Esto es consistente con "la tool decide sobre los datos, el LLM decide la conversación".
 
-## Variantes (talla, color)
+## Variantes (talla, color) — resuelto
 
-El campo `variants` en el contrato de la tool (Fase 1) se resuelve a partir de productos relacionados por el mismo `sku` base o `category` + atributo — el modelo de datos exacto de variantes (¿son filas separadas en `products`, o un campo `variants` dentro de un producto?) queda como decisión a tomar con datos reales del catálogo de ForMotos al iniciar la implementación, ya que la Fase 0 no levantó el detalle de si el catálogo maneja variantes como productos separados o como atributos de un mismo producto.
+**Decisión: cada variante es una fila separada en `products`**, con su propio `product_id` y `sku` (ej. `CASCO-X200-M`, `CASCO-X200-L`), no un atributo dentro de un único producto "padre". Las variantes se agrupan por un campo compartido (`base_sku` o `category` + nombre base) solo para efectos de presentación — cuando la tool encuentra varias filas que comparten ese agrupador, las devuelve juntas en el arreglo `variants` del contrato de la Fase 1, cada una con su propio `product_id`, precio y stock independientes (dos tallas del mismo casco pueden tener stock distinto).
+
+Esto es consistente con cómo ya se diseñó el resto del sistema: `inventory.stock_quantity` es por `product_id`, así que cada variante necesita su propia fila para que el stock se controle de forma independiente — una talla agotada no debe bloquear la venta de otra talla del mismo modelo.
 
 ## Qué no cubre este documento
 - Implementación real de la búsqueda (código, consultas SQL exactas) — fuera del alcance de este plan de arquitectura.
-- Decisión final del modelo de variantes — pendiente de datos reales del catálogo, marcado arriba.
+- El campo exacto usado para agrupar variantes (`base_sku` vs. parsing de `name`) — detalle de implementación, no de arquitectura.

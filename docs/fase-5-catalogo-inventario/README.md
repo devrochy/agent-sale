@@ -17,6 +17,6 @@ Documentación de diseño, mismo criterio que las fases anteriores — sin códi
 - [x] Mecanismo de sincronización de inventario documentado, con fuente intercambiable (Sheets hoy) y frecuencia definida (5 minutos, alineada al desfase máximo de la Fase 0).
 - [x] Capa de caché con invalidación por evento diseñada sobre la infraestructura ya elegida (Redis, ADR-002/003).
 - [x] Tool `consultar_inventario` (Fase 1) conectada al flujo de búsqueda real.
-- [ ] **Pendiente para la implementación:** confirmar si el catálogo de ForMotos maneja variantes (talla/color) como productos separados o como atributos — no se levantó en la Fase 0, no bloquea el resto del diseño.
+- [x] Modelo de variantes decidido: cada variante (talla/color) es una fila separada en `products`, con su propio `product_id`, `sku`, precio y stock independiente.
 
-**Fase 5 completada**, con un pendiente menor de modelo de variantes que se resuelve con datos reales al implementar, no antes. Siguiente paso: Fase 6 — Dominio Comercial (Cotizaciones, Pedidos, Promociones, Recomendaciones).
+**Fase 5 completada, sin pendientes.** Siguiente paso: Fase 6 — Dominio Comercial (Cotizaciones, Pedidos, Promociones, Recomendaciones).
