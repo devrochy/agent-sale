@@ -3,12 +3,16 @@ import type { LLMMessage } from "./llm/types.js";
 
 export interface ResolvedConversation {
   conversationId: string;
+  customerId: string;
   state: Record<string, unknown>;
 }
 
 /**
  * Encuentra o crea el customer y la conversación abierta para un
  * teléfono (ver docs/fase-4-motor-agente/memoria-conversacional.md).
+ * Expone `customerId` además de `conversationId` porque las tools del
+ * dominio comercial (generar_cotizacion) necesitan asociar la cotización
+ * al cliente, no solo a la conversación.
  */
 export async function resolveConversation(
   tenantId: string,
@@ -31,7 +35,7 @@ export async function resolveConversation(
       [tenantId, customerId],
     );
     if (existing.rows[0]) {
-      return { conversationId: existing.rows[0].id, state: existing.rows[0].state };
+      return { conversationId: existing.rows[0].id, customerId, state: existing.rows[0].state };
     }
 
     const created = await client.query<{ id: string; state: Record<string, unknown> }>(
@@ -40,7 +44,7 @@ export async function resolveConversation(
        RETURNING id, state`,
       [tenantId, customerId],
     );
-    return { conversationId: created.rows[0]!.id, state: created.rows[0]!.state };
+    return { conversationId: created.rows[0]!.id, customerId, state: created.rows[0]!.state };
   });
 }
 
@@ -59,10 +63,7 @@ interface MessageRow {
  * genérico a propósito — cruza el límite de la base de datos, así que no
  * vale la pena forzar un tipo estático estricto en el round-trip.
  */
-export async function loadHistory(
-  tenantId: string,
-  conversationId: string,
-): Promise<LLMMessage[]> {
+export async function loadHistory(tenantId: string, conversationId: string): Promise<LLMMessage[]> {
   const rows = await withTenant(tenantId, async (client) => {
     const result = await client.query<MessageRow>(
       `SELECT direction, sender_type, content, tool_calls
@@ -108,9 +109,9 @@ export async function updateState(
   patch: Record<string, unknown>,
 ): Promise<void> {
   await withTenant(tenantId, (client) =>
-    client.query(
-      `UPDATE conversations SET state = state || $1::jsonb WHERE id = $2`,
-      [JSON.stringify(patch), conversationId],
-    ),
+    client.query(`UPDATE conversations SET state = state || $1::jsonb WHERE id = $2`, [
+      JSON.stringify(patch),
+      conversationId,
+    ]),
   );
 }

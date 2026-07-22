@@ -45,8 +45,9 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   const message = fieldsToObject(fields);
   const tenantId = message.tenant_id;
   const customerPhone = message.customer_phone;
+  const messageSid = message.message_sid;
 
-  if (!tenantId || !customerPhone) {
+  if (!tenantId || !customerPhone || !messageSid) {
     // Payload inválido: no hay nada que reintentar, se descarta.
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
     return;
@@ -55,7 +56,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   console.log(`[orchestrator] mensaje ${id} de ${customerPhone}: "${message.body ?? ""}"`);
 
   try {
-    const { responseText } = await runTurn(tenantId, customerPhone, message.body ?? "");
+    const { responseText } = await runTurn(tenantId, customerPhone, message.body ?? "", messageSid);
     console.log(`[orchestrator] respuesta calculada para ${customerPhone}: "${responseText}"`);
     await sendWhatsAppMessage(customerPhone, responseText);
     console.log(`[orchestrator] mensaje ${id} enviado por Twilio y confirmado (ack)`);
