@@ -6,6 +6,12 @@ on:
   push:
     branches: [develop, main]
 
+# Permisos mínimos del GITHUB_TOKEN (ver
+# docs/fase-8-observabilidad-seguridad/revision-seguridad.md): ningún job
+# necesita escribir en el repo — el deploy usa FLY_API_TOKEN, no este token.
+permissions:
+  contents: read
+
 jobs:
   lint-test-build:
     name: Lint, tests, build

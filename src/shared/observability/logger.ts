@@ -12,4 +12,24 @@ import { env } from "../../config/env.js";
  */
 export const logger = pino({
   level: env.logLevel,
+  // PII fuera de logs (ver docs/fase-8-observabilidad-seguridad/revision-seguridad.md):
+  // los puntos de log de esta app ya evitan por diseño loguear teléfono
+  // completo o texto literal del mensaje (solo tenant_id/conversation_id
+  // para correlación) — este redact es defensa en profundidad por si
+  // algún campo así se agrega por error a futuro. El historial completo
+  // de la conversación vive en Postgres con RLS, no en logs de terceros.
+  redact: {
+    paths: [
+      "req.body",
+      "customer_phone",
+      "*.customer_phone",
+      "body",
+      "*.body",
+      "to",
+      "*.to",
+      "from",
+      "*.from",
+    ],
+    censor: "[REDACTED]",
+  },
 });
