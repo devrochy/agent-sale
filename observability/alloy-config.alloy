@@ -1,0 +1,35 @@
+// Grafana Alloy — prueba local de envío de logs a Grafana Cloud Loki
+// (ver docs/fase-8-observabilidad-seguridad/adrs/ADR-009-observabilidad.md
+// y observability/README.md). Solo para desarrollo local: el mecanismo de
+// producción (Fly.io → Loki) queda abierto en el ADR hasta que exista un
+// despliegue real.
+//
+// Etiquetas (labels) deliberadamente pocas y de baja cardinalidad (app,
+// env) — Loki indexa por label, no por contenido. `tenant_id`,
+// `conversation_id`, `event`, `latency_ms`, etc. viajan dentro del JSON de
+// cada línea (ya los emite src/shared/observability/logger.ts) y se
+// consultan con el parser `| json` de LogQL, no como labels.
+
+local.file_match "app_logs" {
+	path_targets = [{
+		__path__ = "/var/log/agent-sale/*.log",
+		app       = "agent-sale",
+		env       = "local",
+	}]
+}
+
+loki.source.file "app_logs" {
+	targets    = local.file_match.app_logs.targets
+	forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+			password = sys.env("GRAFANA_CLOUD_LOKI_API_KEY")
+		}
+	}
+}
