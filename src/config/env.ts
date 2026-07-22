@@ -21,6 +21,10 @@ export const env = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   port: Number(process.env.PORT ?? 3000),
   nodeEnv: process.env.NODE_ENV ?? "development",
+  // Nivel de log (ver src/shared/observability/logger.ts, Fase 8) —
+  // "info" en producción evita ruido de "debug" sin perder los 8 puntos
+  // de tracing por conversation_id (docs/fase-8-observabilidad-seguridad/tracing.md).
+  logLevel: process.env.LOG_LEVEL ?? "info",
   // Auth Token de Twilio: clave de verificación de firma de webhooks
   // (ver docs/fase-3-whatsapp-gateway/webhook-contrato.md). Requerido:
   // sin esto el gateway no puede validar ningún webhook entrante.

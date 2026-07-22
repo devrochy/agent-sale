@@ -2,6 +2,7 @@ import type { EscalationReason } from "../domains/escalation/escalarHumano.js";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
 import { getEscalationConfig } from "../shared/db/index.js";
+import { logger } from "../shared/observability/logger.js";
 import { isMontoAlto, matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import { llmProvider, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
@@ -92,6 +93,7 @@ export async function runTurn(
   messageSid: string,
 ): Promise<TurnResult> {
   const { conversationId, customerId, state } = await resolveConversation(tenantId, customerPhone);
+  const turnLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
 
   await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
 
@@ -118,11 +120,23 @@ export async function runTurn(
   let hadAnyToolCall = false;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    turnLogger.info({ event: "orchestrator.llm_iniciado", iteration }, "Llamada al LLM iniciada");
+    const llmStartedAt = Date.now();
     const response = await llmProvider.converse({
       systemPrompt: SYSTEM_PROMPT,
       tools: TOOL_DEFINITIONS,
       messages,
     });
+    turnLogger.info(
+      {
+        event: "orchestrator.llm_completado",
+        iteration,
+        latency_ms: Date.now() - llmStartedAt,
+        stop_reason: response.stopReason,
+        usage: response.usage,
+      },
+      "Llamada al LLM completada",
+    );
 
     await recordAudit(tenantId, conversationId, "agent", "turno_conversacion", null, {
       stop_reason: response.stopReason,
