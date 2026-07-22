@@ -47,11 +47,19 @@ async function escalateAndReply(
 /**
  * Orquesta un turno completo (ver docs/fase-4-motor-agente/orquestador.md):
  * carga memoria, llama a Claude con tool calling manual, ejecuta tools,
- * persiste el resultado. `tenant_id` y `conversation_id` nunca se exponen
- * a Claude como parámetros de tool — los inyecta este módulo.
+ * persiste el resultado. `tenant_id`, `conversation_id` y `customer_id`
+ * nunca se exponen al LLM como parámetros de tool — los inyecta este
+ * módulo. `messageSid` (el `message_sid` del mensaje de WhatsApp que
+ * disparó este turno) se usa solo para el idempotency_key de
+ * crear_pedido (ver domains/commerce/crearPedido.ts).
  */
-export async function runTurn(tenantId: string, customerPhone: string, incomingBody: string): Promise<TurnResult> {
-  const { conversationId } = await resolveConversation(tenantId, customerPhone);
+export async function runTurn(
+  tenantId: string,
+  customerPhone: string,
+  incomingBody: string,
+  messageSid: string,
+): Promise<TurnResult> {
+  const { conversationId, customerId } = await resolveConversation(tenantId, customerPhone);
 
   await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
 
@@ -97,7 +105,9 @@ export async function runTurn(tenantId: string, customerPhone: string, incomingB
       );
       const toolResults: ContentBlock[] = [];
       for (const toolUse of toolUseBlocks) {
-        toolResults.push(await executeTool(tenantId, conversationId, toolUse));
+        toolResults.push(
+          await executeTool(tenantId, conversationId, customerId, messageSid, toolUse),
+        );
       }
       messages.push({ role: "user", content: toolResults });
       await appendMessage(tenantId, conversationId, "inbound", "agent", "", toolResults);
