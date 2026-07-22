@@ -57,9 +57,15 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
 
   try {
     const { responseText } = await runTurn(tenantId, customerPhone, message.body ?? "", messageSid);
-    console.log(`[orchestrator] respuesta calculada para ${customerPhone}: "${responseText}"`);
-    await sendWhatsAppMessage(customerPhone, responseText);
-    console.log(`[orchestrator] mensaje ${id} enviado por Twilio y confirmado (ack)`);
+    if (responseText !== null) {
+      console.log(`[orchestrator] respuesta calculada para ${customerPhone}: "${responseText}"`);
+      await sendWhatsAppMessage(customerPhone, responseText);
+      console.log(`[orchestrator] mensaje ${id} enviado por Twilio y confirmado (ack)`);
+    } else {
+      console.log(
+        `[orchestrator] mensaje ${id} de ${customerPhone}: conversación ya escalada, sin respuesta automática`,
+      );
+    }
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
   } catch (error) {
     const pending = (await redis.xpending(INBOUND_STREAM, CONSUMER_GROUP, id, id, 1)) as Array<
