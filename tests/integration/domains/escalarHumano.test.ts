@@ -42,6 +42,10 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  await adminPool.query(`DELETE FROM handoff_tokens WHERE tenant_id IN ($1, $2)`, [
+    tenantA,
+    tenantB,
+  ]);
   await adminPool.query(`DELETE FROM handoff_queue WHERE tenant_id IN ($1, $2)`, [
     tenantA,
     tenantB,
@@ -101,22 +105,31 @@ describe("escalarHumano", () => {
     ).rejects.toThrow();
   });
 
-  it("notifica por WhatsApp al asesor activo del tenant cuando existe uno", async () => {
+  it("notifica por WhatsApp al asesor activo del tenant, con un enlace a la vista del asesor", async () => {
     const agent = await adminPool.query<{ id: string }>(
       `INSERT INTO human_agents (tenant_id, name, contact, active) VALUES ($1, 'Asesor Test', 'whatsapp:+573009999999', true) RETURNING id`,
       [tenantA],
     );
 
-    await escalarHumano(tenantA, conversationA, {
+    const result = await escalarHumano(tenantA, conversationA, {
       reason: "monto_alto",
       summary: "Cotización grande.",
     });
 
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       "whatsapp:+573009999999",
-      expect.stringContaining("monto_alto"),
+      expect.stringMatching(/monto_alto[\s\S]*\/asesor\//),
     );
 
+    const token = await adminPool.query<{ human_agent_id: string }>(
+      `SELECT human_agent_id FROM handoff_tokens WHERE handoff_id = $1`,
+      [result.handoff_id],
+    );
+    expect(token.rows[0]!.human_agent_id).toBe(agent.rows[0]!.id);
+
+    await adminPool.query(`DELETE FROM handoff_tokens WHERE human_agent_id = $1`, [
+      agent.rows[0]!.id,
+    ]);
     await adminPool.query(`DELETE FROM human_agents WHERE id = $1`, [agent.rows[0]!.id]);
   });
 
@@ -141,6 +154,9 @@ describe("escalarHumano", () => {
 
     expect(result.status).toBe("queued");
 
+    await adminPool.query(`DELETE FROM handoff_tokens WHERE human_agent_id = $1`, [
+      agent.rows[0]!.id,
+    ]);
     await adminPool.query(`DELETE FROM human_agents WHERE id = $1`, [agent.rows[0]!.id]);
   });
 });
