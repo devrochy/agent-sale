@@ -134,6 +134,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             "solicitud_cliente",
             "intentos_fallidos",
             "queja",
+            "fuera_de_alcance",
           ],
           description: "Motivo del escalamiento.",
         },
