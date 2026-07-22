@@ -217,13 +217,25 @@ export async function resolverConversacion(token: string): Promise<HandoffAction
   }
 
   const updated = await withTenant(lookup.tenantId, async (client) => {
-    const result = await client.query(
+    const result = await client.query<{ conversation_id: string }>(
       `UPDATE handoff_queue SET status = 'resuelto', resolved_at = now()
        WHERE id = $1 AND status = 'en_atencion'
-       RETURNING id`,
+       RETURNING conversation_id`,
       [lookup.handoffId],
     );
-    return result.rows.length > 0;
+    const row = result.rows[0];
+    if (!row) {
+      return false;
+    }
+    // Cierra la conversación (ver handoff-queue.md, "reasignación y
+    // cierre"): así resolveConversation() ya no la reutiliza y el
+    // próximo mensaje del cliente abre una conversación nueva desde
+    // cero, en vez de quedar "muda" para siempre en step: "escalado".
+    await client.query(
+      `UPDATE conversations SET status = 'closed', closed_at = now() WHERE id = $1`,
+      [row.conversation_id],
+    );
+    return true;
   });
 
   return { status: updated ? 200 : 409 };

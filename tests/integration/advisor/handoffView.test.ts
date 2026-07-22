@@ -119,7 +119,7 @@ describe("tomarConversacion / resolverConversacion", () => {
     expect(result.status).toBe(409);
   });
 
-  it("resolver pasa el caso a resuelto y completa resolved_at", async () => {
+  it("resolver pasa el caso a resuelto, completa resolved_at y cierra la conversación", async () => {
     const { handoffId, token } = await seedHandoff();
     await tomarConversacion(token);
 
@@ -132,6 +132,23 @@ describe("tomarConversacion / resolverConversacion", () => {
     );
     expect(row.rows[0]!.status).toBe("resuelto");
     expect(row.rows[0]!.resolved_at).not.toBeNull();
+
+    // Cierra la conversación (ver handoff-queue.md, "reasignación y
+    // cierre") para que el próximo mensaje del cliente abra una nueva en
+    // vez de quedar muda en step: "escalado" para siempre.
+    const conversation = await adminPool.query(
+      `SELECT status, closed_at FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(conversation.rows[0]!.status).toBe("closed");
+    expect(conversation.rows[0]!.closed_at).not.toBeNull();
+
+    // Reabre la conversación para no afectar el resto de los tests de
+    // este archivo, que reutilizan la misma conversación semilla.
+    await adminPool.query(
+      `UPDATE conversations SET status = 'open', closed_at = NULL WHERE id = $1`,
+      [conversationId],
+    );
   });
 
   it("resolver sobre un caso que todavía no está en_atencion devuelve 409", async () => {
