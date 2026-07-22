@@ -71,6 +71,9 @@ async function escalateAndReply(
     { reason, summary },
     escalation,
   );
+  logger
+    .child({ tenant_id: tenantId, conversation_id: conversationId })
+    .info({ event: "orchestrator.escalado", reason }, "Conversación escalada a un asesor humano");
   await appendMessage(tenantId, conversationId, "outbound", "agent", FALLBACK_ESCALATION_MESSAGE);
   await updateState(tenantId, conversationId, { step: "escalado" });
   return { responseText: FALLBACK_ESCALATION_MESSAGE };
