@@ -13,6 +13,7 @@ Documentación de diseño, mismo criterio que las fases anteriores. Esta fase in
 - [guardrails.md](./guardrails.md) — verificación determinística de precios en la respuesta final (más allá del principio ya existente de "el LLM propone, la tool decide"), y límites de tema en el system prompt.
 - [alertas-costo.md](./alertas-costo.md) — alerta de gasto anómalo por tenant, reutilizando el canal de WhatsApp ya usado para escalamiento (Fase 7).
 - [revision-seguridad.md](./revision-seguridad.md) — checklist formal que consolida los controles ya diseñados (RLS, secretos, firma de webhook, idempotencia) más los nuevos (rate limiting, PII en logs, TLS).
+- [adrs/ADR-011-metricas-negocio.md](./adrs/ADR-011-metricas-negocio.md) y [metricas-cierre-ventas.md](./metricas-cierre-ventas.md) — adenda post-implementación: funnel de cierre de ventas (conversación → cotización → pedido) contra los criterios de éxito de la Fase 0, usando Postgres directo como datasource de Grafana en vez de Loki.
 
 ## Definición de terminado
 
