@@ -5,6 +5,7 @@ import {
   resolverConversacion,
   tomarConversacion,
 } from "../advisor/handoffView.js";
+import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 
 /**
@@ -15,7 +16,11 @@ import { handleInboundWebhook } from "./webhookHandler.js";
  * src/advisor/) comparten el mismo proceso Fastify.
  */
 export function buildServer() {
-  const app = Fastify({ logger: true });
+  // `loggerInstance` (no `logger`) es la opción de Fastify 5 para pasar
+  // una instancia pino ya construida — así los access logs HTTP salen en
+  // el mismo JSON estructurado que el resto de la app (ver
+  // src/shared/observability/logger.ts, Fase 8).
+  const app = Fastify({ loggerInstance: logger });
 
   // Twilio manda application/x-www-form-urlencoded, no JSON.
   app.register(formbody);

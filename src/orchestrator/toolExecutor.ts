@@ -17,6 +17,7 @@ import {
 } from "../domains/commerce/recomendarProducto.js";
 import { escalarHumano, type EscalarHumanoInput } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
+import { logger } from "../shared/observability/logger.js";
 import type { ContentBlock } from "./llm/types.js";
 
 type ToolUseBlock = Extract<ContentBlock, { type: "tool_use" }>;
@@ -37,6 +38,13 @@ export async function executeTool(
   messageSid: string,
   toolUse: ToolUseBlock,
 ): Promise<ToolResultBlock> {
+  const toolLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
+  const startedAt = Date.now();
+  toolLogger.info(
+    { event: "orchestrator.tool_iniciada", tool: toolUse.name },
+    "Ejecución de tool iniciada",
+  );
+
   try {
     let output: unknown;
     switch (toolUse.name) {
@@ -68,6 +76,10 @@ export async function executeTool(
     }
 
     await recordAudit(tenantId, conversationId, "tool", toolUse.name, toolUse.input, output);
+    toolLogger.info(
+      { event: "orchestrator.tool_completada", tool: toolUse.name, latency_ms: Date.now() - startedAt },
+      "Ejecución de tool completada",
+    );
 
     return {
       type: "tool_result",
@@ -79,6 +91,16 @@ export async function executeTool(
     await recordAudit(tenantId, conversationId, "tool", toolUse.name, toolUse.input, {
       error: message,
     });
+    toolLogger.warn(
+      {
+        event: "orchestrator.tool_completada",
+        tool: toolUse.name,
+        latency_ms: Date.now() - startedAt,
+        is_error: true,
+        error: message,
+      },
+      "Ejecución de tool completada con error",
+    );
     return {
       type: "tool_result",
       tool_use_id: toolUse.id,
