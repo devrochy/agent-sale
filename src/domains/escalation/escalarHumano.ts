@@ -3,8 +3,19 @@ import { sendWhatsAppMessage } from "../../gateway/sendMessage.js";
 import { createHandoffToken, withTenant } from "../../shared/db/index.js";
 import { logger } from "../../shared/observability/logger.js";
 
+// "guardrail_precio" y "fuera_de_alcance" se agregaron en la Fase 8
+// (código, ver migrations/0016_escalation_reasons_fase8.cjs y
+// docs/fase-8-observabilidad-seguridad/guardrails.md). "guardrail_precio"
+// es interno: nunca lo elige el LLM (no está en el enum de la tool
+// escalar_a_humano de toolDefinitions.ts), solo lo dispara el orquestador.
 export type EscalationReason =
-  "compatibilidad_tecnica" | "monto_alto" | "solicitud_cliente" | "intentos_fallidos" | "queja";
+  | "compatibilidad_tecnica"
+  | "monto_alto"
+  | "solicitud_cliente"
+  | "intentos_fallidos"
+  | "queja"
+  | "guardrail_precio"
+  | "fuera_de_alcance";
 
 export interface EscalarHumanoInput {
   reason: EscalationReason;
