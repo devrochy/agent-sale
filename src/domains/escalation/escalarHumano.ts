@@ -1,9 +1,21 @@
 import { env } from "../../config/env.js";
 import { sendWhatsAppMessage } from "../../gateway/sendMessage.js";
 import { createHandoffToken, withTenant } from "../../shared/db/index.js";
+import { logger } from "../../shared/observability/logger.js";
 
+// "guardrail_precio" y "fuera_de_alcance" se agregaron en la Fase 8
+// (código, ver migrations/0016_escalation_reasons_fase8.cjs y
+// docs/fase-8-observabilidad-seguridad/guardrails.md). "guardrail_precio"
+// es interno: nunca lo elige el LLM (no está en el enum de la tool
+// escalar_a_humano de toolDefinitions.ts), solo lo dispara el orquestador.
 export type EscalationReason =
-  "compatibilidad_tecnica" | "monto_alto" | "solicitud_cliente" | "intentos_fallidos" | "queja";
+  | "compatibilidad_tecnica"
+  | "monto_alto"
+  | "solicitud_cliente"
+  | "intentos_fallidos"
+  | "queja"
+  | "guardrail_precio"
+  | "fuera_de_alcance";
 
 export interface EscalarHumanoInput {
   reason: EscalationReason;
@@ -77,7 +89,9 @@ export async function escalarHumano(
       // La notificación es best-effort: el caso ya quedó registrado en
       // handoff_queue y el asesor puede revisarlo aunque el aviso
       // proactivo falle (ej. sin cuenta real de Twilio en desarrollo).
-      console.error(`No se pudo notificar al asesor del escalamiento ${handoffId}`, error);
+      logger
+        .child({ tenant_id: tenantId, conversation_id: conversationId })
+        .warn({ error, handoff_id: handoffId }, "No se pudo notificar al asesor del escalamiento");
     }
   }
 

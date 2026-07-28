@@ -11,7 +11,7 @@ import { pool as appPool } from "../../../src/shared/db/pool.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
-const app = buildServer();
+const app = await buildServer();
 
 let tenantId: string;
 let customerId: string;

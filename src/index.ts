@@ -7,7 +7,7 @@ import { startConsumer } from "./orchestrator/consumer.js";
  * gateway y el consumer del orchestrator en el mismo proceso Node (ver
  * ADR de Fase 2 — monolito, no microservicios).
  */
-const app = buildServer();
+const app = await buildServer();
 
 app
   .listen({ port: env.port, host: "0.0.0.0" })

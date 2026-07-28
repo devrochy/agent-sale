@@ -1,4 +1,5 @@
 import { findTenantIdByWhatsappNumber } from "../shared/db/index.js";
+import { logger } from "../shared/observability/logger.js";
 import { claimMessageOnce } from "./idempotency.js";
 import { enqueueInboundMessage } from "./queue.js";
 import { verifyTwilioSignature } from "./twilioSignature.js";
@@ -45,6 +46,11 @@ export async function handleInboundWebhook(
     return { status: 200, enqueued: false, reason: "unknown_tenant" };
   }
 
+  logger.child({ tenant_id: tenantId, message_sid: messageSid }).info(
+    { event: "gateway.mensaje_recibido" },
+    "Mensaje entrante recibido",
+  );
+
   await enqueueInboundMessage({
     messageSid,
     tenantId,
@@ -52,6 +58,11 @@ export async function handleInboundWebhook(
     body,
     receivedAt: new Date().toISOString(),
   });
+
+  logger.child({ tenant_id: tenantId, message_sid: messageSid }).info(
+    { event: "gateway.encolado" },
+    "Mensaje entrante encolado",
+  );
 
   return { status: 200, enqueued: true, reason: "ok" };
 }

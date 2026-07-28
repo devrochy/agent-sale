@@ -2,6 +2,8 @@ import type { EscalationReason } from "../domains/escalation/escalarHumano.js";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
 import { getEscalationConfig } from "../shared/db/index.js";
+import { logger } from "../shared/observability/logger.js";
+import { extractMonetaryValues, verifyPriceGuardrail } from "../shared/observability/priceGuardrail.js";
 import { isMontoAlto, matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import { llmProvider, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
@@ -19,6 +21,13 @@ const QUOTE_AMOUNT_TOOLS = new Set(["generar_cotizacion", "aplicar_promocion", "
 
 const FALLBACK_ESCALATION_MESSAGE =
   "En este momento no puedo continuar por acá — ya avisé a un asesor de ForMotos para que te contacte en breve.";
+
+// Guardrail de precios (ver docs/fase-8-observabilidad-seguridad/guardrails.md,
+// "Guardrail 1"): un solo reintento de generación antes de escalar por
+// seguridad — nunca se envía al cliente un monto que no se pudo verificar.
+const MAX_GUARDRAIL_RETRIES = 1;
+const GUARDRAIL_RETRY_INSTRUCTION =
+  "Tu respuesta anterior incluye un monto en pesos que no coincide con ningún resultado real de las tools que usaste en este turno. Genera una respuesta nueva usando únicamente los montos que sí devolvieron esas tools.";
 
 export interface TurnResult {
   // `null` cuando la conversación ya está escalada: el mensaje se guarda
@@ -70,6 +79,9 @@ async function escalateAndReply(
     { reason, summary },
     escalation,
   );
+  logger
+    .child({ tenant_id: tenantId, conversation_id: conversationId })
+    .info({ event: "orchestrator.escalado", reason }, "Conversación escalada a un asesor humano");
   await appendMessage(tenantId, conversationId, "outbound", "agent", FALLBACK_ESCALATION_MESSAGE);
   await updateState(tenantId, conversationId, { step: "escalado" });
   return { responseText: FALLBACK_ESCALATION_MESSAGE };
@@ -92,6 +104,7 @@ export async function runTurn(
   messageSid: string,
 ): Promise<TurnResult> {
   const { conversationId, customerId, state } = await resolveConversation(tenantId, customerPhone);
+  const turnLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
 
   await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
 
@@ -116,13 +129,29 @@ export async function runTurn(
 
   const messages = await loadHistory(tenantId, conversationId);
   let hadAnyToolCall = false;
+  // Montos reales devueltos por las tools ejecutadas durante este runTurn
+  // (no solo la iteración actual) — usados por el guardrail de precios.
+  const toolAmountsThisTurn: number[] = [];
+  let guardrailRetries = 0;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    turnLogger.info({ event: "orchestrator.llm_iniciado", iteration }, "Llamada al LLM iniciada");
+    const llmStartedAt = Date.now();
     const response = await llmProvider.converse({
       systemPrompt: SYSTEM_PROMPT,
       tools: TOOL_DEFINITIONS,
       messages,
     });
+    turnLogger.info(
+      {
+        event: "orchestrator.llm_completado",
+        iteration,
+        latency_ms: Date.now() - llmStartedAt,
+        stop_reason: response.stopReason,
+        usage: response.usage,
+      },
+      "Llamada al LLM completada",
+    );
 
     await recordAudit(tenantId, conversationId, "agent", "turno_conversacion", null, {
       stop_reason: response.stopReason,
@@ -167,6 +196,9 @@ export async function runTurn(
           toolUse,
         );
         toolResults.push(toolResult);
+        if (!toolResult.is_error) {
+          toolAmountsThisTurn.push(...extractMonetaryValues(JSON.parse(toolResult.content)));
+        }
         const amount = extractQuoteAmount(toolUse.name, toolResult);
         if (amount !== null && isMontoAlto(amount, escalationConfig)) {
           montoAltoAmount = amount;
@@ -191,6 +223,38 @@ export async function runTurn(
       continue;
     }
 
+    const responseText = extractText(response.content);
+    const guardrailResult = verifyPriceGuardrail(responseText, toolAmountsThisTurn);
+    if (!guardrailResult.ok) {
+      await recordAudit(
+        tenantId,
+        conversationId,
+        "orchestrator",
+        "guardrail_precio_incidente",
+        { responseText, mismatched: guardrailResult.mismatched },
+        { toolAmountsThisTurn },
+      );
+      turnLogger.warn(
+        { event: "orchestrator.guardrail_precio_incidente", mismatched: guardrailResult.mismatched },
+        "Guardrail de precios detectó un monto no verificable en la respuesta",
+      );
+
+      if (guardrailRetries < MAX_GUARDRAIL_RETRIES) {
+        guardrailRetries++;
+        const retryInstruction: ContentBlock[] = [{ type: "text", text: GUARDRAIL_RETRY_INSTRUCTION }];
+        messages.push({ role: "user", content: retryInstruction });
+        await appendMessage(tenantId, conversationId, "inbound", "agent", "", retryInstruction);
+        continue;
+      }
+
+      return escalateAndReply(
+        tenantId,
+        conversationId,
+        "guardrail_precio",
+        "El guardrail de verificación de precios detectó un monto en la respuesta que no coincide con ningún resultado real de las tools de este turno.",
+      );
+    }
+
     // end_turn: el turno terminó sin escalar. Cuenta como "intento sin
     // resolver" si no se usó ninguna tool (ver reglas-escalamiento.md,
     // regla de intentos fallidos) — se resetea apenas el agente sí se
@@ -208,7 +272,6 @@ export async function runTurn(
       );
     }
 
-    const responseText = extractText(response.content);
     await updateState(tenantId, conversationId, {
       step: "resuelto",
       turnos_sin_resolver: turnosSinResolver,

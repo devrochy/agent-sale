@@ -1,5 +1,6 @@
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { INBOUND_STREAM } from "../gateway/queue.js";
+import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
 import { runTurn } from "./loop.js";
 
@@ -53,17 +54,28 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     return;
   }
 
-  console.log(`[orchestrator] mensaje ${id} de ${customerPhone}: "${message.body ?? ""}"`);
+  const entryLogger = logger.child({ tenant_id: tenantId, message_sid: messageSid });
+  const receivedAt = message.received_at ? Date.parse(message.received_at) : NaN;
+  const queueLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
+  entryLogger.info(
+    { event: "orchestrator.mensaje_tomado", queue_latency_ms: queueLatencyMs },
+    "Mensaje tomado de la cola",
+  );
 
   try {
     const { responseText } = await runTurn(tenantId, customerPhone, message.body ?? "", messageSid);
     if (responseText !== null) {
-      console.log(`[orchestrator] respuesta calculada para ${customerPhone}: "${responseText}"`);
+      entryLogger.info({ event: "orchestrator.respuesta_lista" }, "Respuesta lista, enviando por Twilio");
       await sendWhatsAppMessage(customerPhone, responseText);
-      console.log(`[orchestrator] mensaje ${id} enviado por Twilio y confirmado (ack)`);
+      const totalLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
+      entryLogger.info(
+        { event: "gateway.confirmacion_envio", total_latency_ms: totalLatencyMs },
+        "Mensaje enviado por Twilio y confirmado",
+      );
     } else {
-      console.log(
-        `[orchestrator] mensaje ${id} de ${customerPhone}: conversación ya escalada, sin respuesta automática`,
+      entryLogger.info(
+        { event: "orchestrator.conversacion_escalada" },
+        "Conversación ya escalada, sin respuesta automática",
       );
     }
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
@@ -74,9 +86,9 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     const deliveryCount = pending[0] ? Number(pending[0][3]) : 1;
     if (deliveryCount >= MAX_DELIVERIES) {
       await moveToDeadLetter(id, fields);
-      console.error(`Mensaje ${id} movido a dead-letter tras ${deliveryCount} intentos`, error);
+      entryLogger.error({ error, delivery_count: deliveryCount }, "Mensaje movido a dead-letter");
     } else {
-      console.error(`Error procesando mensaje ${id} (intento ${deliveryCount})`, error);
+      entryLogger.error({ error, delivery_count: deliveryCount }, "Error procesando mensaje, se reintentará");
     }
   }
 }
@@ -128,7 +140,7 @@ export async function startConsumer(): Promise<void> {
     try {
       await pollOnce();
     } catch (error) {
-      console.error("Error en el loop del consumer", error);
+      logger.error({ error }, "Error en el loop del consumer");
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
