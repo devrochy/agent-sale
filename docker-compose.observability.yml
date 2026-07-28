@@ -1,0 +1,24 @@
+# Prueba local de envío de logs a Grafana Cloud (ver observability/README.md,
+# Fase 8). Opt-in: no lo usan CI ni el resto de los tests, que siguen
+# corriendo solo contra docker-compose.yml (Postgres + Redis).
+#
+# Uso:
+#   docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+version: '3.3'
+
+services:
+  alloy:
+    image: grafana/alloy:latest
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - ./observability/logs:/var/log/agent-sale:ro
+    environment:
+      GRAFANA_CLOUD_LOKI_URL: ${GRAFANA_CLOUD_LOKI_URL}
+      GRAFANA_CLOUD_LOKI_USER: ${GRAFANA_CLOUD_LOKI_USER}
+      GRAFANA_CLOUD_LOKI_API_KEY: ${GRAFANA_CLOUD_LOKI_API_KEY}
+    ports:
+      - "12345:12345"
