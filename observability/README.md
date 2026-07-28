@@ -5,11 +5,9 @@ existe todavía un despliegue real en Fly.io que decida el mecanismo de
 producción. Usa [Grafana Alloy](https://grafana.com/docs/alloy/) como
 agente que lee un archivo de log local y lo envía a Loki.
 
-**Requiere que el logging estructurado de la Fase 8 esté disponible**
-(`src/shared/observability/logger.ts`, PR #20/#21/#22 — todavía no
-mergeados a `develop` a la fecha de este README). Para probar con logs
-reales, corré la app desde una rama que ya lo tenga (ej.
-`feature/impl-seguridad-checklist`, la punta del stack de los 3 PRs).
+Requiere el logging estructurado de la Fase 8
+(`src/shared/observability/logger.ts`, mergeado a `develop` vía PRs
+#20/#21/#22).
 
 ## 1. Cuenta de Grafana Cloud (free tier)
 
