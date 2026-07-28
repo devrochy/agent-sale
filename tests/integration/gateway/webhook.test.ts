@@ -23,7 +23,7 @@ function computeTwilioSignature(url: string, params: Record<string, string>): st
 
 const TENANT_WHATSAPP_NUMBER = "whatsapp:+573000000099";
 let tenantId: string;
-const app = buildServer();
+const app = await buildServer();
 
 beforeAll(async () => {
   const result = await adminPool.query<{ id: string }>(
@@ -37,7 +37,11 @@ beforeAll(async () => {
 afterAll(async () => {
   await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
   await redis.del(INBOUND_STREAM);
-  await redis.del("wa:processed:webhook-test-sid-1", "wa:processed:webhook-test-sid-2");
+  await redis.del(
+    "wa:processed:webhook-test-sid-1",
+    "wa:processed:webhook-test-sid-2",
+    "wa:processed:webhook-test-sid-ratelimit",
+  );
   await app.close();
   await adminPool.end();
   await redis.quit();
@@ -133,5 +137,25 @@ describe("POST /webhooks/whatsapp", () => {
     expect(after).toBe(before);
 
     await redis.del("wa:processed:webhook-test-sid-unknown-tenant");
+  });
+
+  it("supera el límite de rate limiting por IP y responde 429", async () => {
+    const params = {
+      MessageSid: "webhook-test-sid-ratelimit",
+      From: "whatsapp:+573000000001",
+      To: TENANT_WHATSAPP_NUMBER,
+      Body: "spam",
+    };
+    const signature = computeTwilioSignature(env.publicWebhookUrl, params);
+
+    // El límite de la ruta es 60/min (ver server.ts) — 65 requests
+    // secuenciales alcanzan el límite dentro de la misma ventana, sin
+    // importar cuánto cupo hayan consumido los tests anteriores.
+    let lastResponse;
+    for (let i = 0; i < 65; i++) {
+      lastResponse = await post(params, signature);
+    }
+
+    expect(lastResponse!.statusCode).toBe(429);
   });
 });
