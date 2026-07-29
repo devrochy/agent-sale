@@ -1,4 +1,5 @@
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
+import { env } from "../config/env.js";
 import { getTenant, listTenants, type TenantSummary } from "../shared/db/tenantsDirectory.js";
 import { withTenant } from "../shared/db/withTenant.js";
 
@@ -107,7 +108,22 @@ const ICON_LEADS =
 const ICON_TICKETS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6.4V4.7c0-.4.3-.7.7-.7h10.6c.4 0 .7.3.7.7v1.7a1.2 1.2 0 0 0 0 2.4v1.7c0 .4-.3.7-.7.7H2.7a.7.7 0 0 1-.7-.7V8.8a1.2 1.2 0 0 0 0-2.4Z"/><path d="M6.2 4v8" stroke-dasharray="1.3 1.3"/></svg>';
 
-type ActiveSection = "resumen" | "conversaciones" | "leads" | "tickets" | "productos" | "pedidos" | null;
+const ICON_FLUJO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="2.8" cy="2.8" r="1.5"/><circle cx="2.8" cy="13.2" r="1.5"/><circle cx="12.6" cy="8" r="1.7"/><path d="M4.2 3.5 11 7.2M4.2 12.5 11 8.8"/></svg>';
+
+const ICON_CONEXIONES =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.3 2v3.2M10.7 2v3.2M3.8 5.2h8.4v2.7a4.2 4.2 0 0 1-8.4 0V5.2Z"/><path d="M8 12v2.4"/></svg>';
+
+type ActiveSection =
+  | "resumen"
+  | "conversaciones"
+  | "leads"
+  | "tickets"
+  | "flujo"
+  | "conexiones"
+  | "productos"
+  | "pedidos"
+  | null;
 
 const ICON_COLLAPSE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 6 8l4 5"/></svg>';
@@ -123,9 +139,6 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
     const dot = icon ? `<span class="navicon">${icon}</span>` : '<span class="dot"></span>';
     return `<li><a class="navitem${isActive ? " navitem--active" : ""}" href="${href}"${isActive ? ' aria-current="page"' : ""} title="${escapeHtml(label)}">${dot}<span class="navitem__label">${escapeHtml(label)}</span></a></li>`;
   };
-
-  const soon = (label: string, fase: string): string =>
-    `<li><div class="navitem navitem--soon" aria-disabled="true" title="${escapeHtml(label)}"><span class="dot"></span><span class="navitem__label">${escapeHtml(label)}<span class="tag">${escapeHtml(fase)}</span></span></div></li>`;
 
   const canal = tenant.whatsapp_number ? `WhatsApp configurado` : `Sin canal configurado`;
 
@@ -152,8 +165,8 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
       <div class="navgroup">
         <p class="navgroup__label">Agente</p>
         <ul class="navgroup__items">
-          ${soon("Flujo", "11.3")}
-          ${soon("Conexiones", "11.3")}
+          ${item(`/admin/${tenant.id}/flujo`, "Flujo", "flujo", ICON_FLUJO)}
+          ${item(`/admin/${tenant.id}/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)}
         </ul>
       </div>
       <div class="laneline"></div>
@@ -298,10 +311,6 @@ body.rail-collapsed .rail__toggle svg { transform: rotate(180deg); }
 .navitem--active { background: var(--panel-inset); color: var(--ink); box-shadow: inset 2px 0 0 var(--ignition); }
 .navitem--active .dot { background: var(--ignition); }
 .navitem--active .navicon { color: var(--ignition); }
-.navitem--soon { color: var(--ink-faint); cursor: default; }
-.navitem--soon:hover { background: none; color: var(--ink-faint); }
-.navitem--soon .dot { background: transparent; border: 1px dashed var(--border-strong); }
-.navitem--soon .tag { margin-left: auto; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
 .laneline { height: 0; border-top: 1px dashed var(--border); margin: 2px 4px; }
 .rail__status { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-inset); font-size: 12px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--chrome); box-shadow: 0 0 0 0 var(--chrome-soft); animation: pulse 2.4s ease-out infinite; flex-shrink: 0; }
@@ -400,6 +409,36 @@ table.resizing { cursor: col-resize; user-select: none; }
 .pager button { font: inherit; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; color: var(--ink); cursor: pointer; }
 .pager button:disabled { opacity: 0.35; cursor: default; }
 .pager button:not(:disabled):hover { border-color: var(--border-strong); }
+.flow { display: flex; flex-direction: column; align-items: center; gap: 0; max-width: 640px; }
+.flowline { width: 2px; height: 26px; background: repeating-linear-gradient(var(--border-strong), var(--border-strong) 4px, transparent 4px, transparent 8px); }
+.flownode { width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 16px 20px; text-align: center; }
+.flownode--core { text-align: left; }
+.flownode__eyebrow { display: block; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--chrome); margin-bottom: 4px; }
+.flownode--core .flownode__eyebrow { text-align: center; }
+.flownode__title { font-family: var(--font-display); font-weight: 700; font-size: 15px; }
+.flownode--core .flownode__title { display: block; text-align: center; margin-bottom: 14px; }
+.flowsub { display: flex; flex-direction: column; gap: 10px; border-top: 1px dashed var(--border); padding-top: 14px; }
+.flowsub__row { display: flex; align-items: baseline; gap: 12px; font-size: 13px; }
+.flowsub__row--tools { align-items: flex-start; }
+.flowsub__label { flex-shrink: 0; width: 76px; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+.toolgrid { display: flex; flex-wrap: wrap; gap: 7px; }
+.toolpill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 20px; background: var(--panel-inset); border: 1px solid var(--border); font-size: 12px; }
+.toolpill__count { font-family: var(--font-mono); font-weight: 700; color: var(--ignition); }
+.flowfoot { margin-top: 14px; font-size: 12px; color: var(--ink-faint); font-family: var(--font-mono); }
+.connection { padding: 22px 24px; max-width: 640px; }
+.connection__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.connection__head h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; }
+.connection__badge { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
+.connection__badge--on { color: var(--go); background: var(--go-soft); }
+.connection__badge--on .pulse { background: var(--go); }
+.connection__badge--off { color: var(--redline); background: var(--redline-soft); }
+.connection__meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.connection__meta dt { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 4px; }
+.connection__meta dd { margin: 0; font-size: 13.5px; }
+.connection__webhook label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
+.copyrow { display: flex; align-items: center; gap: 10px; }
+.copyrow code { flex: 1; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
+.connection__missing { margin: 16px 0 0; padding: 10px 14px; border-radius: 8px; background: var(--redline-soft); color: var(--redline); font-size: 12.5px; }
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
@@ -686,6 +725,24 @@ const CLIENT_SCRIPT = `
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp);
       });
+    });
+  });
+
+  /* ---------- copiar al portapapeles (ej. URL de webhook en Conexiones) ---------- */
+  document.querySelectorAll("[data-copy]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.getAttribute("data-copy") || "";
+      var original = btn.textContent;
+      navigator.clipboard.writeText(text).then(
+        function () {
+          btn.textContent = "Copiado";
+          setTimeout(function () { btn.textContent = original; }, 1500);
+        },
+        function () {
+          btn.textContent = "No se pudo copiar";
+          setTimeout(function () { btn.textContent = original; }, 1500);
+        },
+      );
     });
   });
 })();
@@ -1330,6 +1387,144 @@ export async function renderTicketsPage(tenantId: string): Promise<string | null
   `;
 
   return layout(`Tickets (${rows.length})`, tenant, body, "tickets", true);
+}
+
+// Nombres reales de src/orchestrator/toolDefinitions.ts — no los nodos
+// genéricos del panel de referencia externo (ver flujo-conexiones.md).
+const AGENT_TOOLS: { name: string; label: string }[] = [
+  { name: "consultar_inventario", label: "Consultar inventario" },
+  { name: "generar_cotizacion", label: "Generar cotización" },
+  { name: "aplicar_promocion", label: "Aplicar promoción" },
+  { name: "crear_pedido", label: "Crear pedido" },
+  { name: "recomendar_producto", label: "Recomendar producto" },
+  { name: "escalar_a_humano", label: "Escalar a humano" },
+];
+
+interface ToolCountRow {
+  tool: string;
+  llamadas_30d: string;
+}
+
+/**
+ * Flujo del agente (Fase 11.3, ver docs/fase-11-panel-admin-dashboard/
+ * flujo-conexiones.md): diagrama estático con los nodos reales del
+ * orquestador — no editable, mismo criterio que el panel de referencia
+ * ("radiografía honesta, no un editor"). Los contadores por tool se
+ * derivan de messages.tool_calls, sin tabla nueva.
+ */
+export async function renderFlujoPage(tenantId: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+
+  const counts = await withTenant(tenantId, async (client) => {
+    const result = await client.query<ToolCountRow>(
+      `SELECT block ->> 'name' AS tool, count(*) AS llamadas_30d
+       FROM messages m, jsonb_array_elements(m.tool_calls) AS block
+       WHERE m.tool_calls IS NOT NULL
+         AND block ->> 'type' = 'tool_use'
+         AND m.created_at >= now() - interval '30 days'
+       GROUP BY 1`,
+    );
+    return new Map(result.rows.map((row) => [row.tool, Number(row.llamadas_30d)]));
+  });
+
+  const toolPills = AGENT_TOOLS.map(
+    (tool) =>
+      `<div class="toolpill"><span>${escapeHtml(tool.label)}</span><span class="toolpill__count tabular">${counts.get(tool.name) ?? 0}</span></div>`,
+  ).join("\n");
+
+  const modelo = `${env.llmProvider === "anthropic" ? "Anthropic" : "OpenAI-compatible"} · ${escapeHtml(env.llmModel)}`;
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Agente</p>
+      <h1>Flujo</h1>
+      <p>Cómo procesa el agente un mensaje de ${escapeHtml(brandName(tenant))}, con los nodos reales del orquestador.</p>
+    </div>
+    <div class="flow">
+      <div class="flownode">
+        <span class="flownode__eyebrow">Canal</span>
+        <span class="flownode__title">WhatsApp · Twilio</span>
+      </div>
+      <div class="flowline"></div>
+      <div class="flownode flownode--core">
+        <span class="flownode__eyebrow">Orquestador</span>
+        <span class="flownode__title mono">src/orchestrator/loop.ts</span>
+        <div class="flowsub">
+          <div class="flowsub__row"><span class="flowsub__label">Modelo</span><span class="mono">${modelo}</span></div>
+          <div class="flowsub__row"><span class="flowsub__label">Memoria</span><span>Estado de la conversación + historial completo de mensajes</span></div>
+          <div class="flowsub__row flowsub__row--tools"><span class="flowsub__label">Tools</span><div class="toolgrid">${toolPills}</div></div>
+        </div>
+      </div>
+      <div class="flowline"></div>
+      <div class="flownode">
+        <span class="flownode__eyebrow">Respuesta</span>
+        <span class="flownode__title">Outbound vía Twilio</span>
+      </div>
+    </div>
+    <p class="flowfoot">Llamadas por tool en los últimos 30 días.</p>
+  `;
+
+  return layout("Flujo del agente", tenant, body, "flujo");
+}
+
+/**
+ * Conexiones (Fase 11.3): una sola tarjeta real (WhatsApp/Twilio) — no
+ * se construyen tarjetas para canales sin integración real detrás
+ * (Telegram, Instagram, etc. no tienen variables de entorno en el
+ * proyecto). El estado lee las mismas env vars que ya exige env.ts al
+ * arrancar; si el proceso está corriendo, ya están presentes por
+ * definición — el chequeo se deja explícito igual, para que agregar un
+ * canal con credenciales realmente opcionales en el futuro sea agregar
+ * una entrada a esta lista, no rediseñar la página.
+ */
+export async function renderConexionesPage(tenantId: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+
+  const missing = [
+    !env.twilioAccountSid && "TWILIO_ACCOUNT_SID",
+    !env.twilioAuthToken && "TWILIO_AUTH_TOKEN",
+    !env.twilioWhatsappNumber && "TWILIO_WHATSAPP_NUMBER",
+  ].filter((v): v is string => Boolean(v));
+  const conectado = missing.length === 0;
+  // env.publicWebhookUrl ya es la URL completa del webhook (así la exige
+  // twilioSignature.ts para validar la firma) — no hay que concatenarle
+  // el path de nuevo.
+  const webhookUrl = env.publicWebhookUrl;
+  const sidMasked = conectado ? `••••${env.twilioAccountSid.slice(-4)}` : "—";
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Agente</p>
+      <h1>Conexiones</h1>
+      <p>Canales conectados al agente de ${escapeHtml(brandName(tenant))}.</p>
+    </div>
+    <div class="panel connection">
+      <div class="connection__head">
+        <h2>WhatsApp · Twilio</h2>
+        <span class="connection__badge ${conectado ? "connection__badge--on" : "connection__badge--off"}">${conectado ? '<span class="pulse"></span>Conectado' : "Sin conectar"}</span>
+      </div>
+      <dl class="connection__meta">
+        <div><dt>Número del tenant</dt><dd class="mono">${escapeHtml(tenant.whatsapp_number ?? "Sin asignar")}</dd></div>
+        <div><dt>Cuenta Twilio</dt><dd class="mono">${escapeHtml(sidMasked)}</dd></div>
+      </dl>
+      <div class="connection__webhook">
+        <label for="webhook-url">URL de webhook (configúrala en la consola de Twilio)</label>
+        <div class="copyrow">
+          <code id="webhook-url" class="mono">${escapeHtml(webhookUrl)}</code>
+          <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
+        </div>
+      </div>
+      ${!conectado ? `<p class="connection__missing">Falta configurar: ${escapeHtml(missing.join(", "))}</p>` : ""}
+    </div>
+  `;
+
+  return layout("Conexiones", tenant, body, "conexiones");
 }
 
 export async function renderProductosPage(tenantId: string): Promise<string | null> {

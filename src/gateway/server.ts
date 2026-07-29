@@ -9,7 +9,9 @@ import {
 } from "../advisor/handoffView.js";
 import {
   exportLeadsCsv,
+  renderConexionesPage,
   renderConversacionesPage,
+  renderFlujoPage,
   renderLeadsPage,
   renderOverviewPage,
   renderPedidosPage,
@@ -125,6 +127,24 @@ export async function buildServer() {
   app.get("/admin/:tenantId/tickets", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const html = await renderTicketsPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/flujo", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderFlujoPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/conexiones", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderConexionesPage(tenantId);
     if (!html) {
       return reply.status(404).send();
     }

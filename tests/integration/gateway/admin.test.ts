@@ -453,4 +453,64 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(404);
     });
   });
+
+  describe("flujo", () => {
+    it("muestra el diagrama con los nodos reales del orquestador y los contadores por tool", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/flujo`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("src/orchestrator/loop.ts");
+      expect(response.body).toContain("Consultar inventario");
+      expect(response.body).toContain("Crear pedido");
+      expect(response.body).toContain("Escalar a humano");
+      // El único mensaje sembrado con tool_calls (conversacionEscalada)
+      // llamó consultar_inventario una vez — el contador debe reflejarlo,
+      // no solo listar el nombre de la tool.
+      expect(response.body).toMatch(
+        /Consultar inventario<\/span><span class="toolpill__count tabular">1<\/span>/,
+      );
+    });
+
+    it("devuelve 404 para un tenant que no existe", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/00000000-0000-0000-0000-000000000000/flujo`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+  });
+
+  describe("conexiones", () => {
+    it("muestra el estado real de la conexión de WhatsApp/Twilio y la URL de webhook", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conexiones`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("WhatsApp");
+      expect(response.body).toContain("Twilio");
+      expect(response.body).toContain("Conectado");
+      expect(response.body).toContain("/webhooks/whatsapp");
+      expect(response.body).toContain("Sin asignar");
+      // Regresión: env.publicWebhookUrl ya es la URL completa del
+      // webhook (la exige así twilioSignature.ts) — concatenarle el
+      // path de nuevo duplicaba "/webhooks/whatsapp" en el enlace a
+      // copiar.
+      expect(response.body).not.toContain("/webhooks/whatsapp/webhooks/whatsapp");
+    });
+
+    it("devuelve 404 para un tenant que no existe", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/00000000-0000-0000-0000-000000000000/conexiones`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+  });
 });
