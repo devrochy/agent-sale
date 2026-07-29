@@ -193,7 +193,6 @@ function layout(
   tenant: TenantSummary | null,
   body: string,
   active: ActiveSection = null,
-  wide = false,
 ): string {
   const heading = tenant ? `${brandName(tenant)} — ${title}` : title;
   const rail = tenant ? navRail(tenant, active) : "";
@@ -214,7 +213,7 @@ ${STYLE_BLOCK}
 <body>
   <div class="shell${tenant ? "" : " shell--bare"}">
     ${rail}
-    <main${wide ? ' class="main--wide"' : ""}>
+    <main>
       ${body}
     </main>
   </div>
@@ -289,12 +288,6 @@ body.rail-collapsed .shell { grid-template-columns: 60px 1fr; }
 .rail__resize { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
 .rail__resize:hover, .rail__resize.dragging { background: var(--chrome-soft); }
 body.rail-collapsed .rail__resize { display: none; }
-@media (max-width: 860px) {
-  .rail { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; align-items: center; overflow-x: auto; gap: 18px; }
-  .rail__groups { display: none; }
-  .rail__status { margin-left: auto; }
-  .rail__resize { display: none; }
-}
 .rail__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rail__toggle { flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-inset); color: var(--ink-muted); cursor: pointer; }
 .rail__toggle:hover { color: var(--ink); border-color: var(--border-strong); }
@@ -324,10 +317,31 @@ body.rail-collapsed .brand__role,
 body.rail-collapsed .navgroup__label { display: none; }
 body.rail-collapsed .navitem { justify-content: center; }
 body.rail-collapsed .rail__status span:not(.pulse) { display: none; }
-main { padding: 34px 40px 60px; max-width: 980px; }
-main.main--wide { max-width: 1240px; }
+/* Este override tiene que ir DESPUÉS de las reglas base de .rail__groups/
+   .rail__status de arriba: con la misma especificidad (una sola clase),
+   gana la que aparece última en la hoja de estilos — si este bloque
+   quedara antes (como pasaba originalmente), la regla base
+   ".rail__groups { display: flex }" lo pisaba silenciosamente y el menú
+   nunca se colapsaba en mobile/tablet, aunque el resto de .rail sí
+   cambiaba (flex-direction/position), dejando la lista completa de
+   secciones apilada encima del contenido. */
+@media (max-width: 860px) {
+  .rail { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; align-items: center; overflow-x: visible; gap: 18px; }
+  /* Oculto por defecto en mobile/tablet — data-rail-toggle lo abre como
+     desplegable (body.rail-mobile-open) en vez de colapsar a solo
+     iconos (eso es el comportamiento de escritorio, ver rail-collapsed):
+     sin este panel no había NINGUNA forma de llegar a Productos/Pedidos/
+     Leads/etc. desde un teléfono, solo se veía la página actual. */
+  .rail__groups { display: none; flex-basis: 100%; order: 3; padding-top: 14px; border-top: 1px dashed var(--border); }
+  body.rail-mobile-open .rail__groups { display: flex; }
+  .rail__status { margin-left: auto; }
+  .rail__resize { display: none; }
+  body.rail-mobile-open .rail__toggle svg { transform: rotate(90deg); }
+}
+main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .shell--bare main { max-width: 640px; margin: 0 auto; }
 @media (max-width: 860px) { main { padding: 24px 18px 48px; } }
+@media (max-width: 560px) { main { padding: 18px 14px 40px; } }
 .pagehead { margin-bottom: 28px; }
 .pagehead__row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600; padding: 9px 15px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); color: var(--ink); text-decoration: none; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
@@ -336,7 +350,7 @@ main.main--wide { max-width: 1240px; }
 .linklike:hover { text-decoration: underline; }
 .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--chrome); margin: 0 0 6px; }
 .pagehead h1 { font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: -0.01em; }
-.pagehead p { margin: 8px 0 0; color: var(--ink-muted); font-size: 14px; max-width: 56ch; }
+.pagehead p { margin: 8px 0 0; color: var(--ink-muted); font-size: 14px; }
 .kpirow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 34px; }
 @media (max-width: 640px) { .kpirow { grid-template-columns: 1fr; } }
 .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px 20px; box-shadow: var(--shadow); position: relative; overflow: hidden; transition: box-shadow 220ms ease, transform 220ms ease; }
@@ -606,9 +620,36 @@ const CLIENT_SCRIPT = `
     if (savedWidth) document.documentElement.style.setProperty("--rail-width", savedWidth + "px");
     if (localStorage.getItem(COLLAPSED_KEY) === "1") document.body.classList.add("rail-collapsed");
 
+    // rail-collapsed es un concepto solo de escritorio (icono-únicamente,
+    // con ancho de riel de sobra) — varias reglas CSS le dan más
+    // especificidad que el override responsive (ej. "body.rail-collapsed
+    // .shell" le gana a ".shell" dentro del @media, sin importar el
+    // orden), así que si esa clase queda puesta en mobile/tablet (por
+    // localStorage de una sesión de escritorio previa, o por redimensionar
+    // la ventana en vivo) el layout se rompe: la columna del riel se
+    // fuerza a 60px con el contenido del menú completo desbordando hacia
+    // abajo. Se quita explícito apenas el viewport entra en el breakpoint
+    // móvil, tanto al cargar como al redimensionar.
+    function clearDesktopCollapseOnMobile() {
+      if (window.matchMedia("(max-width: 860px)").matches) {
+        document.body.classList.remove("rail-collapsed");
+      }
+    }
+    clearDesktopCollapseOnMobile();
+    window.addEventListener("resize", clearDesktopCollapseOnMobile);
+
     var toggleBtn = document.querySelector("[data-rail-toggle]");
     if (toggleBtn) {
       toggleBtn.addEventListener("click", function () {
+        // En mobile/tablet el mismo botón abre/cierra el desplegable de
+        // secciones (rail-mobile-open) en vez de colapsar a solo iconos
+        // (rail-collapsed es el comportamiento de escritorio, con ancho
+        // de riel de sobra para eso) — no se persiste en localStorage,
+        // se resetea cerrado en cada carga de página.
+        if (window.matchMedia("(max-width: 860px)").matches) {
+          document.body.classList.toggle("rail-mobile-open");
+          return;
+        }
         document.body.classList.toggle("rail-collapsed");
         localStorage.setItem(COLLAPSED_KEY, document.body.classList.contains("rail-collapsed") ? "1" : "0");
       });
@@ -1127,7 +1168,7 @@ export async function renderConversacionesPage(
     </div>
   `;
 
-  return layout("Conversaciones", tenant, body, "conversaciones", true);
+  return layout("Conversaciones", tenant, body, "conversaciones");
 }
 
 type LeadEstado = "con_pedido" | "escalada" | "con_cotizacion" | "sin_actividad_comercial";
@@ -1255,7 +1296,7 @@ export async function renderLeadsPage(tenantId: string): Promise<string | null> 
     </div>
   `;
 
-  return layout(`Leads (${rows.length})`, tenant, body, "leads", true);
+  return layout(`Leads (${rows.length})`, tenant, body, "leads");
 }
 
 /** Mismo dato que renderLeadsPage, serializado a mano igual que el resto del panel arma HTML a mano (sin dependencia nueva). */
@@ -1389,7 +1430,7 @@ export async function renderTicketsPage(tenantId: string): Promise<string | null
     </div>
   `;
 
-  return layout(`Tickets (${rows.length})`, tenant, body, "tickets", true);
+  return layout(`Tickets (${rows.length})`, tenant, body, "tickets");
 }
 
 // Nombres reales de src/orchestrator/toolDefinitions.ts — no los nodos
@@ -1596,7 +1637,7 @@ export async function renderProductosPage(tenantId: string): Promise<string | nu
     </div>
   `;
 
-  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", true);
+  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos");
 }
 
 export async function renderPedidosPage(tenantId: string): Promise<string | null> {
@@ -1679,5 +1720,5 @@ export async function renderPedidosPage(tenantId: string): Promise<string | null
     </div>
   `;
 
-  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", true);
+  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos");
 }
