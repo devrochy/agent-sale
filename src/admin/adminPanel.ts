@@ -99,6 +99,9 @@ const ICON_PRODUCTOS =
 const ICON_PEDIDOS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2h8v11.5l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1V2Z"/><path d="M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>';
 
+const ICON_RESUMEN =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.3 11.5a5.7 5.7 0 1 1 11.4 0"/><path d="M8 11.5 10.4 6.8"/><circle cx="8" cy="11.5" r="0.9" fill="currentColor" stroke="none"/></svg>';
+
 const ICON_CONVERSACIONES =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.6h12v7.3H6.6L3.6 13.4v-2.5H2V3.6Z"/><path d="M5 6.6h6M5 8.6h3.5"/></svg>';
 
@@ -147,7 +150,7 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
     <div class="rail__top">
       <div class="brand">
         <span class="brand__mark">${escapeHtml(brandName(tenant).toUpperCase())}</span>
-        <span class="brand__role">Panel · Operación</span>
+        <span class="brand__role">Panel</span>
       </div>
       <button type="button" class="rail__toggle" data-rail-toggle aria-label="Contraer u expandir el menú" title="Contraer u expandir el menú">${ICON_COLLAPSE}</button>
     </div>
@@ -155,7 +158,7 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
       <div class="navgroup">
         <p class="navgroup__label">Panel</p>
         <ul class="navgroup__items">
-          ${item(`/admin/${tenant.id}`, "Resumen", "resumen")}
+          ${item(`/admin/${tenant.id}`, "Resumen", "resumen", ICON_RESUMEN)}
           ${item(`/admin/${tenant.id}/conversaciones`, "Conversaciones", "conversaciones", ICON_CONVERSACIONES)}
           ${item(`/admin/${tenant.id}/leads`, "Leads", "leads", ICON_LEADS)}
           ${item(`/admin/${tenant.id}/tickets`, "Tickets", "tickets", ICON_TICKETS)}
