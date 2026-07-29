@@ -23,4 +23,4 @@ Documentación de diseño, mismo criterio que las fases anteriores. Esta fase in
 - [x] Alertas de costo por tenant diseñadas, con canal de notificación reutilizado (no una herramienta nueva).
 - [x] Checklist de revisión de seguridad consolidado, para ejecutar antes del piloto (Fase 9).
 
-**Fase 8 completada, sin pendientes que bloqueen avanzar.** Siguiente paso: Fase 9 — Piloto Controlado (Beta con ForMotos).
+**Fase 8 completada, sin pendientes que bloqueen avanzar.** Siguiente paso: [Fase 9 — Piloto Controlado (Beta con ForMotos)](../fase-9-piloto-controlado/README.md).
