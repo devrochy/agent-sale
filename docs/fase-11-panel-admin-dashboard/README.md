@@ -1,6 +1,6 @@
 # Fase 11 — Panel de Administración y Analítica
 
-Estado: **en diseño**
+Estado: **11.1, 11.2 y 11.3 implementadas y mergeadas a `develop`** (Resumen/KPIs, Conversaciones/Leads/Tickets, Flujo/Conexiones) — 11.4 y 11.5 en diseño, pendientes de implementación.
 
 Referencia: [MASTER_PLAN.md](../../MASTER_PLAN.md#fase-11--panel-de-administración-y-analítica) · [Fase 9 — Piloto Controlado](../fase-9-piloto-controlado/README.md) · [Fase 8 — Observabilidad, Seguridad y Guardrails](../fase-8-observabilidad-seguridad/README.md)
 
@@ -34,6 +34,12 @@ Ver el detalle y la razón de cada uno en [mapeo-funcionalidades.md](./mapeo-fun
 - **Costo recurrente de escritura por llamada al LLM** (`llm_usage`, Fase 11.5) — bajo volumen en el piloto actual, pero debe revisarse si el volumen de conversaciones crece antes de la Fase 10.
 - **Divergencia entre `llm_usage` (Postgres) y los logs de Loki** si el insert best-effort falla silenciosamente — se documenta como comportamiento esperado (Loki sigue siendo la fuente de verdad operacional), no como bug, pero debe quedar claro en la implementación para no generar confusión al comparar ambas fuentes.
 - **Expectativa del usuario vs. alcance real**: el panel de referencia sugiere mucho más de lo que esta fase entrega (Conocimiento, tono editable, Insights) — este README y `mapeo-funcionalidades.md` existen precisamente para dejar esa brecha explícita desde el diseño, no descubrirla a mitad de implementación.
+
+## Pendiente: rediseño responsive del contenido
+
+El layout estructural (riel de navegación, ancho completo del área principal) ya es responsive — corregido y validado en móvil/tablet tras 11.3 (colapso del menú a barra compacta con desplegable, sin overlap, sin desbordes). Lo que queda pendiente es que el **contenido de cada sección** (tablas de Productos/Pedidos/Leads/Tickets, tarjetas KPI, el inbox de dos paneles de Conversaciones) se rediseñe para pantallas angostas — hoy las tablas anchas caen a scroll horizontal contenido (`.tablewrap`), funcional pero no ideal.
+
+Se deja explícitamente para el cierre de la Fase 11 (después de 11.4/11.5), no para cada sub-fase por separado: todas las páginas ya comparten los mismos componentes (`.tablewrap`/`data-table`, `.kpirow`, `.panel`) definidos una sola vez en `STYLE_BLOCK`/`CLIENT_SCRIPT` (`src/admin/adminPanel.ts`) — el patrón de "tabla que se convierte en cards en mobile" se diseña una vez, sobre el inventario completo de tipos de contenido, y aplica automáticamente a todo lo ya construido. Revisar antes de la Fase 9 (Piloto Controlado) si algún operador va a usar el panel desde el celular durante el piloto — si es así, esto debe subir de prioridad.
 
 ## Definición de terminado
 
