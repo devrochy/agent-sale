@@ -193,7 +193,6 @@ function layout(
   tenant: TenantSummary | null,
   body: string,
   active: ActiveSection = null,
-  wide = false,
 ): string {
   const heading = tenant ? `${brandName(tenant)} — ${title}` : title;
   const rail = tenant ? navRail(tenant, active) : "";
@@ -214,7 +213,7 @@ ${STYLE_BLOCK}
 <body>
   <div class="shell${tenant ? "" : " shell--bare"}">
     ${rail}
-    <main${wide ? ' class="main--wide"' : ""}>
+    <main>
       ${body}
     </main>
   </div>
@@ -324,10 +323,10 @@ body.rail-collapsed .brand__role,
 body.rail-collapsed .navgroup__label { display: none; }
 body.rail-collapsed .navitem { justify-content: center; }
 body.rail-collapsed .rail__status span:not(.pulse) { display: none; }
-main { padding: 34px 40px 60px; max-width: 980px; }
-main.main--wide { max-width: 1240px; }
+main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .shell--bare main { max-width: 640px; margin: 0 auto; }
 @media (max-width: 860px) { main { padding: 24px 18px 48px; } }
+@media (max-width: 560px) { main { padding: 18px 14px 40px; } }
 .pagehead { margin-bottom: 28px; }
 .pagehead__row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600; padding: 9px 15px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); color: var(--ink); text-decoration: none; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
@@ -1127,7 +1126,7 @@ export async function renderConversacionesPage(
     </div>
   `;
 
-  return layout("Conversaciones", tenant, body, "conversaciones", true);
+  return layout("Conversaciones", tenant, body, "conversaciones");
 }
 
 type LeadEstado = "con_pedido" | "escalada" | "con_cotizacion" | "sin_actividad_comercial";
@@ -1255,7 +1254,7 @@ export async function renderLeadsPage(tenantId: string): Promise<string | null> 
     </div>
   `;
 
-  return layout(`Leads (${rows.length})`, tenant, body, "leads", true);
+  return layout(`Leads (${rows.length})`, tenant, body, "leads");
 }
 
 /** Mismo dato que renderLeadsPage, serializado a mano igual que el resto del panel arma HTML a mano (sin dependencia nueva). */
@@ -1389,7 +1388,7 @@ export async function renderTicketsPage(tenantId: string): Promise<string | null
     </div>
   `;
 
-  return layout(`Tickets (${rows.length})`, tenant, body, "tickets", true);
+  return layout(`Tickets (${rows.length})`, tenant, body, "tickets");
 }
 
 // Nombres reales de src/orchestrator/toolDefinitions.ts — no los nodos
@@ -1596,7 +1595,7 @@ export async function renderProductosPage(tenantId: string): Promise<string | nu
     </div>
   `;
 
-  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", true);
+  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos");
 }
 
 export async function renderPedidosPage(tenantId: string): Promise<string | null> {
@@ -1679,5 +1678,5 @@ export async function renderPedidosPage(tenantId: string): Promise<string | null
     </div>
   `;
 
-  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", true);
+  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos");
 }
