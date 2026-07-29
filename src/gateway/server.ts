@@ -7,7 +7,12 @@ import {
   resolverConversacion,
   tomarConversacion,
 } from "../advisor/handoffView.js";
-import { renderPedidosPage, renderProductosPage, renderTenantsPage } from "../admin/adminPanel.js";
+import {
+  renderOverviewPage,
+  renderPedidosPage,
+  renderProductosPage,
+  renderTenantsPage,
+} from "../admin/adminPanel.js";
 import { env } from "../config/env.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
@@ -73,15 +78,30 @@ export async function buildServer() {
     return reply.type("text/html").send(html);
   });
 
+  app.get("/admin/:tenantId", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderOverviewPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
   app.get("/admin/:tenantId/productos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const html = await renderProductosPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
     return reply.type("text/html").send(html);
   });
 
   app.get("/admin/:tenantId/pedidos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const html = await renderPedidosPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
     return reply.type("text/html").send(html);
   });
 
