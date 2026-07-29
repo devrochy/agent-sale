@@ -63,10 +63,15 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   );
 
   try {
-    const { responseText } = await runTurn(tenantId, customerPhone, message.body ?? "", messageSid);
+    const { responseText, mediaUrl } = await runTurn(
+      tenantId,
+      customerPhone,
+      message.body ?? "",
+      messageSid,
+    );
     if (responseText !== null) {
       entryLogger.info({ event: "orchestrator.respuesta_lista" }, "Respuesta lista, enviando por Twilio");
-      await sendWhatsAppMessage(customerPhone, responseText);
+      await sendWhatsAppMessage(customerPhone, responseText, mediaUrl ?? undefined);
       const totalLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
       entryLogger.info(
         { event: "gateway.confirmacion_envio", total_latency_ms: totalLatencyMs },

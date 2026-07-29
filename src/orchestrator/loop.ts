@@ -15,9 +15,17 @@ import { executeTool } from "./toolExecutor.js";
 // evita que un error de razonamiento deje al agente llamando tools indefinidamente.
 const MAX_ITERATIONS = 6;
 
-// Tools comerciales cuyo monto se compara contra el umbral de "monto alto"
-// (ver docs/fase-7-escalamiento-humano/reglas-escalamiento.md).
-const QUOTE_AMOUNT_TOOLS = new Set(["generar_cotizacion", "aplicar_promocion", "crear_pedido"]);
+// Solo "crear_pedido" (no "generar_cotizacion" ni "aplicar_promocion")
+// dispara la regla de "monto alto" (ver
+// docs/fase-7-escalamiento-humano/reglas-escalamiento.md: "el total de la
+// cotización **o pedido activo**" — la cifra real que pagaría el cliente).
+// generar_cotizacion devuelve el subtotal sin descuento todavía — evaluar
+// monto alto ahí escalaba cotizaciones que, con una promoción real
+// aplicada (aplicar_promocion sí actualiza quotes.total), habrían quedado
+// bajo el umbral. crear_pedido siempre lee quotes.total ya actualizado
+// por cualquier promoción aplicada, así que es el único punto donde el
+// monto es realmente definitivo.
+const QUOTE_AMOUNT_TOOLS = new Set(["crear_pedido"]);
 
 const FALLBACK_ESCALATION_MESSAGE =
   "En este momento no puedo continuar por acá — ya avisé a un asesor de ForMotos para que te contacte en breve.";
@@ -27,13 +35,17 @@ const FALLBACK_ESCALATION_MESSAGE =
 // seguridad — nunca se envía al cliente un monto que no se pudo verificar.
 const MAX_GUARDRAIL_RETRIES = 1;
 const GUARDRAIL_RETRY_INSTRUCTION =
-  "Tu respuesta anterior incluye un monto en pesos que no coincide con ningún resultado real de las tools que usaste en este turno. Genera una respuesta nueva usando únicamente los montos que sí devolvieron esas tools.";
+  "Tu respuesta anterior incluye un monto en pesos que no coincide con ningún resultado real de las tools llamadas en esta conversación. Genera una respuesta nueva usando únicamente montos que sí devolvió alguna tool.";
 
 export interface TurnResult {
   // `null` cuando la conversación ya está escalada: el mensaje se guarda
   // para el asesor, pero no se reprocesa con el LLM ni se responde
   // automáticamente (ver reglas-escalamiento.md, "qué pasa después de escalar").
   responseText: string | null;
+  // Imagen a adjuntar al mensaje de salida (ver systemPrompt.ts): regla
+  // explícita, no a criterio del LLM — se llena solo cuando
+  // "consultar_inventario" devolvió exactamente un match con image_url.
+  mediaUrl: string | null;
 }
 
 function extractText(content: ContentBlock[]): string {
@@ -64,6 +76,29 @@ function extractQuoteAmount(toolName: string, toolResult: ContentBlock): number 
   }
 }
 
+/**
+ * Imagen a adjuntar al mensaje (ver TurnResult.mediaUrl): solo cuando
+ * "consultar_inventario" devolvió exactamente un match con image_url —
+ * con varios matches no hay forma de saber a cuál se refiere el cliente,
+ * así que no se adjunta nada.
+ */
+function extractSingleMatchImageUrl(toolName: string, toolResult: ContentBlock): string | null {
+  if (toolName !== "consultar_inventario" || toolResult.type !== "tool_result" || toolResult.is_error) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(toolResult.content) as {
+      matches?: Array<{ image_url?: string | null }>;
+    };
+    if (parsed.matches?.length === 1 && parsed.matches[0]!.image_url) {
+      return parsed.matches[0]!.image_url;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function escalateAndReply(
   tenantId: string,
   conversationId: string,
@@ -84,7 +119,7 @@ async function escalateAndReply(
     .info({ event: "orchestrator.escalado", reason }, "Conversación escalada a un asesor humano");
   await appendMessage(tenantId, conversationId, "outbound", "agent", FALLBACK_ESCALATION_MESSAGE);
   await updateState(tenantId, conversationId, { step: "escalado" });
-  return { responseText: FALLBACK_ESCALATION_MESSAGE };
+  return { responseText: FALLBACK_ESCALATION_MESSAGE, mediaUrl: null };
 }
 
 /**
@@ -112,7 +147,7 @@ export async function runTurn(
     // El mensaje ya quedó guardado para que el asesor lo vea (vista del
     // asesor, incremento separado) — el agente no responde automáticamente
     // hasta que un humano cierre el caso.
-    return { responseText: null };
+    return { responseText: null, mediaUrl: null };
   }
 
   const escalationConfig = resolveEscalationConfig(await getEscalationConfig(tenantId));
@@ -129,10 +164,36 @@ export async function runTurn(
 
   const messages = await loadHistory(tenantId, conversationId);
   let hadAnyToolCall = false;
-  // Montos reales devueltos por las tools ejecutadas durante este runTurn
-  // (no solo la iteración actual) — usados por el guardrail de precios.
-  const toolAmountsThisTurn: number[] = [];
+  // Montos reales devueltos por tools — de toda la conversación, no solo
+  // de este runTurn. Antes solo se sembraba con las tools llamadas en el
+  // turno actual, así que el guardrail escalaba conversaciones válidas
+  // cada vez que el agente repetía un precio/subtotal ya confirmado por
+  // una tool en un turno anterior (ej. "contame más de X" sobre un
+  // producto ya consultado, o mostrar de nuevo el subtotal al aplicar una
+  // promoción) — no era una alucinación, solo no era de *este* turno.
+  // Sembrar con el historial completo mantiene la garantía real del
+  // guardrail (el LLM nunca inventa un monto que ninguna tool devolvió en
+  // la conversación) sin escalar por repetir algo ya verificado.
+  const knownToolAmounts: number[] = [];
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+    for (const block of message.content) {
+      if (block.type === "tool_result" && !block.is_error) {
+        try {
+          knownToolAmounts.push(...extractMonetaryValues(JSON.parse(block.content)));
+        } catch {
+          // Contenido no-JSON de una tool: nada que extraer, se ignora.
+        }
+      }
+    }
+  }
   let guardrailRetries = 0;
+  // Última imagen de un match único de consultar_inventario en este
+  // runTurn (ver extractSingleMatchImageUrl) — gana la última llamada,
+  // igual que montoAltoAmount.
+  let mediaUrl: string | null = null;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     turnLogger.info({ event: "orchestrator.llm_iniciado", iteration }, "Llamada al LLM iniciada");
@@ -197,11 +258,15 @@ export async function runTurn(
         );
         toolResults.push(toolResult);
         if (!toolResult.is_error) {
-          toolAmountsThisTurn.push(...extractMonetaryValues(JSON.parse(toolResult.content)));
+          knownToolAmounts.push(...extractMonetaryValues(JSON.parse(toolResult.content)));
         }
         const amount = extractQuoteAmount(toolUse.name, toolResult);
         if (amount !== null && isMontoAlto(amount, escalationConfig)) {
           montoAltoAmount = amount;
+        }
+        const singleMatchImageUrl = extractSingleMatchImageUrl(toolUse.name, toolResult);
+        if (singleMatchImageUrl !== null) {
+          mediaUrl = singleMatchImageUrl;
         }
       }
       messages.push({ role: "user", content: toolResults });
@@ -224,7 +289,7 @@ export async function runTurn(
     }
 
     const responseText = extractText(response.content);
-    const guardrailResult = verifyPriceGuardrail(responseText, toolAmountsThisTurn);
+    const guardrailResult = verifyPriceGuardrail(responseText, knownToolAmounts);
     if (!guardrailResult.ok) {
       await recordAudit(
         tenantId,
@@ -232,7 +297,7 @@ export async function runTurn(
         "orchestrator",
         "guardrail_precio_incidente",
         { responseText, mismatched: guardrailResult.mismatched },
-        { toolAmountsThisTurn },
+        { knownToolAmounts },
       );
       turnLogger.warn(
         { event: "orchestrator.guardrail_precio_incidente", mismatched: guardrailResult.mismatched },
@@ -251,7 +316,7 @@ export async function runTurn(
         tenantId,
         conversationId,
         "guardrail_precio",
-        "El guardrail de verificación de precios detectó un monto en la respuesta que no coincide con ningún resultado real de las tools de este turno.",
+        "El guardrail de verificación de precios detectó un monto en la respuesta que no coincide con ningún resultado real de las tools llamadas en esta conversación.",
       );
     }
 
@@ -276,7 +341,7 @@ export async function runTurn(
       step: "resuelto",
       turnos_sin_resolver: turnosSinResolver,
     });
-    return { responseText };
+    return { responseText, mediaUrl };
   }
 
   return escalateAndReply(

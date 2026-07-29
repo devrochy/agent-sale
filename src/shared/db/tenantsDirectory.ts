@@ -16,6 +16,21 @@ export async function findTenantIdByWhatsappNumber(whatsappNumber: string): Prom
 }
 
 /**
+ * Listado de tenants para el panel admin (ver src/admin/adminPanel.ts) —
+ * es una página interna, no una tool ni un dominio con RLS, así que lee
+ * `tenants` directo igual que el resto de este módulo.
+ */
+export interface TenantSummary {
+  id: string;
+  name: string;
+}
+
+export async function listTenants(): Promise<TenantSummary[]> {
+  const result = await pool.query<TenantSummary>("SELECT id, name FROM tenants ORDER BY name");
+  return result.rows;
+}
+
+/**
  * Overrides de escalamiento del tenant (ver
  * migrations/0014_tenants_escalation_config.cjs) — `null` si el tenant no
  * configuró nada, en cuyo caso src/orchestrator/escalationRules.ts aplica

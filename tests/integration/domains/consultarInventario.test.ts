@@ -20,7 +20,9 @@ beforeAll(async () => {
   tenantB = b.rows[0]!.id;
 
   const productA = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (tenant_id, sku, name, price) VALUES ($1, 'CASCO-A', 'Casco integral A', 300000) RETURNING id`,
+    `INSERT INTO products (tenant_id, sku, name, price, description, image_url)
+     VALUES ($1, 'CASCO-A', 'Casco integral A', 300000, 'Casco integral con visor antirayas', 'https://picsum.photos/seed/CASCO-A/600/400')
+     RETURNING id`,
     [tenantA],
   );
   await adminPool.query(
@@ -52,6 +54,14 @@ describe("consultarInventario", () => {
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0]).toMatchObject({ sku: "CASCO-A", name: "Casco integral A", stock: 7 });
     expect(result.matches[0]!.price).toBe(300000);
+  });
+
+  it("incluye description e image_url del producto", async () => {
+    const result = await consultarInventario(tenantA, { sku: "CASCO-A" });
+    expect(result.matches[0]).toMatchObject({
+      description: "Casco integral con visor antirayas",
+      image_url: "https://picsum.photos/seed/CASCO-A/600/400",
+    });
   });
 
   it("encuentra un producto por SKU exacto", async () => {

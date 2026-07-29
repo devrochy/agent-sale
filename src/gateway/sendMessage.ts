@@ -20,10 +20,15 @@ function getClient(): twilio.Twilio {
  * salientes") — es una llamada síncrona simple a la API de Twilio,
  * disparada por el orchestrator tras terminar un turno.
  */
-export async function sendWhatsAppMessage(to: string, body: string): Promise<void> {
+export async function sendWhatsAppMessage(
+  to: string,
+  body: string,
+  mediaUrl?: string,
+): Promise<void> {
   await getClient().messages.create({
     from: env.twilioWhatsappNumber,
     to,
     body,
+    ...(mediaUrl ? { mediaUrl: [mediaUrl] } : {}),
   });
 }

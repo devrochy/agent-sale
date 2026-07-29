@@ -12,6 +12,7 @@ export interface AplicarPromocionInput {
 export interface AplicarPromocionOutput {
   quote_id: string;
   promotion_applied: { id: string; kind: "temporada" | "volumen"; description: string } | null;
+  subtotal: number;
   discount: number;
   total: number;
 }
@@ -55,6 +56,14 @@ function round2(value: number): number {
  * La tool evalúa, nunca el LLM: recorre promotions.rules, calcula el
  * beneficio real de cada promoción activa y aplica la de mayor beneficio
  * para el cliente — nunca se combinan/apilan promociones.
+ *
+ * Devuelve `subtotal` explícitamente (no solo `discount`/`total`) para que
+ * el guardrail de precios (priceGuardrail.ts, que solo verifica montos
+ * contra las tools llamadas en el turno actual) no marque como
+ * "no verificable" un subtotal real que el LLM repite al mostrar el
+ * desglose subtotal → descuento → total — antes escalaba una conversación
+ * válida por esto (guardrail_precio) cada vez que el cliente pedía una
+ * promoción sobre una cotización ya generada.
  */
 export async function aplicarPromocion(
   tenantId: string,
@@ -150,7 +159,13 @@ export async function aplicarPromocion(
     }
 
     if (!best) {
-      return { quote_id: input.quote_id, promotion_applied: null, discount: 0, total: subtotal };
+      return {
+        quote_id: input.quote_id,
+        promotion_applied: null,
+        subtotal,
+        discount: 0,
+        total: subtotal,
+      };
     }
 
     const total = round2(subtotal - best.monetaryDiscount);
@@ -176,6 +191,7 @@ export async function aplicarPromocion(
     return {
       quote_id: input.quote_id,
       promotion_applied: { id: best.id, kind: best.kind, description: best.description },
+      subtotal,
       discount: best.monetaryDiscount,
       total,
     };

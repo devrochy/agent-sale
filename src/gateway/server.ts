@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
@@ -6,8 +7,22 @@ import {
   resolverConversacion,
   tomarConversacion,
 } from "../advisor/handoffView.js";
+import { renderPedidosPage, renderProductosPage, renderTenantsPage } from "../admin/adminPanel.js";
+import { env } from "../config/env.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
+
+/**
+ * Compara dos strings con largo variable en tiempo constante cuando
+ * coinciden en longitud (timingSafeEqual lanza si no coinciden, y un
+ * largo distinto ya es suficiente para saber que no son iguales — no
+ * hace falta timing-safe para esa rama).
+ */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
 
 /**
  * Fastify se expone vía buildServer() (en vez de arrancar directamente)
@@ -37,6 +52,38 @@ export async function buildServer() {
   await app.register(rateLimit, { max: 200, timeWindow: "1 minute" });
 
   app.get("/healthz", async () => ({ status: "ok" }));
+
+  // Panel admin de solo lectura (catálogo/pedidos, ver src/admin/adminPanel.ts):
+  // no hay sistema de login en el proyecto, Basic Auth con ADMIN_USER/ADMIN_PASSWORD
+  // es la única protección de este prefijo.
+  app.addHook("onRequest", async (request, reply) => {
+    if (!request.url.startsWith("/admin")) {
+      return;
+    }
+    const expected = `Basic ${Buffer.from(`${env.adminUser}:${env.adminPassword}`).toString("base64")}`;
+    const header = request.headers.authorization;
+    if (!header || !safeEqual(header, expected)) {
+      reply.header("WWW-Authenticate", 'Basic realm="admin"');
+      return reply.status(401).send();
+    }
+  });
+
+  app.get("/admin", async (_request, reply) => {
+    const html = await renderTenantsPage();
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/productos", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderProductosPage(tenantId);
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/pedidos", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderPedidosPage(tenantId);
+    return reply.type("text/html").send(html);
+  });
 
   app.post(
     "/webhooks/whatsapp",

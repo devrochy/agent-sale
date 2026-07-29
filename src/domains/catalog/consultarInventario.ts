@@ -12,6 +12,8 @@ export interface ProductMatch {
   price: number;
   stock: number;
   variants: string[];
+  description: string | null;
+  image_url: string | null;
 }
 
 interface ProductRow {
@@ -20,6 +22,8 @@ interface ProductRow {
   name: string;
   price: string;
   stock: string;
+  description: string | null;
+  image_url: string | null;
 }
 
 /**
@@ -34,7 +38,8 @@ export async function consultarInventario(
   const rows = await withTenant(tenantId, async (client) => {
     if (input.sku) {
       const result = await client.query<ProductRow>(
-        `SELECT p.id, p.sku, p.name, p.price, COALESCE(i.stock_quantity, 0) AS stock
+        `SELECT p.id, p.sku, p.name, p.price, p.description, p.image_url,
+                COALESCE(i.stock_quantity, 0) AS stock
          FROM products p
          LEFT JOIN inventory i ON i.product_id = p.id
          WHERE p.sku = $1`,
@@ -45,7 +50,8 @@ export async function consultarInventario(
 
     const term = `%${input.query ?? ""}%`;
     const result = await client.query<ProductRow>(
-      `SELECT p.id, p.sku, p.name, p.price, COALESCE(i.stock_quantity, 0) AS stock
+      `SELECT p.id, p.sku, p.name, p.price, p.description, p.image_url,
+              COALESCE(i.stock_quantity, 0) AS stock
        FROM products p
        LEFT JOIN inventory i ON i.product_id = p.id
        WHERE p.name ILIKE $1 OR p.sku ILIKE $1
@@ -63,6 +69,8 @@ export async function consultarInventario(
       price: Number(row.price),
       stock: Number(row.stock),
       variants: [],
+      description: row.description,
+      image_url: row.image_url,
     })),
   };
 }

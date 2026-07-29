@@ -81,6 +81,7 @@ describe("executeTool", () => {
     vi.mocked(aplicarPromocion).mockResolvedValue({
       quote_id: "q1",
       promotion_applied: null,
+      subtotal: 100,
       discount: 0,
       total: 100,
     });
