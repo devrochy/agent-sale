@@ -9,7 +9,11 @@ import {
 } from "../advisor/handoffView.js";
 import {
   exportLeadsCsv,
+  guardarModeloIa,
+  pausarBot,
+  reactivarBot,
   renderConexionesPage,
+  renderConfiguracionPage,
   renderConversacionesPage,
   renderFlujoPage,
   renderLeadsPage,
@@ -149,6 +153,46 @@ export async function buildServer() {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/configuracion", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderConfiguracionPage(tenantId, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/:tenantId/configuracion/pausar", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    await pausarBot(tenantId);
+    return reply.status(303).redirect(`/admin/${tenantId}/configuracion`);
+  });
+
+  app.post("/admin/:tenantId/configuracion/reactivar", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    await reactivarBot(tenantId);
+    return reply.status(303).redirect(`/admin/${tenantId}/configuracion`);
+  });
+
+  app.post("/admin/:tenantId/configuracion/modelo-ia", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { provider, model, apiKey } = request.body as {
+      provider?: string;
+      model?: string;
+      apiKey?: string;
+    };
+    const result = await guardarModeloIa(tenantId, {
+      provider: provider ?? "",
+      model: model ?? "",
+      apiKey: apiKey ?? "",
+    });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/configuracion?guardado=1`
+      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
   });
 
   app.get("/admin/:tenantId/productos", async (request, reply) => {

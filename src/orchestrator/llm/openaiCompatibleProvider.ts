@@ -94,14 +94,27 @@ interface ChatCompletionResponse {
   usage: { prompt_tokens: number; completion_tokens: number };
 }
 
+export interface OpenAICompatibleProviderConfig {
+  /** Sin valor, usa env.llmBaseUrl. Con valor, el baseUrl del catálogo (DeepSeek/OpenAI/Grok, Fase 11.4) o uno custom. */
+  baseUrl?: string;
+  /** Sin valor, usa env.llmApiKey. Con valor, la key BYOK del tenant. */
+  apiKey?: string;
+  /** Sin valor, usa env.llmModel. */
+  model?: string;
+}
+
 /**
  * Proveedor alternativo para cualquier API compatible con el formato de
  * chat completions de OpenAI (DeepSeek, Groq, el propio OpenAI, etc.) —
- * ver ADR-010. Pensado para pruebas reales de bajo costo cuando el
- * proveedor principal (Claude, ver ADR-008) no esté disponible; no
- * reemplaza esa decisión de producción.
+ * ver ADR-010. Pensado originalmente para pruebas reales de bajo costo
+ * cuando el proveedor principal (Claude, ver ADR-008) no estuviera
+ * disponible; desde la Fase 11.4 también es la implementación real detrás
+ * de DeepSeek/ChatGPT/Grok en el catálogo configurable por tenant (ver
+ * catalog.ts) — los tres hablan este mismo formato, solo cambia baseUrl.
  */
 export class OpenAICompatibleProvider implements LLMProvider {
+  constructor(private readonly config: OpenAICompatibleProviderConfig = {}) {}
+
   async converse({
     systemPrompt,
     tools,
@@ -111,29 +124,31 @@ export class OpenAICompatibleProvider implements LLMProvider {
     tools: ToolDefinition[];
     messages: LLMMessage[];
   }): Promise<TurnResponse> {
-    const response = await fetch(`${env.llmBaseUrl}/chat/completions`, {
+    const baseUrl = this.config.baseUrl ?? env.llmBaseUrl;
+    const apiKey = this.config.apiKey ?? env.llmApiKey;
+    const model = this.config.model ?? env.llmModel;
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${env.llmApiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: env.llmModel,
+        model,
         messages: toOpenAIMessages(systemPrompt, messages),
         tools: toOpenAITools(tools),
       }),
     });
 
     if (!response.ok) {
-      throw new Error(
-        `Error del proveedor LLM (${env.llmBaseUrl}): ${response.status} ${await response.text()}`,
-      );
+      throw new Error(`Error del proveedor LLM (${baseUrl}): ${response.status} ${await response.text()}`);
     }
 
     const body = (await response.json()) as ChatCompletionResponse;
     const choice = body.choices[0];
     if (!choice) {
-      throw new Error(`Respuesta del proveedor LLM (${env.llmBaseUrl}) sin choices`);
+      throw new Error(`Respuesta del proveedor LLM (${baseUrl}) sin choices`);
     }
 
     const content: ContentBlock[] = [];

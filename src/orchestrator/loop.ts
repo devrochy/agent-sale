@@ -10,7 +10,7 @@ import {
   verifyStockGuardrail,
 } from "../shared/observability/priceGuardrail.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
-import { llmProvider, type ContentBlock } from "./llm/index.js";
+import { resolveLlmProviderForTenant, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
@@ -151,6 +151,11 @@ export async function runTurn(
   }
 
   const escalationConfig = resolveEscalationConfig(await getEscalationConfig(tenantId));
+  // Se resuelve una sola vez por turno (Fase 11.4, ver ADR-020) — un turno
+  // puede llamar al LLM varias veces (tool calling), todas usan el mismo
+  // proveedor/modelo, nunca se re-resuelve a mitad de turno. `model`/
+  // `providerKey` quedan disponibles para el insert de llm_usage (Fase 11.5).
+  const { provider: llmProvider } = await resolveLlmProviderForTenant(tenantId);
 
   const keywordMatch = matchKeywordEscalation(incomingBody, escalationConfig);
   if (keywordMatch) {
