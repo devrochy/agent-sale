@@ -147,6 +147,7 @@ describe("aplicarPromocion", () => {
     const result = await aplicarPromocion(tenantA, { quote_id: quote.quote_id });
 
     expect(result.promotion_applied).toMatchObject({ kind: "temporada" });
+    expect(result.subtotal).toBe(1500000);
     expect(result.discount).toBe(225000); // 15% de 1.500.000
     expect(result.total).toBe(1275000);
   });
@@ -183,6 +184,7 @@ describe("aplicarPromocion", () => {
     const result = await aplicarPromocion(tenantB, { quote_id: quote.quote_id });
 
     expect(result.promotion_applied).toBeNull();
+    expect(result.subtotal).toBe(quote.subtotal);
     expect(result.discount).toBe(0);
     expect(result.total).toBe(quote.subtotal);
   });
