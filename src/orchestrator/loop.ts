@@ -3,7 +3,12 @@ import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
 import { getEscalationConfig } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
-import { extractMonetaryValues, verifyPriceGuardrail } from "../shared/observability/priceGuardrail.js";
+import {
+  extractMonetaryValues,
+  extractStockValues,
+  verifyPriceGuardrail,
+  verifyStockGuardrail,
+} from "../shared/observability/priceGuardrail.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import { llmProvider, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
@@ -22,8 +27,13 @@ const FALLBACK_ESCALATION_MESSAGE =
 // "Guardrail 1"): un solo reintento de generación antes de escalar por
 // seguridad — nunca se envía al cliente un monto que no se pudo verificar.
 const MAX_GUARDRAIL_RETRIES = 1;
-const GUARDRAIL_RETRY_INSTRUCTION =
+const GUARDRAIL_RETRY_INSTRUCTION_PRECIO =
   "Tu respuesta anterior incluye un monto en pesos que no coincide con ningún resultado real de las tools llamadas en esta conversación. Genera una respuesta nueva usando únicamente montos que sí devolvió alguna tool.";
+// Extensión de "Guardrail 1" a disponibilidad (Fase 12.1, ver
+// analisis-superpoderes.md, superpoder #1) — misma técnica y mismo
+// presupuesto de reintento que el guardrail de precios.
+const GUARDRAIL_RETRY_INSTRUCTION_STOCK =
+  'Tu respuesta anterior incluye una cantidad de stock ("Quedan N") que no coincide con ningún resultado real de consultar_inventario en esta conversación. Genera una respuesta nueva usando únicamente la cantidad de stock que sí devolvió la tool.';
 
 export interface TurnResult {
   // `null` cuando la conversación ya está escalada: el mensaje se guarda
@@ -165,6 +175,10 @@ export async function runTurn(
   // guardrail (el LLM nunca inventa un monto que ninguna tool devolvió en
   // la conversación) sin escalar por repetir algo ya verificado.
   const knownToolAmounts: number[] = [];
+  // Mismo criterio que knownToolAmounts, para el guardrail de stock
+  // (ver priceGuardrail.ts, verifyStockGuardrail): cantidades reales de
+  // "stock" devueltas por consultar_inventario en toda la conversación.
+  const knownStockAmounts: number[] = [];
   for (const message of messages) {
     if (!Array.isArray(message.content)) {
       continue;
@@ -172,7 +186,9 @@ export async function runTurn(
     for (const block of message.content) {
       if (block.type === "tool_result" && !block.is_error) {
         try {
-          knownToolAmounts.push(...extractMonetaryValues(JSON.parse(block.content)));
+          const parsed = JSON.parse(block.content);
+          knownToolAmounts.push(...extractMonetaryValues(parsed));
+          knownStockAmounts.push(...extractStockValues(parsed));
         } catch {
           // Contenido no-JSON de una tool: nada que extraer, se ignora.
         }
@@ -249,7 +265,9 @@ export async function runTurn(
         );
         toolResults.push(toolResult);
         if (!toolResult.is_error) {
-          knownToolAmounts.push(...extractMonetaryValues(JSON.parse(toolResult.content)));
+          const parsedResult = JSON.parse(toolResult.content);
+          knownToolAmounts.push(...extractMonetaryValues(parsedResult));
+          knownStockAmounts.push(...extractStockValues(parsedResult));
         }
         const amount = isPedidoRechazadoPorMontoAlto(toolUse.name, toolResult);
         if (amount !== null) {
@@ -280,24 +298,44 @@ export async function runTurn(
     }
 
     const responseText = extractText(response.content);
-    const guardrailResult = verifyPriceGuardrail(responseText, knownToolAmounts);
-    if (!guardrailResult.ok) {
+    const priceGuardrailResult = verifyPriceGuardrail(responseText, knownToolAmounts);
+    // Extensión de "Guardrail 1" a disponibilidad (Fase 12.1) — mismo
+    // presupuesto de reintento que precio; si ambos fallan a la vez se
+    // prioriza reportar/escalar precio (mayor riesgo de negocio, ver
+    // guardrails.md), el stock inventado quedaría cubierto por el mismo
+    // reintento igual.
+    const stockGuardrailResult = priceGuardrailResult.ok
+      ? verifyStockGuardrail(responseText, knownStockAmounts)
+      : { ok: true, mismatched: [] as number[] };
+    if (!priceGuardrailResult.ok || !stockGuardrailResult.ok) {
+      const failedGuardrail: "precio" | "stock" = !priceGuardrailResult.ok ? "precio" : "stock";
       await recordAudit(
         tenantId,
         conversationId,
         "orchestrator",
-        "guardrail_precio_incidente",
-        { responseText, mismatched: guardrailResult.mismatched },
-        { knownToolAmounts },
+        failedGuardrail === "precio" ? "guardrail_precio_incidente" : "guardrail_stock_incidente",
+        {
+          responseText,
+          mismatched: failedGuardrail === "precio" ? priceGuardrailResult.mismatched : stockGuardrailResult.mismatched,
+        },
+        { knownToolAmounts, knownStockAmounts },
       );
       turnLogger.warn(
-        { event: "orchestrator.guardrail_precio_incidente", mismatched: guardrailResult.mismatched },
-        "Guardrail de precios detectó un monto no verificable en la respuesta",
+        {
+          event:
+            failedGuardrail === "precio"
+              ? "orchestrator.guardrail_precio_incidente"
+              : "orchestrator.guardrail_stock_incidente",
+          mismatched: failedGuardrail === "precio" ? priceGuardrailResult.mismatched : stockGuardrailResult.mismatched,
+        },
+        `Guardrail de ${failedGuardrail} detectó un valor no verificable en la respuesta`,
       );
 
       if (guardrailRetries < MAX_GUARDRAIL_RETRIES) {
         guardrailRetries++;
-        const retryInstruction: ContentBlock[] = [{ type: "text", text: GUARDRAIL_RETRY_INSTRUCTION }];
+        const retryText =
+          failedGuardrail === "precio" ? GUARDRAIL_RETRY_INSTRUCTION_PRECIO : GUARDRAIL_RETRY_INSTRUCTION_STOCK;
+        const retryInstruction: ContentBlock[] = [{ type: "text", text: retryText }];
         messages.push({ role: "user", content: retryInstruction });
         await appendMessage(tenantId, conversationId, "inbound", "agent", "", retryInstruction);
         continue;
@@ -306,8 +344,10 @@ export async function runTurn(
       return escalateAndReply(
         tenantId,
         conversationId,
-        "guardrail_precio",
-        "El guardrail de verificación de precios detectó un monto en la respuesta que no coincide con ningún resultado real de las tools llamadas en esta conversación.",
+        failedGuardrail === "precio" ? "guardrail_precio" : "guardrail_stock",
+        failedGuardrail === "precio"
+          ? "El guardrail de verificación de precios detectó un monto en la respuesta que no coincide con ningún resultado real de las tools llamadas en esta conversación."
+          : "El guardrail de verificación de stock detectó una cantidad en la respuesta que no coincide con ningún resultado real de consultar_inventario en esta conversación.",
       );
     }
 

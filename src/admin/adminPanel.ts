@@ -1332,6 +1332,13 @@ const HANDOFF_REASON_LABEL: Record<string, string> = {
   fuera_de_alcance: "Fuera de alcance",
 };
 
+// "Vigilante" (Fase 12.1, ver docs/fase-12-capacidades-proactivas-agente/
+// analisis-superpoderes.md, superpoder #2): el aviso por WhatsApp ante
+// estos motivos ya existe desde la Fase 7 (escalarHumano.ts) — lo que
+// faltaba era poder distinguirlos a simple vista en el listado de
+// Tickets. "queja" = cliente se enoja; "monto_alto" = venta en riesgo.
+const RISKY_REASONS = new Set(["queja", "monto_alto"]);
+
 const HANDOFF_STATUS_LABEL: Record<string, string> = {
   queued: "En cola",
   en_atencion: "En atención",
@@ -1385,15 +1392,19 @@ export async function renderTicketsPage(tenantId: string): Promise<string | null
     .map((row) => {
       const who = row.customer_name ?? row.phone_number;
       const reasonLabel = HANDOFF_REASON_LABEL[row.reason] ?? row.reason;
+      const isRisky = RISKY_REASONS.has(row.reason);
       const statusLabel = HANDOFF_STATUS_LABEL[row.status] ?? row.status;
       const statusChip = HANDOFF_STATUS_CHIP[row.status] ?? "chip--muted";
-      const search = [who, reasonLabel, statusLabel, row.assigned_to_name, row.summary]
+      const search = [who, reasonLabel, statusLabel, row.assigned_to_name, row.summary, isRisky ? "riesgo" : ""]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
+      const reasonCell = isRisky
+        ? `<span class="chip chip--redline" title="Vigilante: cliente en riesgo">⚠ ${escapeHtml(reasonLabel)}</span>`
+        : escapeHtml(reasonLabel);
       return `<tr data-search="${escapeHtml(search)}">
         <td>${escapeHtml(who)}</td>
-        <td>${escapeHtml(reasonLabel)}</td>
+        <td>${reasonCell}</td>
         <td><span class="chip ${statusChip}">${escapeHtml(statusLabel)}</span></td>
         <td>${escapeHtml(row.assigned_to_name ?? "Sin asignar")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>

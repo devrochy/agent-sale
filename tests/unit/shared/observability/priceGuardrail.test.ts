@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   extractCurrencyAmountsFromText,
   extractMonetaryValues,
+  extractStockClaimsFromText,
+  extractStockValues,
   verifyPriceGuardrail,
+  verifyStockGuardrail,
 } from "../../../../src/shared/observability/priceGuardrail.js";
 
 describe("extractMonetaryValues", () => {
@@ -69,6 +72,59 @@ describe("verifyPriceGuardrail", () => {
 
   it("tolera diferencias de redondeo flotante", () => {
     const result = verifyPriceGuardrail("Total: $90.000", [90000.004]);
+    expect(result).toEqual({ ok: true, mismatched: [] });
+  });
+});
+
+describe("extractStockValues", () => {
+  it("recolecta números bajo la clave stock, incluso anidados", () => {
+    const output = {
+      matches: [
+        { product_id: "p-1", price: 45000, stock: 12 },
+        { product_id: "p-2", price: 30000, stock: 0 },
+      ],
+    };
+    expect(extractStockValues(output)).toEqual([12, 0]);
+  });
+
+  it("ignora claves que no son de stock (price, quantity, ids)", () => {
+    const output = { quote_id: "q-1", items: [{ quantity: 2, unit_price: 50000 }] };
+    expect(extractStockValues(output)).toEqual([]);
+  });
+});
+
+describe("extractStockClaimsFromText", () => {
+  it("extrae cantidades con el formato exacto 'Quedan N'", () => {
+    expect(extractStockClaimsFromText("Quedan 12 en stock.")).toEqual([12]);
+  });
+
+  it("extrae 'Quedan N unidades'", () => {
+    expect(extractStockClaimsFromText("Quedan 5 unidades disponibles.")).toEqual([5]);
+  });
+
+  it("extrae varias afirmaciones del mismo texto", () => {
+    expect(extractStockClaimsFromText("Del casco quedan 12, de los guantes quedan 3.")).toEqual([12, 3]);
+  });
+
+  it("no confunde cantidades pedidas por el cliente ni SKUs con afirmaciones de stock", () => {
+    expect(extractStockClaimsFromText("Perfecto, te separo 2 cascos del modelo CAS-005.")).toEqual([]);
+  });
+});
+
+describe("verifyStockGuardrail", () => {
+  it("aprueba si la cantidad afirmada coincide con el stock real devuelto por una tool", () => {
+    const result = verifyStockGuardrail("Quedan 12 unidades.", [12, 0]);
+    expect(result).toEqual({ ok: true, mismatched: [] });
+  });
+
+  it("rechaza si la cantidad afirmada no coincide con ningún stock real", () => {
+    const result = verifyStockGuardrail("Quedan 50 unidades.", [12, 0]);
+    expect(result.ok).toBe(false);
+    expect(result.mismatched).toEqual([50]);
+  });
+
+  it("aprueba un texto sin afirmaciones de stock", () => {
+    const result = verifyStockGuardrail("¿Con qué método de pago vas a confirmar el pedido?", [12]);
     expect(result).toEqual({ ok: true, mismatched: [] });
   });
 });
