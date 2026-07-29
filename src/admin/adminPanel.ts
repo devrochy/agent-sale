@@ -1,4 +1,4 @@
-import { escapeHtml } from "../advisor/handoffView.js";
+import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import { getTenant, listTenants, type TenantSummary } from "../shared/db/tenantsDirectory.js";
 import { withTenant } from "../shared/db/withTenant.js";
 
@@ -75,6 +75,11 @@ function formatRelativo(value: string): string {
   return `hace ${Math.floor(horas / 24)} d`;
 }
 
+function truncate(value: string, max: number): string {
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
 function brandName(tenant: TenantSummary): string {
   return tenant.display_name ?? tenant.name;
 }
@@ -85,7 +90,10 @@ const ICON_PRODUCTOS =
 const ICON_PEDIDOS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2h8v11.5l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1V2Z"/><path d="M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>';
 
-type ActiveSection = "resumen" | "productos" | "pedidos" | null;
+const ICON_CONVERSACIONES =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.6h12v7.3H6.6L3.6 13.4v-2.5H2V3.6Z"/><path d="M5 6.6h6M5 8.6h3.5"/></svg>';
+
+type ActiveSection = "resumen" | "conversaciones" | "productos" | "pedidos" | null;
 
 const ICON_COLLAPSE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 6 8l4 5"/></svg>';
@@ -121,7 +129,7 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
         <p class="navgroup__label">Panel</p>
         <ul class="navgroup__items">
           ${item(`/admin/${tenant.id}`, "Resumen", "resumen")}
-          ${soon("Conversaciones", "11.2")}
+          ${item(`/admin/${tenant.id}/conversaciones`, "Conversaciones", "conversaciones", ICON_CONVERSACIONES)}
           ${soon("Leads", "11.2")}
           ${soon("Tickets", "11.2")}
         </ul>
@@ -373,6 +381,33 @@ table.resizing { cursor: col-resize; user-select: none; }
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
+.convtabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.convtabs a { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 6px 13px; border-radius: 20px; color: var(--ink-muted); text-decoration: none; border: 1px solid transparent; }
+.convtabs a:hover { color: var(--ink); }
+.convtabs a.tab--active { background: var(--panel-inset); color: var(--ink); border-color: var(--border-strong); font-weight: 600; }
+.inbox { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .inbox { grid-template-columns: 1fr; } }
+.inbox__list { max-height: 74vh; overflow-y: auto; }
+.convitems { list-style: none; margin: 0; padding: 0; }
+.convitem { display: block; padding: 12px 16px; border-bottom: 1px solid var(--border); text-decoration: none; color: inherit; }
+.convitem:last-child { border-bottom: none; }
+.convitem:hover { background: var(--panel-inset); }
+.convitem--active { background: var(--chrome-soft); box-shadow: inset 2px 0 0 var(--chrome); }
+.convitem__row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.convitem__who { font-weight: 600; font-size: 13.5px; }
+.convitem__time { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); white-space: nowrap; flex-shrink: 0; }
+.convitem__msg { display: block; margin-top: 3px; font-size: 12.5px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.convitem__chips { display: flex; gap: 4px; margin-top: 6px; }
+.inbox__detail { min-height: 74vh; display: flex; flex-direction: column; }
+.thread__head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.thread__head h2 { font-family: var(--font-display); font-size: 16px; font-weight: 700; }
+.thread__meta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+.thread__body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; max-height: 64vh; }
+.bubble { max-width: 72%; padding: 9px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
+.bubble.inbound { align-self: flex-start; background: var(--panel-inset); border-bottom-left-radius: 4px; }
+.bubble.outbound { align-self: flex-end; background: var(--chrome-soft); border-bottom-right-radius: 4px; }
+.bubble .meta { display: block; margin-top: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); }
+.thread__empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--ink-faint); font-size: 13px; padding: 40px; text-align: center; }
 `;
 
 const CLIENT_SCRIPT = `
@@ -844,6 +879,173 @@ export async function renderOverviewPage(tenantId: string): Promise<string | nul
   `;
 
   return layout("Resumen", tenant, body, "resumen");
+}
+
+type ConversacionesEstado = "todas" | "abiertas" | "escaladas" | "cerradas";
+
+const CONVERSACIONES_TABS: { key: ConversacionesEstado; label: string }[] = [
+  { key: "todas", label: "Todas" },
+  { key: "abiertas", label: "Abiertas" },
+  { key: "escaladas", label: "Escaladas" },
+  { key: "cerradas", label: "Cerradas" },
+];
+
+// Cada filtro es una condición SQL independiente sobre columnas fijas
+// (nunca interpola el `estado` de la URL) — ver conversaciones-leads-tickets.md,
+// "Filtros por tab": Abiertas y Escaladas no son mutuamente excluyentes
+// (escalar no cierra la conversación), a propósito.
+const CONVERSACIONES_FILTRO_SQL: Record<ConversacionesEstado, string> = {
+  todas: "",
+  abiertas: "AND conv.status = 'open'",
+  escaladas:
+    "AND exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
+  cerradas: "AND conv.status = 'closed'",
+};
+
+interface ConversacionListRow {
+  id: string;
+  status: string;
+  customer_name: string | null;
+  phone_number: string;
+  ultimo_mensaje: string;
+  ultimo_at: string;
+  escalada: boolean;
+}
+
+interface ConversacionDetalleRow {
+  id: string;
+  status: string;
+  started_at: string;
+  closed_at: string | null;
+  customer_name: string | null;
+  phone_number: string;
+}
+
+/**
+ * Inbox de conversaciones (Fase 11.2, ver docs/fase-11-panel-admin-dashboard/
+ * conversaciones-leads-tickets.md): dos paneles servidos en una sola
+ * respuesta HTML (sin htmx — mismo criterio ya usado en Fase 11.1 de no
+ * sumar una dependencia de cliente nueva). La conversación seleccionada
+ * viaja en `?c=<id>` (mismo patrón que usa el panel de referencia
+ * externo) y el filtro de tab en `?estado=`.
+ */
+export async function renderConversacionesPage(
+  tenantId: string,
+  estadoParam: string | undefined,
+  selectedId: string | undefined,
+): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+  const estado: ConversacionesEstado = CONVERSACIONES_TABS.some((t) => t.key === estadoParam)
+    ? (estadoParam as ConversacionesEstado)
+    : "todas";
+
+  const { lista, detalle, mensajes } = await withTenant(tenantId, async (client) => {
+    const listaResult = await client.query<ConversacionListRow>(
+      `SELECT conv.id, conv.status, c.name AS customer_name, c.phone_number,
+              m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
+              exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada
+       FROM conversations conv
+       JOIN customers c ON c.id = conv.customer_id
+       JOIN LATERAL (
+         SELECT content, created_at FROM messages
+         WHERE conversation_id = conv.id
+         ORDER BY created_at DESC LIMIT 1
+       ) m ON true
+       WHERE true ${CONVERSACIONES_FILTRO_SQL[estado]}
+       ORDER BY m.created_at DESC
+       LIMIT 100`,
+    );
+
+    if (!selectedId) {
+      return { lista: listaResult.rows, detalle: null, mensajes: [] as MessageRow[] };
+    }
+
+    const detalleResult = await client.query<ConversacionDetalleRow>(
+      `SELECT conv.id, conv.status, conv.started_at, conv.closed_at,
+              c.name AS customer_name, c.phone_number
+       FROM conversations conv
+       JOIN customers c ON c.id = conv.customer_id
+       WHERE conv.id = $1`,
+      [selectedId],
+    );
+    const detalle = detalleResult.rows[0] ?? null;
+    if (!detalle) {
+      return { lista: listaResult.rows, detalle: null, mensajes: [] as MessageRow[] };
+    }
+
+    const mensajesResult = await client.query<MessageRow>(
+      `SELECT direction, sender_type, content, tool_calls, created_at
+       FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC`,
+      [selectedId],
+    );
+
+    return { lista: listaResult.rows, detalle, mensajes: mensajesResult.rows };
+  });
+
+  const tabsHtml = CONVERSACIONES_TABS.map(
+    (tab) =>
+      `<a class="tab${tab.key === estado ? " tab--active" : ""}" href="/admin/${tenant.id}/conversaciones?estado=${tab.key}">${escapeHtml(tab.label)}</a>`,
+  ).join("\n");
+
+  const listaHtml = lista
+    .map((row) => {
+      const who = row.customer_name ?? row.phone_number;
+      const chips = [
+        row.escalada ? '<span class="chip chip--redline">Escalada</span>' : "",
+        row.status === "closed" ? '<span class="chip">Cerrada</span>' : "",
+      ]
+        .filter(Boolean)
+        .join("");
+      return `<li>
+        <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/${tenant.id}/conversaciones?estado=${estado}&c=${row.id}">
+          <div class="convitem__row">
+            <span class="convitem__who">${escapeHtml(who)}</span>
+            <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
+          </div>
+          <span class="convitem__msg">${escapeHtml(truncate(row.ultimo_mensaje, 64))}</span>
+          ${chips ? `<div class="convitem__chips">${chips}</div>` : ""}
+        </a>
+      </li>`;
+    })
+    .join("\n");
+
+  let detalleHtml = `<div class="thread__empty">Selecciona una conversación de la lista.</div>`;
+  if (detalle) {
+    const who = detalle.customer_name ?? detalle.phone_number;
+    const bubbles = mensajes
+      .map(
+        (row) =>
+          `<div class="bubble ${row.direction}"><div>${renderMessageBody(row)}</div><span class="meta">${escapeHtml(row.sender_type)} · ${formatFecha(row.created_at)}</span></div>`,
+      )
+      .join("\n");
+    detalleHtml = `
+      <div class="thread__head">
+        <h2>${escapeHtml(who)}</h2>
+        <span class="thread__meta">${escapeHtml(detalle.phone_number)} · ${detalle.status === "closed" ? "cerrada" : "abierta"}</span>
+      </div>
+      <div class="thread__body">${bubbles || '<div class="thread__empty">Sin mensajes todavía.</div>'}</div>
+    `;
+  }
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Panel</p>
+      <h1>Conversaciones</h1>
+      <p>Historial completo por cliente, con las tools que ejecutó el agente en cada turno.</p>
+    </div>
+    <div class="convtabs">${tabsHtml}</div>
+    <div class="inbox">
+      <aside class="panel inbox__list">
+        <ul class="convitems">${listaHtml || '<li class="empty">Sin conversaciones en este filtro.</li>'}</ul>
+      </aside>
+      <section class="panel inbox__detail">${detalleHtml}</section>
+    </div>
+  `;
+
+  return layout("Conversaciones", tenant, body, "conversaciones", true);
 }
 
 export async function renderProductosPage(tenantId: string): Promise<string | null> {

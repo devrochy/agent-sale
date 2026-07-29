@@ -17,14 +17,21 @@ export interface ResolvedConversation {
 export async function resolveConversation(
   tenantId: string,
   customerPhone: string,
+  customerName?: string,
 ): Promise<ResolvedConversation> {
   return withTenant(tenantId, async (client) => {
+    // `ProfileName` de Twilio (ver webhook-contrato.md) llega en cada
+    // mensaje, no solo en el primero — COALESCE conserva el nombre ya
+    // guardado si un mensaje puntual llega sin él, y lo actualiza cuando
+    // sí llega (ej. el cliente cambió su nombre de perfil de WhatsApp).
     const customer = await client.query<{ id: string }>(
-      `INSERT INTO customers (tenant_id, phone_number)
-       VALUES ($1, $2)
-       ON CONFLICT (tenant_id, phone_number) DO UPDATE SET phone_number = EXCLUDED.phone_number
+      `INSERT INTO customers (tenant_id, phone_number, name)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (tenant_id, phone_number) DO UPDATE SET
+         phone_number = EXCLUDED.phone_number,
+         name = COALESCE(EXCLUDED.name, customers.name)
        RETURNING id`,
-      [tenantId, customerPhone],
+      [tenantId, customerPhone, customerName ?? null],
     );
     const customerId = customer.rows[0]!.id;
 

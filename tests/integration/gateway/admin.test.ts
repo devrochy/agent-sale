@@ -11,6 +11,9 @@ const AUTH_HEADER = `Basic ${Buffer.from(`${env.adminUser}:${env.adminPassword}`
 
 let tenantA: string;
 let tenantB: string;
+let conversacionAbierta: string;
+let conversacionEscalada: string;
+let conversacionCerrada: string;
 const app = await buildServer();
 
 beforeAll(async () => {
@@ -42,16 +45,64 @@ beforeAll(async () => {
     `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
     [tenantA, customer.rows[0]!.id],
   );
+  conversacionAbierta = conversation.rows[0]!.id;
   await adminPool.query(
     `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content)
      VALUES ($1, $2, 'inbound', 'customer', 'Hola, ¿tienen cascos?')`,
     [tenantA, conversation.rows[0]!.id],
   );
 
+  // Conversación escalada — inbox de Conversaciones (Fase 11.2): el
+  // mensaje trae tool_calls para probar que la vista reusa el mismo
+  // renderMessageBody() del inbox del asesor (handoffView.ts).
+  const customerEscalado = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (tenant_id, phone_number, name) VALUES ($1, 'whatsapp:+573000000001', 'Cliente Escalado') RETURNING id`,
+    [tenantA],
+  );
+  const conversationEscalada = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
+    [tenantA, customerEscalado.rows[0]!.id],
+  );
+  conversacionEscalada = conversationEscalada.rows[0]!.id;
+  await adminPool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, tool_calls)
+     VALUES ($1, $2, 'outbound', 'agent', '', $3::jsonb)`,
+    [
+      tenantA,
+      conversationEscalada.rows[0]!.id,
+      JSON.stringify([{ type: "tool_use", name: "consultar_inventario", input: { query: "cascos" } }]),
+    ],
+  );
+  await adminPool.query(
+    `INSERT INTO handoff_queue (tenant_id, conversation_id, reason, status)
+     VALUES ($1, $2, 'solicitud_cliente', 'queued')`,
+    [tenantA, conversationEscalada.rows[0]!.id],
+  );
+
+  // Conversación cerrada — cubre el tab "Cerradas".
+  const customerCerrado = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, 'whatsapp:+573000000002') RETURNING id`,
+    [tenantA],
+  );
+  const conversationCerrada = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (tenant_id, customer_id, status, closed_at) VALUES ($1, $2, 'closed', now()) RETURNING id`,
+    [tenantA, customerCerrado.rows[0]!.id],
+  );
+  conversacionCerrada = conversationCerrada.rows[0]!.id;
+  await adminPool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content)
+     VALUES ($1, $2, 'inbound', 'customer', 'Gracias, ya no necesito nada más')`,
+    [tenantA, conversationCerrada.rows[0]!.id],
+  );
+
   await app.ready();
 });
 
 afterAll(async () => {
+  await adminPool.query(`DELETE FROM handoff_queue WHERE tenant_id IN ($1, $2)`, [
+    tenantA,
+    tenantB,
+  ]);
   await adminPool.query(`DELETE FROM messages WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM conversations WHERE tenant_id IN ($1, $2)`, [
     tenantA,
@@ -159,5 +210,83 @@ describe("panel admin", () => {
       headers: { authorization: AUTH_HEADER },
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  describe("conversaciones", () => {
+    it("lista las conversaciones del tenant con el nombre real del cliente", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conversaciones`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Overview");
+      expect(response.body).toContain("Cliente Escalado");
+      // Sin cliente sembrado como número puro (whatsapp:+573000000002)
+      // cae al fallback de mostrar el teléfono.
+      expect(response.body).toContain("whatsapp:+573000000002");
+    });
+
+    it("el tab Escaladas solo muestra conversaciones con handoff abierto", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conversaciones?estado=escaladas`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Escalado");
+      expect(response.body).not.toContain("Cliente Overview");
+    });
+
+    it("el tab Cerradas solo muestra conversaciones cerradas", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conversaciones?estado=cerradas`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("whatsapp:+573000000002");
+      expect(response.body).not.toContain("Cliente Overview");
+    });
+
+    it("muestra el historial completo de una conversación seleccionada, incluida la tool ejecutada", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conversaciones?c=${conversacionAbierta}`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Hola, ¿tienen cascos?");
+    });
+
+    it("muestra qué tool se ejecutó cuando el mensaje trae tool_calls", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conversaciones?c=${conversacionEscalada}`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("tool: consultar_inventario");
+    });
+
+    it("marca la conversación cerrada como tal en el detalle", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/conversaciones?estado=cerradas&c=${conversacionCerrada}`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Gracias, ya no necesito nada más");
+      expect(response.body).toContain("cerrada");
+    });
+
+    it("devuelve 404 para un tenant que no existe", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/00000000-0000-0000-0000-000000000000/conversaciones`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(404);
+    });
   });
 });

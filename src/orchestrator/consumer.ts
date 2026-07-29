@@ -46,6 +46,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   const message = fieldsToObject(fields);
   const tenantId = message.tenant_id;
   const customerPhone = message.customer_phone;
+  const customerName = message.customer_name || undefined;
   const messageSid = message.message_sid;
 
   if (!tenantId || !customerPhone || !messageSid) {
@@ -68,6 +69,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
       customerPhone,
       message.body ?? "",
       messageSid,
+      customerName,
     );
     if (responseText !== null) {
       entryLogger.info({ event: "orchestrator.respuesta_lista" }, "Respuesta lista, enviando por Twilio");

@@ -6,6 +6,7 @@ export interface InboundMessage {
   messageSid: string;
   tenantId: string;
   customerPhone: string;
+  customerName?: string;
   body: string;
   receivedAt: string;
 }
@@ -27,6 +28,8 @@ export async function enqueueInboundMessage(message: InboundMessage): Promise<st
     message.tenantId,
     "customer_phone",
     message.customerPhone,
+    "customer_name",
+    message.customerName ?? "",
     "body",
     message.body,
     "received_at",

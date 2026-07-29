@@ -61,6 +61,7 @@ afterAll(async () => {
     "wa:processed:webhook-test-sid-1",
     "wa:processed:webhook-test-sid-2",
     "wa:processed:webhook-test-sid-ratelimit",
+    "wa:processed:webhook-test-sid-profilename",
   );
   await app.close();
   await adminPool.end();
@@ -103,6 +104,29 @@ describe("POST /webhooks/whatsapp", () => {
       fields.includes("webhook-test-sid-1"),
     );
     expect(match).toBeDefined();
+  });
+
+  it("propaga ProfileName como customer_name en el mensaje encolado", async () => {
+    const params = {
+      MessageSid: "webhook-test-sid-profilename",
+      From: "whatsapp:+573000000099",
+      To: TENANT_WHATSAPP_NUMBER,
+      Body: "Hola, tienen cascos?",
+      ProfileName: "Camila Pérez",
+    };
+    const signature = computeTwilioSignature(env.publicWebhookUrl, params);
+
+    const response = await post(params, signature);
+    expect(response.statusCode).toBe(200);
+
+    const entries = await redis.xrange(INBOUND_STREAM, "-", "+");
+    const match = entries.find(([, fields]: [string, string[]]) =>
+      fields.includes("webhook-test-sid-profilename"),
+    );
+    expect(match).toBeDefined();
+    const fields = match![1];
+    const nameIdx = fields.indexOf("customer_name");
+    expect(fields[nameIdx + 1]).toBe("Camila Pérez");
   });
 
   it("el mismo MessageSid reenviado no se duplica en el stream", async () => {

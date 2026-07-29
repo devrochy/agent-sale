@@ -122,8 +122,13 @@ export async function runTurn(
   customerPhone: string,
   incomingBody: string,
   messageSid: string,
+  customerName?: string,
 ): Promise<TurnResult> {
-  const { conversationId, customerId, state } = await resolveConversation(tenantId, customerPhone);
+  const { conversationId, customerId, state } = await resolveConversation(
+    tenantId,
+    customerPhone,
+    customerName,
+  );
   const turnLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
 
   await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
