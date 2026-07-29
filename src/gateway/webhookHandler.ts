@@ -27,6 +27,7 @@ export async function handleInboundWebhook(
   const from = params.From;
   const to = params.To;
   const body = params.Body ?? "";
+  const customerName = params.ProfileName || undefined;
 
   if (!messageSid || !from || !to) {
     // La firma ya es válida (viene de Twilio), pero falta un campo
@@ -55,6 +56,7 @@ export async function handleInboundWebhook(
     messageSid,
     tenantId,
     customerPhone: from,
+    customerName,
     body,
     receivedAt: new Date().toISOString(),
   });

@@ -8,6 +8,7 @@ import {
   tomarConversacion,
 } from "../advisor/handoffView.js";
 import {
+  renderConversacionesPage,
   renderOverviewPage,
   renderPedidosPage,
   renderProductosPage,
@@ -81,6 +82,16 @@ export async function buildServer() {
   app.get("/admin/:tenantId", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const html = await renderOverviewPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/conversaciones", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { estado, c } = request.query as { estado?: string; c?: string };
+    const html = await renderConversacionesPage(tenantId, estado, c);
     if (!html) {
       return reply.status(404).send();
     }

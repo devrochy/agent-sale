@@ -20,7 +20,7 @@ interface CustomerRow {
   name: string | null;
 }
 
-interface MessageRow {
+export interface MessageRow {
   direction: "inbound" | "outbound";
   sender_type: "customer" | "agent" | "human";
   content: string;
@@ -42,7 +42,13 @@ type ToolContentBlock =
   | { type: "tool_use"; name: string; input: unknown }
   | { type: "tool_result"; content: string; is_error?: boolean };
 
-function renderMessageBody(row: MessageRow): string {
+/**
+ * Reusada por el panel admin para el inbox de conversaciones (ver
+ * docs/fase-11-panel-admin-dashboard/conversaciones-leads-tickets.md) —
+ * misma lógica de "qué tool se ejecutó en cada turno" que ya usaba la
+ * vista del asesor, sin duplicarla.
+ */
+export function renderMessageBody(row: MessageRow): string {
   if (!row.tool_calls) {
     return escapeHtml(row.content);
   }
