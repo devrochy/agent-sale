@@ -8,6 +8,9 @@ import { logger } from "../../shared/observability/logger.js";
 // docs/fase-8-observabilidad-seguridad/guardrails.md). "guardrail_precio"
 // es interno: nunca lo elige el LLM (no está en el enum de la tool
 // escalar_a_humano de toolDefinitions.ts), solo lo dispara el orquestador.
+// "guardrail_stock" se agregó en la Fase 12.1 (migrations/0019), mismo
+// criterio: interno, extiende el guardrail de precios a disponibilidad
+// (ver docs/fase-12-capacidades-proactivas-agente/analisis-superpoderes.md).
 export type EscalationReason =
   | "compatibilidad_tecnica"
   | "monto_alto"
@@ -15,7 +18,8 @@ export type EscalationReason =
   | "intentos_fallidos"
   | "queja"
   | "guardrail_precio"
-  | "fuera_de_alcance";
+  | "fuera_de_alcance"
+  | "guardrail_stock";
 
 export interface EscalarHumanoInput {
   reason: EscalationReason;

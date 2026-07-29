@@ -83,6 +83,27 @@ beforeAll(async () => {
     [tenantA, conversationEscalada.rows[0]!.id, agent.rows[0]!.id],
   );
 
+  // Ticket de riesgo ("Vigilante", Fase 12.1) — reason 'queja' debe
+  // resaltarse distinto de un escalamiento rutinario como el de arriba.
+  const customerQueja = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (tenant_id, phone_number, name) VALUES ($1, 'whatsapp:+573000000005', 'Cliente Molesto') RETURNING id`,
+    [tenantA],
+  );
+  const conversationQueja = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
+    [tenantA, customerQueja.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content)
+     VALUES ($1, $2, 'inbound', 'customer', 'Esto es un desastre, llevo dos semanas esperando')`,
+    [tenantA, conversationQueja.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO handoff_queue (tenant_id, conversation_id, reason, status)
+     VALUES ($1, $2, 'queja', 'queued')`,
+    [tenantA, conversationQueja.rows[0]!.id],
+  );
+
   // Conversación cerrada — cubre el tab "Cerradas".
   const customerCerrado = await adminPool.query<{ id: string }>(
     `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, 'whatsapp:+573000000002') RETURNING id`,
@@ -430,6 +451,18 @@ describe("panel admin", () => {
       expect(response.body).toContain("Solicitud del cliente");
       expect(response.body).toContain("En atención");
       expect(response.body).toContain("Laura Vélez");
+    });
+
+    it('marca los tickets de riesgo ("Vigilante": queja o monto alto) distinto de un escalamiento rutinario', async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/tickets`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toMatch(/chip chip--redline"[^>]*>⚠ Queja/);
+      // El escalamiento rutinario (solicitud_cliente) no lleva el marcador de riesgo.
+      expect(response.body).not.toMatch(/⚠ Solicitud del cliente/);
     });
 
     it("enlaza cada ticket a su conversación en el inbox", async () => {

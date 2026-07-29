@@ -13,4 +13,12 @@ describe("SYSTEM_PROMPT", () => {
     const reimported = await import("../../../src/orchestrator/systemPrompt.js");
     expect(reimported.SYSTEM_PROMPT).toBe(SYSTEM_PROMPT);
   });
+
+  it("instruye responder en el idioma del cliente (Fase 12.1, multi-idioma)", () => {
+    expect(SYSTEM_PROMPT).toMatch(/idioma que use el cliente/);
+  });
+
+  it('instruye el formato exacto "Quedan N" para stock (Fase 12.1, requisito del guardrail de stock)', () => {
+    expect(SYSTEM_PROMPT).toMatch(/"Quedan N"/);
+  });
 });

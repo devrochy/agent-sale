@@ -141,6 +141,86 @@ describe("runTurn — guardrail de precios", () => {
   });
 });
 
+describe("runTurn — guardrail de stock (Fase 12.1)", () => {
+  beforeEach(() => {
+    vi.mocked(llmProvider.converse).mockReset();
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(escalarHumano).mockReset();
+    vi.mocked(resolveConversation).mockReset();
+    vi.mocked(loadHistory).mockReset();
+    vi.mocked(appendMessage).mockReset();
+    vi.mocked(updateState).mockReset();
+    vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(recordAudit).mockReset();
+
+    vi.mocked(resolveConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      customerId: "customer-1",
+      state: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValue([]);
+    vi.mocked(getEscalationConfig).mockResolvedValue(null);
+  });
+
+  it("responde normalmente cuando la cantidad de stock del texto coincide con el resultado real de una tool", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({ matches: [{ sku: "CAS-001", price: 300000, stock: 12 }] }),
+    });
+    vi.mocked(llmProvider.converse)
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "consultar_inventario", input: {} }],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("El casco cuesta $300.000. Quedan 12."));
+
+    const result = await runTurn("tenant-1", "+573000000000", "tienen cascos?", "sid-5");
+
+    expect(result.responseText).toBe("El casco cuesta $300.000. Quedan 12.");
+    expect(escalarHumano).not.toHaveBeenCalled();
+  });
+
+  it("reintenta una vez y luego escala por seguridad si la cantidad de stock del texto no coincide con ninguna tool", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({ matches: [{ sku: "CAS-001", price: 300000, stock: 12 }] }),
+    });
+    vi.mocked(llmProvider.converse)
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "consultar_inventario", input: {} }],
+        usage: USAGE,
+      })
+      .mockResolvedValue(endTurn("El casco cuesta $300.000. Quedan 99."));
+    vi.mocked(escalarHumano).mockResolvedValue({
+      handoff_id: "h1",
+      status: "queued",
+      assigned_to: null,
+    });
+
+    const result = await runTurn("tenant-1", "+573000000000", "tienen cascos?", "sid-6");
+
+    // 1 tool_use + 1 intento inicial + 1 reintento del guardrail = 3 llamadas al LLM.
+    expect(llmProvider.converse).toHaveBeenCalledTimes(3);
+    expect(escalarHumano).toHaveBeenCalledWith("tenant-1", "conv-1", {
+      reason: "guardrail_stock",
+      summary: expect.any(String),
+    });
+    expect(recordAudit).toHaveBeenCalledWith(
+      "tenant-1",
+      "conv-1",
+      "orchestrator",
+      "guardrail_stock_incidente",
+      expect.objectContaining({ mismatched: [99] }),
+      expect.anything(),
+    );
+    expect(result.responseText).not.toContain("99");
+  });
+});
+
 describe("runTurn — regla de monto alto", () => {
   beforeEach(() => {
     vi.mocked(llmProvider.converse).mockReset();
