@@ -23,11 +23,26 @@ export async function findTenantIdByWhatsappNumber(whatsappNumber: string): Prom
 export interface TenantSummary {
   id: string;
   name: string;
+  display_name: string | null;
 }
 
 export async function listTenants(): Promise<TenantSummary[]> {
-  const result = await pool.query<TenantSummary>("SELECT id, name FROM tenants ORDER BY name");
+  const result = await pool.query<TenantSummary>(
+    "SELECT id, name, display_name FROM tenants ORDER BY name",
+  );
   return result.rows;
+}
+
+/**
+ * Un tenant puntual para el `layout()` del panel admin (ver ADR-016): la
+ * marca mostrada es `display_name ?? name` — `null` si el id no existe.
+ */
+export async function getTenant(tenantId: string): Promise<TenantSummary | null> {
+  const result = await pool.query<TenantSummary>(
+    "SELECT id, name, display_name FROM tenants WHERE id = $1",
+    [tenantId],
+  );
+  return result.rows[0] ?? null;
 }
 
 /**
