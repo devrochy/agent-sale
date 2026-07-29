@@ -38,6 +38,11 @@ export const env = {
   // se puede probar en vivo, pero el código ya los requiere.
   twilioAccountSid: required("TWILIO_ACCOUNT_SID"),
   twilioWhatsappNumber: required("TWILIO_WHATSAPP_NUMBER"),
+  // Credenciales del panel admin de solo lectura (ver src/admin/adminPanel.ts)
+  // — no hay sistema de login en el proyecto, Basic Auth con estas
+  // credenciales es la única protección de /admin/*.
+  adminUser: required("ADMIN_USER"),
+  adminPassword: required("ADMIN_PASSWORD"),
   llmProvider,
   // Clave de la API de Claude (ver ADR-008, Fase 4) — solo requerida si
   // ese es el proveedor activo.
