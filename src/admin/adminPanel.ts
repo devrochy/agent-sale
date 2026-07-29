@@ -335,7 +335,7 @@ main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .linklike:hover { text-decoration: underline; }
 .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--chrome); margin: 0 0 6px; }
 .pagehead h1 { font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: -0.01em; }
-.pagehead p { margin: 8px 0 0; color: var(--ink-muted); font-size: 14px; max-width: 56ch; }
+.pagehead p { margin: 8px 0 0; color: var(--ink-muted); font-size: 14px; }
 .kpirow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 34px; }
 @media (max-width: 640px) { .kpirow { grid-template-columns: 1fr; } }
 .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px 20px; box-shadow: var(--shadow); position: relative; overflow: hidden; transition: box-shadow 220ms ease, transform 220ms ease; }
