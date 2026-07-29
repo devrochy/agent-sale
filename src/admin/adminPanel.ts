@@ -288,12 +288,6 @@ body.rail-collapsed .shell { grid-template-columns: 60px 1fr; }
 .rail__resize { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 3; }
 .rail__resize:hover, .rail__resize.dragging { background: var(--chrome-soft); }
 body.rail-collapsed .rail__resize { display: none; }
-@media (max-width: 860px) {
-  .rail { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; align-items: center; overflow-x: auto; gap: 18px; }
-  .rail__groups { display: none; }
-  .rail__status { margin-left: auto; }
-  .rail__resize { display: none; }
-}
 .rail__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rail__toggle { flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-inset); color: var(--ink-muted); cursor: pointer; }
 .rail__toggle:hover { color: var(--ink); border-color: var(--border-strong); }
@@ -323,6 +317,27 @@ body.rail-collapsed .brand__role,
 body.rail-collapsed .navgroup__label { display: none; }
 body.rail-collapsed .navitem { justify-content: center; }
 body.rail-collapsed .rail__status span:not(.pulse) { display: none; }
+/* Este override tiene que ir DESPUÉS de las reglas base de .rail__groups/
+   .rail__status de arriba: con la misma especificidad (una sola clase),
+   gana la que aparece última en la hoja de estilos — si este bloque
+   quedara antes (como pasaba originalmente), la regla base
+   ".rail__groups { display: flex }" lo pisaba silenciosamente y el menú
+   nunca se colapsaba en mobile/tablet, aunque el resto de .rail sí
+   cambiaba (flex-direction/position), dejando la lista completa de
+   secciones apilada encima del contenido. */
+@media (max-width: 860px) {
+  .rail { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; flex-wrap: wrap; align-items: center; overflow-x: visible; gap: 18px; }
+  /* Oculto por defecto en mobile/tablet — data-rail-toggle lo abre como
+     desplegable (body.rail-mobile-open) en vez de colapsar a solo
+     iconos (eso es el comportamiento de escritorio, ver rail-collapsed):
+     sin este panel no había NINGUNA forma de llegar a Productos/Pedidos/
+     Leads/etc. desde un teléfono, solo se veía la página actual. */
+  .rail__groups { display: none; flex-basis: 100%; order: 3; padding-top: 14px; border-top: 1px dashed var(--border); }
+  body.rail-mobile-open .rail__groups { display: flex; }
+  .rail__status { margin-left: auto; }
+  .rail__resize { display: none; }
+  body.rail-mobile-open .rail__toggle svg { transform: rotate(90deg); }
+}
 main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .shell--bare main { max-width: 640px; margin: 0 auto; }
 @media (max-width: 860px) { main { padding: 24px 18px 48px; } }
@@ -605,9 +620,36 @@ const CLIENT_SCRIPT = `
     if (savedWidth) document.documentElement.style.setProperty("--rail-width", savedWidth + "px");
     if (localStorage.getItem(COLLAPSED_KEY) === "1") document.body.classList.add("rail-collapsed");
 
+    // rail-collapsed es un concepto solo de escritorio (icono-únicamente,
+    // con ancho de riel de sobra) — varias reglas CSS le dan más
+    // especificidad que el override responsive (ej. "body.rail-collapsed
+    // .shell" le gana a ".shell" dentro del @media, sin importar el
+    // orden), así que si esa clase queda puesta en mobile/tablet (por
+    // localStorage de una sesión de escritorio previa, o por redimensionar
+    // la ventana en vivo) el layout se rompe: la columna del riel se
+    // fuerza a 60px con el contenido del menú completo desbordando hacia
+    // abajo. Se quita explícito apenas el viewport entra en el breakpoint
+    // móvil, tanto al cargar como al redimensionar.
+    function clearDesktopCollapseOnMobile() {
+      if (window.matchMedia("(max-width: 860px)").matches) {
+        document.body.classList.remove("rail-collapsed");
+      }
+    }
+    clearDesktopCollapseOnMobile();
+    window.addEventListener("resize", clearDesktopCollapseOnMobile);
+
     var toggleBtn = document.querySelector("[data-rail-toggle]");
     if (toggleBtn) {
       toggleBtn.addEventListener("click", function () {
+        // En mobile/tablet el mismo botón abre/cierra el desplegable de
+        // secciones (rail-mobile-open) en vez de colapsar a solo iconos
+        // (rail-collapsed es el comportamiento de escritorio, con ancho
+        // de riel de sobra para eso) — no se persiste en localStorage,
+        // se resetea cerrado en cada carga de página.
+        if (window.matchMedia("(max-width: 860px)").matches) {
+          document.body.classList.toggle("rail-mobile-open");
+          return;
+        }
         document.body.classList.toggle("rail-collapsed");
         localStorage.setItem(COLLAPSED_KEY, document.body.classList.contains("rail-collapsed") ? "1" : "0");
       });
