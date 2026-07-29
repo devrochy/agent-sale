@@ -121,18 +121,21 @@ describe("panel admin", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Admin Panel Test A");
-    expect(response.body).toContain("Mensajes (24h)");
+    expect(response.body).toContain("Mensajes · 24 h");
     expect(response.body).toContain("Cliente Overview");
     expect(response.body).toContain("Hola, ¿tienen cascos?");
 
     // Regresión: pg parsea columnas `date` como objeto Date, no string —
     // si la query de actividad vuelve a comparar esa fecha contra un
-    // string ISO, todas las barras del SVG quedan en altura mínima (1)
-    // aunque haya mensajes hoy.
-    const barHeights = [...response.body.matchAll(/<rect[^>]*height="(\d+)"/g)].map((m) =>
-      Number(m[1]),
+    // string ISO, el mensaje sembrado en beforeAll (hoy) no cae en
+    // ningún bucket y todos los días quedan en 0 pese a haber actividad.
+    // El gráfico se construye del lado del cliente a partir de este JSON.
+    const match = response.body.match(
+      /<script type="application\/json" id="actividad-data">(.*?)<\/script>/s,
     );
-    expect(barHeights.some((height) => height > 1)).toBe(true);
+    expect(match).not.toBeNull();
+    const actividad = JSON.parse(match![1]!) as { label: string; valor: number }[];
+    expect(actividad.some((dia) => dia.valor > 0)).toBe(true);
   });
 
   it("usa display_name como marca cuando el tenant lo configura", async () => {

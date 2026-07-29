@@ -24,11 +24,12 @@ export interface TenantSummary {
   id: string;
   name: string;
   display_name: string | null;
+  whatsapp_number: string | null;
 }
 
 export async function listTenants(): Promise<TenantSummary[]> {
   const result = await pool.query<TenantSummary>(
-    "SELECT id, name, display_name FROM tenants ORDER BY name",
+    "SELECT id, name, display_name, whatsapp_number FROM tenants ORDER BY name",
   );
   return result.rows;
 }
@@ -36,10 +37,13 @@ export async function listTenants(): Promise<TenantSummary[]> {
 /**
  * Un tenant puntual para el `layout()` del panel admin (ver ADR-016): la
  * marca mostrada es `display_name ?? name` — `null` si el id no existe.
+ * `whatsapp_number` se usa para mostrar el canal configurado en el riel de
+ * navegación (dato real, no un estado de "conectado" en vivo — eso es
+ * alcance de la Fase 11.3, Conexiones).
  */
 export async function getTenant(tenantId: string): Promise<TenantSummary | null> {
   const result = await pool.query<TenantSummary>(
-    "SELECT id, name, display_name FROM tenants WHERE id = $1",
+    "SELECT id, name, display_name, whatsapp_number FROM tenants WHERE id = $1",
     [tenantId],
   );
   return result.rows[0] ?? null;
