@@ -17,7 +17,8 @@
     "test": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:all": "vitest run",
-    "manual:seed-test-message": "tsx scripts/seed-manual-test.ts"
+    "manual:seed-test-message": "tsx scripts/seed-manual-test.ts",
+    "seed:catalogo-prueba": "tsx scripts/seed-catalogo-prueba.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.4",
