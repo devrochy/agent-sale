@@ -13,10 +13,15 @@ export interface EscalationConfig {
 
 /**
  * Defaults para ForMotos (ver docs/fase-7-escalamiento-humano/reglas-escalamiento.md):
- * el umbral de monto alto es la propuesta inicial de la Fase 0 (~3x el
- * ticket promedio, $300.000 COP), a validar con datos reales del piloto.
- * Un tenant sin `escalation_config` en la tabla `tenants` usa esto tal
- * cual (ver migrations/0014_tenants_escalation_config.cjs).
+ * el umbral de monto alto original era la propuesta inicial de la Fase 0
+ * (~3x el ticket promedio, $300.000 COP), fijada antes de tener el
+ * catálogo real. Con el catálogo real (cascos, chaquetas, escapes) varios
+ * productos solos ya superan esos $300.000, así que ese umbral escalaba
+ * casi cualquier cotización de más de una unidad — se subió a $1.000.000
+ * tras probarlo en local (ver project_estado_implementacion.md). Un
+ * tenant sin `escalation_config` en la tabla `tenants` usa esto tal cual
+ * (ver migrations/0014_tenants_escalation_config.cjs); cada tenant puede
+ * sobreescribirlo sin redeploy.
  */
 export const DEFAULT_ESCALATION_CONFIG: EscalationConfig = {
   keywords: [
@@ -33,7 +38,7 @@ export const DEFAULT_ESCALATION_CONFIG: EscalationConfig = {
     },
   ],
   maxIntentosFallidos: 3,
-  montoAltoThreshold: 300000,
+  montoAltoThreshold: 1000000,
 };
 
 function isKeywordRule(value: unknown): value is KeywordRule {
