@@ -37,7 +37,7 @@ function makeToolUse(name: string, input: unknown): Extract<ContentBlock, { type
 }
 
 const run = (name: string, input: unknown) =>
-  executeTool("tenant-1", "conv-1", "customer-1", "sid-1", makeToolUse(name, input));
+  executeTool("tenant-1", "conv-1", "customer-1", "sid-1", 1000000, makeToolUse(name, input));
 
 describe("executeTool", () => {
   beforeEach(() => {
@@ -101,7 +101,7 @@ describe("executeTool", () => {
     };
     await run("crear_pedido", input);
 
-    expect(crearPedido).toHaveBeenCalledWith("tenant-1", "sid-1", input);
+    expect(crearPedido).toHaveBeenCalledWith("tenant-1", "sid-1", input, 1000000);
   });
 
   it("despacha recomendar_producto con tenantId", async () => {

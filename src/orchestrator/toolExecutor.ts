@@ -29,13 +29,17 @@ type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>;
  * tool realmente hizo, no lo que el modelo dijo que iba a hacer).
  * `customerId` y `messageSid` son contexto inyectado por el orquestador
  * (nunca expuesto al LLM) — el primero para generar_cotizacion, el
- * segundo para el idempotency_key de crear_pedido.
+ * segundo para el idempotency_key de crear_pedido. `montoAltoThreshold`
+ * también lo inyecta el orquestador, solo lo usa crear_pedido (ver
+ * crearPedido.ts) para negarse a confirmar un pedido de monto alto en vez
+ * de confirmarlo y recién después decidir escalar.
  */
 export async function executeTool(
   tenantId: string,
   conversationId: string,
   customerId: string,
   messageSid: string,
+  montoAltoThreshold: number,
   toolUse: ToolUseBlock,
 ): Promise<ToolResultBlock> {
   const toolLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
@@ -63,7 +67,12 @@ export async function executeTool(
         output = await aplicarPromocion(tenantId, toolUse.input as AplicarPromocionInput);
         break;
       case "crear_pedido":
-        output = await crearPedido(tenantId, messageSid, toolUse.input as CrearPedidoInput);
+        output = await crearPedido(
+          tenantId,
+          messageSid,
+          toolUse.input as CrearPedidoInput,
+          montoAltoThreshold,
+        );
         break;
       case "recomendar_producto":
         output = await recomendarProducto(tenantId, toolUse.input as RecomendarProductoInput);
