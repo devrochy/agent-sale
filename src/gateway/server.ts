@@ -8,11 +8,14 @@ import {
   tomarConversacion,
 } from "../advisor/handoffView.js";
 import {
+  exportLeadsCsv,
   renderConversacionesPage,
+  renderLeadsPage,
   renderOverviewPage,
   renderPedidosPage,
   renderProductosPage,
   renderTenantsPage,
+  renderTicketsPage,
 } from "../admin/adminPanel.js";
 import { env } from "../config/env.js";
 import { logger } from "../shared/observability/logger.js";
@@ -92,6 +95,36 @@ export async function buildServer() {
     const { tenantId } = request.params as { tenantId: string };
     const { estado, c } = request.query as { estado?: string; c?: string };
     const html = await renderConversacionesPage(tenantId, estado, c);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/leads", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderLeadsPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/leads.csv", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const csv = await exportLeadsCsv(tenantId);
+    if (csv === null) {
+      return reply.status(404).send();
+    }
+    return reply
+      .type("text/csv")
+      .header("content-disposition", 'attachment; filename="leads.csv"')
+      .send(csv);
+  });
+
+  app.get("/admin/:tenantId/tickets", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderTicketsPage(tenantId);
     if (!html) {
       return reply.status(404).send();
     }

@@ -73,10 +73,14 @@ beforeAll(async () => {
       JSON.stringify([{ type: "tool_use", name: "consultar_inventario", input: { query: "cascos" } }]),
     ],
   );
+  const agent = await adminPool.query<{ id: string }>(
+    `INSERT INTO human_agents (tenant_id, name, contact) VALUES ($1, 'Laura Vélez', 'laura@formotos.test') RETURNING id`,
+    [tenantA],
+  );
   await adminPool.query(
-    `INSERT INTO handoff_queue (tenant_id, conversation_id, reason, status)
-     VALUES ($1, $2, 'solicitud_cliente', 'queued')`,
-    [tenantA, conversationEscalada.rows[0]!.id],
+    `INSERT INTO handoff_queue (tenant_id, conversation_id, reason, status, assigned_to)
+     VALUES ($1, $2, 'solicitud_cliente', 'en_atencion', $3)`,
+    [tenantA, conversationEscalada.rows[0]!.id, agent.rows[0]!.id],
   );
 
   // Conversación cerrada — cubre el tab "Cerradas".
@@ -95,11 +99,73 @@ beforeAll(async () => {
     [tenantA, conversationCerrada.rows[0]!.id],
   );
 
+  // Leads con cotización y con pedido — cubren las 4 categorías del
+  // funnel de metricas-cierre-ventas.md que la vista de Leads reusa.
+  const customerCotizacion = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (tenant_id, phone_number, name) VALUES ($1, 'whatsapp:+573000000003', 'Cliente Con Cotización') RETURNING id`,
+    [tenantA],
+  );
+  const conversationCotizacion = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
+    [tenantA, customerCotizacion.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content)
+     VALUES ($1, $2, 'inbound', 'customer', 'Quiero cotizar un casco')`,
+    [tenantA, conversationCotizacion.rows[0]!.id],
+  );
+  // Regresión: el orquestador también guarda los tool_results como
+  // inbound/agent con content vacío (ver loop.ts) — este mensaje, más
+  // reciente que el del cliente, no debe ganarle al heurístico de
+  // "último mensaje" de Leads.
+  await adminPool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content)
+     VALUES ($1, $2, 'inbound', 'agent', '')`,
+    [tenantA, conversationCotizacion.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total)
+     VALUES ($1, $2, $3, 250000, 250000)`,
+    [tenantA, conversationCotizacion.rows[0]!.id, customerCotizacion.rows[0]!.id],
+  );
+
+  const customerPedido = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (tenant_id, phone_number, name) VALUES ($1, 'whatsapp:+573000000004', 'Cliente Con Pedido') RETURNING id`,
+    [tenantA],
+  );
+  const conversationPedido = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
+    [tenantA, customerPedido.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content)
+     VALUES ($1, $2, 'inbound', 'customer', 'Confirmo el pedido')`,
+    [tenantA, conversationPedido.rows[0]!.id],
+  );
+  const quotePedido = await adminPool.query<{ id: string }>(
+    `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total)
+     VALUES ($1, $2, $3, 250000, 250000) RETURNING id`,
+    [tenantA, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total)
+     VALUES ($1, $2, $3, $4, 'transferencia', 'domicilio', 'admin-test-order-1', 250000)`,
+    [tenantA, quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
+  );
+
   await app.ready();
 });
 
 afterAll(async () => {
+  await adminPool.query(`DELETE FROM order_items WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
+  await adminPool.query(`DELETE FROM orders WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
+  await adminPool.query(`DELETE FROM quote_items WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
+  await adminPool.query(`DELETE FROM quotes WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM handoff_queue WHERE tenant_id IN ($1, $2)`, [
+    tenantA,
+    tenantB,
+  ]);
+  await adminPool.query(`DELETE FROM human_agents WHERE tenant_id IN ($1, $2)`, [
     tenantA,
     tenantB,
   ]);
@@ -284,6 +350,104 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/conversaciones`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+  });
+
+  describe("leads", () => {
+    it("clasifica cada cliente en su estado real del funnel comercial", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/leads`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Overview");
+      expect(response.body).toContain("Sin actividad");
+      expect(response.body).toContain("Cliente Escalado");
+      expect(response.body).toContain("Escalada");
+      expect(response.body).toContain("Cliente Con Cotización");
+      expect(response.body).toContain("Con cotización");
+      expect(response.body).toContain("Cliente Con Pedido");
+      expect(response.body).toContain("Con pedido");
+    });
+
+    it("el último mensaje ignora los tool_results vacíos y muestra el texto real del cliente", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/leads`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Quiero cotizar un casco");
+    });
+
+    it("exporta el mismo listado como CSV descargable", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/leads.csv`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("text/csv");
+      expect(response.headers["content-disposition"]).toContain("leads.csv");
+      expect(response.body).toContain("nombre,telefono,ultimo_mensaje,estado,cliente_desde");
+      expect(response.body).toContain("Cliente Con Pedido");
+      // Regresión: pg parsea timestamptz como objeto Date, no string — un
+      // .toString() implícito al armar el CSV a mano produce
+      // "Wed Jul 29 2026 03:09:20 GMT-0500 (...)" en vez de una fecha ISO.
+      expect(response.body).not.toContain("GMT");
+      expect(response.body).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    });
+
+    it("devuelve 404 para un tenant que no existe (HTML y CSV)", async () => {
+      const html = await app.inject({
+        method: "GET",
+        url: `/admin/00000000-0000-0000-0000-000000000000/leads`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(html.statusCode).toBe(404);
+      const csv = await app.inject({
+        method: "GET",
+        url: `/admin/00000000-0000-0000-0000-000000000000/leads.csv`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(csv.statusCode).toBe(404);
+    });
+  });
+
+  describe("tickets", () => {
+    it("lista los casos escalados con motivo, estado y asesor asignado", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/tickets`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Escalado");
+      expect(response.body).toContain("Solicitud del cliente");
+      expect(response.body).toContain("En atención");
+      expect(response.body).toContain("Laura Vélez");
+    });
+
+    it("enlaza cada ticket a su conversación en el inbox", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/tickets`,
+        headers: { authorization: AUTH_HEADER },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(
+        `/admin/${tenantA}/conversaciones?estado=escaladas&c=${conversacionEscalada}`,
+      );
+    });
+
+    it("devuelve 404 para un tenant que no existe", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/00000000-0000-0000-0000-000000000000/tickets`,
         headers: { authorization: AUTH_HEADER },
       });
       expect(response.statusCode).toBe(404);

@@ -75,6 +75,14 @@ function formatRelativo(value: string): string {
   return `hace ${Math.floor(horas / 24)} d`;
 }
 
+function csvField(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+function toCsv(headers: string[], rows: string[][]): string {
+  return [headers, ...rows].map((row) => row.map(csvField).join(",")).join("\r\n");
+}
+
 function truncate(value: string, max: number): string {
   const oneLine = value.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
@@ -93,7 +101,13 @@ const ICON_PEDIDOS =
 const ICON_CONVERSACIONES =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.6h12v7.3H6.6L3.6 13.4v-2.5H2V3.6Z"/><path d="M5 6.6h6M5 8.6h3.5"/></svg>';
 
-type ActiveSection = "resumen" | "conversaciones" | "productos" | "pedidos" | null;
+const ICON_LEADS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.1" r="2.5"/><path d="M2.6 13.4c.8-2.9 2.7-4.3 5.4-4.3s4.6 1.4 5.4 4.3"/></svg>';
+
+const ICON_TICKETS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6.4V4.7c0-.4.3-.7.7-.7h10.6c.4 0 .7.3.7.7v1.7a1.2 1.2 0 0 0 0 2.4v1.7c0 .4-.3.7-.7.7H2.7a.7.7 0 0 1-.7-.7V8.8a1.2 1.2 0 0 0 0-2.4Z"/><path d="M6.2 4v8" stroke-dasharray="1.3 1.3"/></svg>';
+
+type ActiveSection = "resumen" | "conversaciones" | "leads" | "tickets" | "productos" | "pedidos" | null;
 
 const ICON_COLLAPSE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 6 8l4 5"/></svg>';
@@ -130,8 +144,8 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
         <ul class="navgroup__items">
           ${item(`/admin/${tenant.id}`, "Resumen", "resumen")}
           ${item(`/admin/${tenant.id}/conversaciones`, "Conversaciones", "conversaciones", ICON_CONVERSACIONES)}
-          ${soon("Leads", "11.2")}
-          ${soon("Tickets", "11.2")}
+          ${item(`/admin/${tenant.id}/leads`, "Leads", "leads", ICON_LEADS)}
+          ${item(`/admin/${tenant.id}/tickets`, "Tickets", "tickets", ICON_TICKETS)}
         </ul>
       </div>
       <div class="laneline"></div>
@@ -303,6 +317,11 @@ main.main--wide { max-width: 1240px; }
 .shell--bare main { max-width: 640px; margin: 0 auto; }
 @media (max-width: 860px) { main { padding: 24px 18px 48px; } }
 .pagehead { margin-bottom: 28px; }
+.pagehead__row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600; padding: 9px 15px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); color: var(--ink); text-decoration: none; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.btn:hover { border-color: var(--border-strong); background: var(--panel-inset); }
+.linklike { color: var(--chrome); text-decoration: none; font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+.linklike:hover { text-decoration: underline; }
 .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--chrome); margin: 0 0 6px; }
 .pagehead h1 { font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: -0.01em; }
 .pagehead p { margin: 8px 0 0; color: var(--ink-muted); font-size: 14px; max-width: 56ch; }
@@ -354,6 +373,9 @@ section.block { margin-bottom: 34px; }
 .chip { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 20px; font-weight: 600; }
 .chip--go { color: var(--go); background: var(--go-soft); }
 .chip--redline { color: var(--redline); background: var(--redline-soft); }
+.chip--amber { color: var(--ignition); background: rgba(156, 97, 8, 0.12); }
+@media (prefers-color-scheme: dark) { .chip--amber { background: rgba(232, 163, 61, 0.16); } }
+.chip--muted { color: var(--ink-faint); background: var(--panel-inset); }
 @media (max-width: 560px) { .convrow { grid-template-columns: 1fr; } .convrow__meta { grid-column: 1; justify-content: flex-start; } }
 .empty { padding: 28px 20px; color: var(--ink-faint); font-size: 13px; }
 table { border-collapse: collapse; width: 100%; min-width: 720px; table-layout: fixed; font-size: 13.5px; }
@@ -1046,6 +1068,268 @@ export async function renderConversacionesPage(
   `;
 
   return layout("Conversaciones", tenant, body, "conversaciones", true);
+}
+
+type LeadEstado = "con_pedido" | "escalada" | "con_cotizacion" | "sin_actividad_comercial";
+
+// Mismas 4 categorías del funnel de docs/fase-8-observabilidad-seguridad/
+// metricas-cierre-ventas.md, aplicadas por cliente en vez de por
+// conversación — evita un segundo concepto de "estado de lead" paralelo
+// (ver conversaciones-leads-tickets.md, "Leads").
+const LEAD_ESTADO_LABEL: Record<LeadEstado, string> = {
+  con_pedido: "Con pedido",
+  escalada: "Escalada",
+  con_cotizacion: "Con cotización",
+  sin_actividad_comercial: "Sin actividad",
+};
+const LEAD_ESTADO_CHIP: Record<LeadEstado, string> = {
+  con_pedido: "chip--go",
+  escalada: "chip--redline",
+  con_cotizacion: "chip--amber",
+  sin_actividad_comercial: "chip--muted",
+};
+
+const LEADS_QUERY = `
+  SELECT
+    c.id, c.name, c.phone_number, c.created_at,
+    m.content AS ultimo_mensaje,
+    CASE
+      WHEN o.customer_id IS NOT NULL THEN 'con_pedido'
+      WHEN h.customer_id IS NOT NULL THEN 'escalada'
+      WHEN q.customer_id IS NOT NULL THEN 'con_cotizacion'
+      ELSE 'sin_actividad_comercial'
+    END AS estado
+  FROM customers c
+  LEFT JOIN LATERAL (
+    SELECT content FROM messages msg
+    JOIN conversations conv ON conv.id = msg.conversation_id
+    -- direction = 'inbound' no basta: el orquestador también guarda los
+    -- tool_results y reintentos del guardrail como inbound/agent con
+    -- content vacío (ver loop.ts) — sender_type = 'customer' filtra eso
+    -- y deja el último mensaje real que escribió el cliente.
+    WHERE conv.customer_id = c.id AND msg.direction = 'inbound' AND msg.sender_type = 'customer'
+    ORDER BY msg.created_at DESC LIMIT 1
+  ) m ON true
+  LEFT JOIN (SELECT DISTINCT customer_id FROM orders) o ON o.customer_id = c.id
+  LEFT JOIN (
+    SELECT DISTINCT conv.customer_id FROM handoff_queue h
+    JOIN conversations conv ON conv.id = h.conversation_id
+  ) h ON h.customer_id = c.id
+  LEFT JOIN (SELECT DISTINCT customer_id FROM quotes) q ON q.customer_id = c.id
+  ORDER BY c.created_at DESC
+`;
+
+interface LeadRow {
+  id: string;
+  name: string | null;
+  phone_number: string;
+  created_at: string;
+  ultimo_mensaje: string | null;
+  estado: LeadEstado;
+}
+
+async function fetchLeads(tenantId: string): Promise<LeadRow[]> {
+  return withTenant(tenantId, async (client) => {
+    const result = await client.query<LeadRow>(LEADS_QUERY);
+    return result.rows;
+  });
+}
+
+/**
+ * Leads (Fase 11.2, ver docs/fase-11-panel-admin-dashboard/
+ * conversaciones-leads-tickets.md): "resumen" y "estado" se derivan de
+ * datos ya existentes, no de un resumen generado por LLM — evita el costo
+ * recurrente que mapeo-funcionalidades.md marca fuera de alcance.
+ */
+export async function renderLeadsPage(tenantId: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+  const rows = await fetchLeads(tenantId);
+
+  const tableRows = rows
+    .map((row) => {
+      const who = row.name ?? row.phone_number;
+      const search = [row.name, row.phone_number, row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado]]
+        .filter((v): v is string => Boolean(v))
+        .join(" ")
+        .toLowerCase();
+      return `<tr data-search="${escapeHtml(search)}">
+        <td>${escapeHtml(who)}</td>
+        <td>${escapeHtml(row.ultimo_mensaje ?? "")}</td>
+        <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
+        <td class="mono">${formatFecha(row.created_at)}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Panel</p>
+      <div class="pagehead__row">
+        <div>
+          <h1>Leads</h1>
+          <p>${rows.length} clientes, clasificados por su avance en el funnel comercial.</p>
+        </div>
+        <a class="btn" href="/admin/${tenant.id}/leads.csv">Exportar CSV</a>
+      </div>
+    </div>
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, mensaje o estado…" aria-label="Buscar leads">
+        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
+      </div>
+      <table data-resizable-table="leads">
+        <colgroup>
+          <col style="width:20%"><col style="width:44%"><col style="width:18%"><col style="width:18%">
+        </colgroup>
+        <thead><tr><th>Cliente</th><th>Último mensaje</th><th>Estado</th><th>Cliente desde</th></tr></thead>
+        <tbody>${tableRows || '<tr><td colspan="4" class="empty">Sin leads todavía.</td></tr>'}</tbody>
+      </table>
+      <div class="pager" data-table-pager>
+        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+        <span class="tabular" data-table-pagelabel>1 / 1</span>
+        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+      </div>
+    </div>
+  `;
+
+  return layout(`Leads (${rows.length})`, tenant, body, "leads", true);
+}
+
+/** Mismo dato que renderLeadsPage, serializado a mano igual que el resto del panel arma HTML a mano (sin dependencia nueva). */
+export async function exportLeadsCsv(tenantId: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+  const rows = await fetchLeads(tenantId);
+  return toCsv(
+    ["nombre", "telefono", "ultimo_mensaje", "estado", "cliente_desde"],
+    rows.map((row) => [
+      row.name ?? "",
+      row.phone_number,
+      row.ultimo_mensaje ?? "",
+      LEAD_ESTADO_LABEL[row.estado],
+      // pg parsea timestamptz como objeto Date, no string, pese al tipo
+      // declarado en LeadRow — a diferencia de formatFecha() (que ya
+      // tolera Date u string vía `new Date(value)`), acá se serializa a
+      // mano, así que hay que normalizar explícito antes de armar el CSV.
+      new Date(row.created_at).toISOString(),
+    ]),
+  );
+}
+
+const HANDOFF_REASON_LABEL: Record<string, string> = {
+  compatibilidad_tecnica: "Compatibilidad técnica",
+  monto_alto: "Monto alto",
+  solicitud_cliente: "Solicitud del cliente",
+  intentos_fallidos: "Intentos fallidos",
+  queja: "Queja",
+  guardrail_precio: "Guardrail de precio",
+  fuera_de_alcance: "Fuera de alcance",
+};
+
+const HANDOFF_STATUS_LABEL: Record<string, string> = {
+  queued: "En cola",
+  en_atencion: "En atención",
+  resuelto: "Resuelto",
+};
+const HANDOFF_STATUS_CHIP: Record<string, string> = {
+  queued: "chip--redline",
+  en_atencion: "chip--amber",
+  resuelto: "chip--go",
+};
+
+interface TicketRow {
+  id: string;
+  conversation_id: string;
+  reason: string;
+  status: string;
+  assigned_to_name: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  summary: string | null;
+  customer_name: string | null;
+  phone_number: string;
+}
+
+/**
+ * Tickets (Fase 11.2): agrega la vista faltante de "todos los casos
+ * escalados de un tenant a la vez" sobre handoff_queue — hoy solo es
+ * accesible por token individual (GET /asesor/:token, src/advisor/
+ * handoffView.ts). No reemplaza ese flujo, es solo de supervisión.
+ */
+export async function renderTicketsPage(tenantId: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+
+  const rows = await withTenant(tenantId, async (client) => {
+    const result = await client.query<TicketRow>(
+      `SELECT h.id, h.conversation_id, h.reason, h.status, h.created_at, h.resolved_at, h.summary,
+              ha.name AS assigned_to_name, c.name AS customer_name, c.phone_number
+       FROM handoff_queue h
+       JOIN conversations conv ON conv.id = h.conversation_id
+       JOIN customers c ON c.id = conv.customer_id
+       LEFT JOIN human_agents ha ON ha.id = h.assigned_to
+       ORDER BY h.created_at DESC`,
+    );
+    return result.rows;
+  });
+
+  const tableRows = rows
+    .map((row) => {
+      const who = row.customer_name ?? row.phone_number;
+      const reasonLabel = HANDOFF_REASON_LABEL[row.reason] ?? row.reason;
+      const statusLabel = HANDOFF_STATUS_LABEL[row.status] ?? row.status;
+      const statusChip = HANDOFF_STATUS_CHIP[row.status] ?? "chip--muted";
+      const search = [who, reasonLabel, statusLabel, row.assigned_to_name, row.summary]
+        .filter((v): v is string => Boolean(v))
+        .join(" ")
+        .toLowerCase();
+      return `<tr data-search="${escapeHtml(search)}">
+        <td>${escapeHtml(who)}</td>
+        <td>${escapeHtml(reasonLabel)}</td>
+        <td><span class="chip ${statusChip}">${escapeHtml(statusLabel)}</span></td>
+        <td>${escapeHtml(row.assigned_to_name ?? "Sin asignar")}</td>
+        <td class="mono">${formatFecha(row.created_at)}</td>
+        <td>${escapeHtml(row.summary ?? "")}</td>
+        <td><a class="linklike" href="/admin/${tenant.id}/conversaciones?estado=escaladas&c=${row.conversation_id}">Ver conversación →</a></td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Panel</p>
+      <h1>Tickets</h1>
+      <p>${rows.length} casos escalados a un asesor humano, de todos los estados.</p>
+    </div>
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, motivo, estado o asesor…" aria-label="Buscar tickets">
+        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
+      </div>
+      <table data-resizable-table="tickets">
+        <colgroup>
+          <col style="width:15%"><col style="width:14%"><col style="width:10%">
+          <col style="width:13%"><col style="width:11%"><col style="width:25%"><col style="width:12%">
+        </colgroup>
+        <thead><tr><th>Cliente</th><th>Motivo</th><th>Estado</th><th>Asignado a</th><th>Creado</th><th>Resumen</th><th></th></tr></thead>
+        <tbody>${tableRows || '<tr><td colspan="7" class="empty">Sin tickets todavía.</td></tr>'}</tbody>
+      </table>
+      <div class="pager" data-table-pager>
+        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+        <span class="tabular" data-table-pagelabel>1 / 1</span>
+        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+      </div>
+    </div>
+  `;
+
+  return layout(`Tickets (${rows.length})`, tenant, body, "tickets", true);
 }
 
 export async function renderProductosPage(tenantId: string): Promise<string | null> {
