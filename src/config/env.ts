@@ -43,6 +43,12 @@ export const env = {
   // credenciales es la única protección de /admin/*.
   adminUser: required("ADMIN_USER"),
   adminPassword: required("ADMIN_PASSWORD"),
+  // Clave maestra para cifrar las API keys que un tenant trae propias
+  // (BYOK, Fase 11.4 — ver src/shared/crypto/secretBox.ts y ADR-020).
+  // Distinta categoría de secreto que las de arriba (ADR-007): esas son
+  // credenciales operativas de la plataforma, esta es la clave con la que
+  // ciframos credenciales que el tenant nos entrega.
+  tenantSecretsEncryptionKey: required("TENANT_SECRETS_ENCRYPTION_KEY"),
   llmProvider,
   // Clave de la API de Claude (ver ADR-008, Fase 4) — solo requerida si
   // ese es el proveedor activo.
@@ -53,4 +59,12 @@ export const env = {
   llmBaseUrl: process.env.LLM_BASE_URL ?? "https://api.deepseek.com",
   llmModel: process.env.LLM_MODEL ?? "deepseek-chat",
   llmApiKey: llmProvider === "openai_compatible" ? required("LLM_API_KEY") : (process.env.LLM_API_KEY ?? ""),
+  // Key de sistema para Gemini (Fase 11.4, catálogo configurable por
+  // tenant — ver catalog.ts) — opcional a propósito: Gemini nunca es el
+  // proveedor default de la plataforma, así que un tenant que lo elige
+  // sin traer su propia key (BYOK) depende de que esta exista; si no,
+  // resolveLlmProviderForTenant falla con un mensaje claro en vez de
+  // bloquear el arranque de todo el proceso por una key que puede no
+  // hacer falta nunca.
+  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
 };

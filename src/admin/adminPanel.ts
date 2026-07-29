@@ -1,6 +1,15 @@
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import { env } from "../config/env.js";
-import { getTenant, listTenants, type TenantSummary } from "../shared/db/tenantsDirectory.js";
+import { isProviderKey, PROVIDER_CATALOG, testLlmConfig, type ProviderKey } from "../orchestrator/llm/index.js";
+import {
+  clearLlmConfig,
+  getLlmConfig,
+  getTenant,
+  listTenants,
+  saveLlmConfig,
+  setBotPaused,
+  type TenantSummary,
+} from "../shared/db/tenantsDirectory.js";
 import { withTenant } from "../shared/db/withTenant.js";
 
 /**
@@ -117,6 +126,9 @@ const ICON_FLUJO =
 const ICON_CONEXIONES =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.3 2v3.2M10.7 2v3.2M3.8 5.2h8.4v2.7a4.2 4.2 0 0 1-8.4 0V5.2Z"/><path d="M8 12v2.4"/></svg>';
 
+const ICON_CONFIGURACION =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 2.4v1.5M8 12.1v1.5M13.6 8h-1.5M3.9 8H2.4M11.9 4.1l-1.05 1.05M5.15 10.85 4.1 11.9M11.9 11.9l-1.05-1.05M5.15 5.15 4.1 4.1"/></svg>';
+
 type ActiveSection =
   | "resumen"
   | "conversaciones"
@@ -124,6 +136,7 @@ type ActiveSection =
   | "tickets"
   | "flujo"
   | "conexiones"
+  | "configuracion"
   | "productos"
   | "pedidos"
   | null;
@@ -170,6 +183,7 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
         <ul class="navgroup__items">
           ${item(`/admin/${tenant.id}/flujo`, "Flujo", "flujo", ICON_FLUJO)}
           ${item(`/admin/${tenant.id}/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)}
+          ${item(`/admin/${tenant.id}/configuracion`, "Configuración", "configuracion", ICON_CONFIGURACION)}
         </ul>
       </div>
       <div class="laneline"></div>
@@ -456,6 +470,32 @@ table.resizing { cursor: col-resize; user-select: none; }
 .copyrow { display: flex; align-items: center; gap: 10px; }
 .copyrow code { flex: 1; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
 .connection__missing { margin: 16px 0 0; padding: 10px 14px; border-radius: 8px; background: var(--redline-soft); color: var(--redline); font-size: 12.5px; }
+.block--narrow { max-width: 640px; }
+.field { margin-bottom: 20px; }
+.field:last-of-type { margin-bottom: 0; }
+.field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
+.field select, .field input[type="password"] {
+  width: 100%; max-width: 440px; font: inherit; font-size: 13.5px; background: var(--panel-inset);
+  border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; color: var(--ink);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+.field select {
+  appearance: none; -webkit-appearance: none; padding-right: 36px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%23889198' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; background-size: 12px;
+  text-overflow: ellipsis;
+}
+.field select:hover, .field input[type="password"]:hover { border-color: var(--border-strong); }
+.field select:focus-visible, .field input[type="password"]:focus-visible { border-color: var(--chrome); background: var(--panel); }
+.field select:disabled { opacity: 0.5; cursor: default; }
+.field input[type="password"]::placeholder { color: var(--ink-faint); }
+.field .hint { margin: 8px 0 0; font-size: 12px; color: var(--ink-faint); max-width: 440px; }
+.formfoot { display: flex; align-items: center; gap: 12px; margin-top: 22px; }
+.btn--primary { background: var(--chrome); border-color: var(--chrome); color: var(--bg); font-weight: 700; }
+.btn--primary:hover { filter: brightness(1.08); border-color: var(--chrome); background: var(--chrome); }
+.banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
+.banner--ok { background: var(--go-soft); color: var(--go); }
+.banner--error { background: var(--redline-soft); color: var(--redline); }
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
@@ -771,6 +811,53 @@ const CLIENT_SCRIPT = `
       });
     });
   });
+
+  /* ---------- Configuración: confirmación al pausar el bot ---------- */
+  document.querySelectorAll("[data-confirm]").forEach(function (form) {
+    form.addEventListener("submit", function (evt) {
+      if (!window.confirm(form.getAttribute("data-confirm"))) {
+        evt.preventDefault();
+      }
+    });
+  });
+
+  /* ---------- Configuración: filtra el selector de Modelo según el Proveedor elegido ---------- */
+  var providerSelect = document.querySelector("[data-provider-select]");
+  if (providerSelect) {
+    var catalog = null;
+    var catalogEl = document.getElementById("llm-catalog-data");
+    if (catalogEl) {
+      try { catalog = JSON.parse(catalogEl.textContent); } catch (e) { catalog = null; }
+    }
+    var modelSelect = document.querySelector("[data-model-select]");
+    var apiKeyInput = document.querySelector("[data-apikey-input]");
+    var initialModel = modelSelect.getAttribute("data-initial-model") || "";
+
+    function renderModelOptions() {
+      var entry = catalog ? catalog[providerSelect.value] : null;
+      modelSelect.innerHTML = "";
+      if (!entry) {
+        modelSelect.disabled = true;
+        var placeholderOpt = document.createElement("option");
+        placeholderOpt.value = "";
+        placeholderOpt.textContent = "— usa el default de la plataforma —";
+        modelSelect.appendChild(placeholderOpt);
+        if (apiKeyInput) apiKeyInput.placeholder = "";
+        return;
+      }
+      modelSelect.disabled = false;
+      entry.models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.label;
+        if (m.id === initialModel) opt.selected = true;
+        modelSelect.appendChild(opt);
+      });
+      if (apiKeyInput) apiKeyInput.placeholder = entry.keyPlaceholder || "";
+    }
+    providerSelect.addEventListener("change", renderModelOptions);
+    renderModelOptions();
+  }
 
   /* ---------- copiar al portapapeles (ej. URL de webhook en Conexiones) ---------- */
   document.querySelectorAll("[data-copy]").forEach(function (btn) {
@@ -1490,7 +1577,17 @@ export async function renderFlujoPage(tenantId: string): Promise<string | null> 
       `<div class="toolpill"><span>${escapeHtml(tool.label)}</span><span class="toolpill__count tabular">${counts.get(tool.name) ?? 0}</span></div>`,
   ).join("\n");
 
-  const modelo = `${env.llmProvider === "anthropic" ? "Anthropic" : "OpenAI-compatible"} · ${escapeHtml(env.llmModel)}`;
+  // Ya no asume el default de plataforma (env.LLM_PROVIDER/LLM_MODEL) — un
+  // tenant puede tener su propio override desde la Fase 11.4 (ver
+  // Configuración), así que se resuelve igual que resolveLlmProviderForTenant
+  // (sin instanciar el provider ni gastar la llamada real al LLM, esto es
+  // solo texto informativo).
+  const llmConfigFlujo = await getLlmConfig(tenantId);
+  const flujoProviderKey =
+    llmConfigFlujo.provider && isProviderKey(llmConfigFlujo.provider) ? llmConfigFlujo.provider : null;
+  const modelo = flujoProviderKey
+    ? `${PROVIDER_CATALOG[flujoProviderKey].label} · ${escapeHtml(llmConfigFlujo.model ?? PROVIDER_CATALOG[flujoProviderKey].defaultModel)}`
+    : `${env.llmProvider === "anthropic" ? "Claude (Anthropic)" : "DeepSeek"} · ${escapeHtml(env.llmProvider === "anthropic" ? "claude-sonnet-5" : env.llmModel)} (default de plataforma)`;
 
   const body = `
     <div class="pagehead">
@@ -1732,4 +1829,153 @@ export async function renderPedidosPage(tenantId: string): Promise<string | null
   `;
 
   return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos");
+}
+
+/** Serializado para <script type="application/json"> — ver CLIENT_SCRIPT, filtro de Modelo según Proveedor. */
+function llmCatalogForClient(): Record<ProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }> {
+  return Object.fromEntries(
+    (Object.keys(PROVIDER_CATALOG) as ProviderKey[]).map((key) => [
+      key,
+      { models: PROVIDER_CATALOG[key].models, keyPlaceholder: PROVIDER_CATALOG[key].keyPlaceholder },
+    ]),
+  ) as Record<ProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }>;
+}
+
+/**
+ * Configuración (Fase 11.4, ver docs/fase-11-panel-admin-dashboard/
+ * configuracion-comportamiento.md y ADR-020): kill-switch del bot +
+ * proveedor/modelo de IA configurable por tenant (BYOK). Sin JS del lado
+ * servidor con estado — errores/éxito del POST viajan por querystring tras
+ * un redirect 303 (mismo patrón que /asesor/:token/tomar).
+ */
+export async function renderConfiguracionPage(
+  tenantId: string,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+  const llmConfig = await getLlmConfig(tenantId);
+  const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
+  const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
+  const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
+  const maskedKey = llmConfig.apiKey ? `••••${llmConfig.apiKey.slice(-4)}` : null;
+
+  const providerOptions = (Object.keys(PROVIDER_CATALOG) as ProviderKey[])
+    .map((key) => {
+      const entry = PROVIDER_CATALOG[key];
+      const selected = key === currentProviderKey ? " selected" : "";
+      return `<option value="${key}"${selected}>${escapeHtml(entry.label)}</option>`;
+    })
+    .join("\n");
+
+  const keyHint = maskedKey
+    ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedKey)}</span>. Dejar el campo vacío para conservarla.`
+    : "Sin key propia — se prueba con la key del sistema del proveedor, si hay una disponible.";
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Guardado. La configuración ya está activa para las próximas conversaciones.</div>`
+      : "";
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Agente</p>
+      <h1>Configuración</h1>
+      <p>Control de encendido del bot y el modelo de IA que responde por ${escapeHtml(brandName(tenant))}.</p>
+    </div>
+    ${banner}
+    <section class="block block--narrow" aria-label="Estado del bot">
+      <div class="blockhead"><h2>Estado del bot</h2></div>
+      <div class="panel connection">
+        <div class="connection__head">
+          <h2>${tenant.bot_paused ? "Bot pausado" : "Bot activo"}</h2>
+          <span class="connection__badge ${tenant.bot_paused ? "connection__badge--off" : "connection__badge--on"}">${tenant.bot_paused ? "Pausado" : '<span class="pulse"></span>Activo'}</span>
+        </div>
+        <p>${tenant.bot_paused ? "Los mensajes entrantes se guardan en el historial, pero el agente no responde automáticamente." : "El agente responde automáticamente a los mensajes entrantes por WhatsApp."}</p>
+        <form method="POST" action="/admin/${tenant.id}/configuracion/${tenant.bot_paused ? "reactivar" : "pausar"}"${tenant.bot_paused ? "" : ` data-confirm="¿Pausar el bot de ${escapeHtml(brandName(tenant)).replace(/"/g, "&quot;")}? Los mensajes entrantes se seguirán guardando, pero no se responderá automáticamente hasta reactivarlo."`}>
+          <div class="formfoot"><button type="submit" class="btn">${tenant.bot_paused ? "Reactivar bot" : "Pausar bot"}</button></div>
+        </form>
+      </div>
+    </section>
+    <section class="block block--narrow" aria-label="Modelo de IA">
+      <div class="blockhead"><h2>Modelo de IA</h2><span class="hint">BYOK</span></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/configuracion/modelo-ia">
+          <div class="field">
+            <label for="llm-provider">Proveedor</label>
+            <select id="llm-provider" name="provider" data-provider-select>
+              <option value=""${currentProviderKey ? "" : " selected"}>Automático (recomendado)</option>
+              ${providerOptions}
+            </select>
+            <p class="hint">Sin seleccionar, usa el proveedor y modelo por defecto de la plataforma.</p>
+          </div>
+          <div class="field">
+            <label for="llm-model">Modelo</label>
+            <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
+          </div>
+          <div class="field">
+            <label for="llm-apikey">API key propia (opcional)</label>
+            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input autocomplete="off">
+            <p class="hint">${keyHint}</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
+        </form>
+        <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
+      </div>
+    </section>
+  `;
+
+  return layout("Configuración", tenant, body, "configuracion");
+}
+
+export async function pausarBot(tenantId: string): Promise<void> {
+  await setBotPaused(tenantId, true);
+}
+
+export async function reactivarBot(tenantId: string): Promise<void> {
+  await setBotPaused(tenantId, false);
+}
+
+/**
+ * "Probar y guardar" (ver renderConfiguracionPage): prueba la combinación
+ * ANTES de persistir — solo guarda si testLlmConfig no lanza. `provider`
+ * vacío es "Automático" (vuelve al default de plataforma, sin llamada de
+ * prueba porque es el mismo código que ya corría antes de la Fase 11.4).
+ */
+export async function guardarModeloIa(
+  tenantId: string,
+  input: { provider: string; model: string; apiKey: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (input.provider === "") {
+    await clearLlmConfig(tenantId);
+    return { ok: true };
+  }
+
+  if (!isProviderKey(input.provider)) {
+    return { ok: false, error: "Proveedor no válido." };
+  }
+  const entry = PROVIDER_CATALOG[input.provider];
+  const model = entry.models.some((m) => m.id === input.model) ? input.model : entry.defaultModel;
+
+  const existing = await getLlmConfig(tenantId);
+  const trimmedKey = input.apiKey.trim();
+  // Campo vacío: si el proveedor no cambió, se conserva la key ya guardada
+  // (el <input type="password"> nunca se re-popula con el valor
+  // desencriptado — ver el "Ya hay una guardada: ••••" de solo lectura). Si
+  // cambió de proveedor, la key vieja no sirve para el nuevo, así que se
+  // limpia y se prueba con la key de sistema de ese proveedor si existe.
+  const apiKey = trimmedKey ? trimmedKey : existing.provider === input.provider ? existing.apiKey : null;
+
+  try {
+    await testLlmConfig({ provider: input.provider, model, apiKey });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error desconocido probando la conexión.";
+    return { ok: false, error: message };
+  }
+
+  await saveLlmConfig(tenantId, { provider: input.provider, model, apiKey });
+  return { ok: true };
 }

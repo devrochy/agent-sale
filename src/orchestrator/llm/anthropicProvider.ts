@@ -26,6 +26,13 @@ function toStopReason(stopReason: string | null): TurnResponse["stopReason"] {
   }
 }
 
+export interface AnthropicProviderConfig {
+  /** Sin valor, usa env.anthropicApiKey (comportamiento de siempre). Con valor, la key BYOK del tenant (Fase 11.4). */
+  apiKey?: string;
+  /** Sin valor, usa "claude-sonnet-5" (ADR-008). */
+  model?: string;
+}
+
 /**
  * Proveedor por defecto (ver ADR-008): Claude Sonnet 5 con thinking
  * adaptativo, effort medio y prompt caching sobre el bloque de system.
@@ -33,7 +40,13 @@ function toStopReason(stopReason: string | null): TurnResponse["stopReason"] {
  * que esta implementación es casi un passthrough.
  */
 export class AnthropicProvider implements LLMProvider {
-  private readonly client = new Anthropic({ apiKey: env.anthropicApiKey });
+  private readonly client: Anthropic;
+  private readonly model: string;
+
+  constructor(config: AnthropicProviderConfig = {}) {
+    this.client = new Anthropic({ apiKey: config.apiKey ?? env.anthropicApiKey });
+    this.model = config.model ?? "claude-sonnet-5";
+  }
 
   async converse({
     systemPrompt,
@@ -45,7 +58,7 @@ export class AnthropicProvider implements LLMProvider {
     messages: LLMMessage[];
   }): Promise<TurnResponse> {
     const response = await this.client.messages.create({
-      model: "claude-sonnet-5",
+      model: this.model,
       max_tokens: 4096,
       thinking: { type: "adaptive" },
       output_config: { effort: "medium" },

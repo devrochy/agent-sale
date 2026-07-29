@@ -1,3 +1,4 @@
+import { decryptSecret, encryptSecret } from "../crypto/secretBox.js";
 import { pool } from "./pool.js";
 
 /**
@@ -25,11 +26,18 @@ export interface TenantSummary {
   name: string;
   display_name: string | null;
   whatsapp_number: string | null;
+  // Kill-switch de la Fase 11.4 (ver configuracion-comportamiento.md) —
+  // deliberadamente SÍ va en TenantSummary (a diferencia de la config de
+  // LLM, ver getLlmConfig más abajo): es un booleano liviano que varias
+  // páginas del panel necesitan mostrar, no un secreto.
+  bot_paused: boolean;
 }
+
+const TENANT_SUMMARY_COLUMNS = "id, name, display_name, whatsapp_number, bot_paused";
 
 export async function listTenants(): Promise<TenantSummary[]> {
   const result = await pool.query<TenantSummary>(
-    "SELECT id, name, display_name, whatsapp_number FROM tenants ORDER BY name",
+    `SELECT ${TENANT_SUMMARY_COLUMNS} FROM tenants ORDER BY name`,
   );
   return result.rows;
 }
@@ -43,10 +51,80 @@ export async function listTenants(): Promise<TenantSummary[]> {
  */
 export async function getTenant(tenantId: string): Promise<TenantSummary | null> {
   const result = await pool.query<TenantSummary>(
-    "SELECT id, name, display_name, whatsapp_number FROM tenants WHERE id = $1",
+    `SELECT ${TENANT_SUMMARY_COLUMNS} FROM tenants WHERE id = $1`,
     [tenantId],
   );
   return result.rows[0] ?? null;
+}
+
+/**
+ * Kill-switch (Fase 11.4): pausa/reactiva el bot de un tenant desde el
+ * panel — ver configuracion-comportamiento.md, chequeado en
+ * src/orchestrator/consumer.ts antes de invocar el orquestador.
+ */
+export async function setBotPaused(tenantId: string, paused: boolean): Promise<void> {
+  await pool.query("UPDATE tenants SET bot_paused = $1 WHERE id = $2", [paused, tenantId]);
+}
+
+/**
+ * Config de proveedor/modelo de LLM por tenant (Fase 11.4, ver
+ * ADR-020-proveedor-modelo-configurable-byok.md) — deliberadamente
+ * separada de TenantSummary/getTenant: es la única función que lee
+ * `llm_api_key_encrypted` y la desencripta, para que la key cifrada no
+ * viaje "de paso" en cada carga de página del panel que solo necesita
+ * branding/nav (getTenant).
+ */
+export interface TenantLlmConfig {
+  provider: string | null;
+  model: string | null;
+  /** Ya desencriptada — `null` si el tenant no trajo su propia key (usar la del sistema). */
+  apiKey: string | null;
+}
+
+export async function getLlmConfig(tenantId: string): Promise<TenantLlmConfig> {
+  const result = await pool.query<{
+    llm_provider: string | null;
+    llm_model: string | null;
+    llm_api_key_encrypted: string | null;
+  }>("SELECT llm_provider, llm_model, llm_api_key_encrypted FROM tenants WHERE id = $1", [
+    tenantId,
+  ]);
+  const row = result.rows[0];
+  return {
+    provider: row?.llm_provider ?? null,
+    model: row?.llm_model ?? null,
+    apiKey: row?.llm_api_key_encrypted ? decryptSecret(row.llm_api_key_encrypted) : null,
+  };
+}
+
+/**
+ * Guarda la elección de proveedor/modelo/API key del tenant — llamar solo
+ * después de validar la combinación con una llamada de prueba real (ver
+ * "Probar y guardar" en adminPanel.ts), nunca antes. `apiKey` en texto
+ * plano se cifra acá adentro; `null`/`undefined` limpia el campo (volver a
+ * usar la key del sistema).
+ */
+export async function saveLlmConfig(
+  tenantId: string,
+  config: { provider: string; model: string; apiKey?: string | null },
+): Promise<void> {
+  await pool.query(
+    "UPDATE tenants SET llm_provider = $1, llm_model = $2, llm_api_key_encrypted = $3 WHERE id = $4",
+    [config.provider, config.model, config.apiKey ? encryptSecret(config.apiKey) : null, tenantId],
+  );
+}
+
+/**
+ * Vuelve al "Automático" del panel (ver adminPanel.ts) — limpia el override
+ * del tenant para que resolveLlmProviderForTenant vuelva a usar el default
+ * de plataforma (env.LLM_PROVIDER/LLM_MODEL), el mismo comportamiento de
+ * antes de la Fase 11.4.
+ */
+export async function clearLlmConfig(tenantId: string): Promise<void> {
+  await pool.query(
+    "UPDATE tenants SET llm_provider = NULL, llm_model = NULL, llm_api_key_encrypted = NULL WHERE id = $1",
+    [tenantId],
+  );
 }
 
 /**

@@ -1,8 +1,10 @@
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { INBOUND_STREAM } from "../gateway/queue.js";
+import { getTenant } from "../shared/db/tenantsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
 import { runTurn } from "./loop.js";
+import { appendMessage, resolveConversation } from "./memory.js";
 
 const CONSUMER_GROUP = "orchestrator-group";
 const CONSUMER_NAME = `orchestrator-${process.pid}`;
@@ -64,6 +66,25 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   );
 
   try {
+    // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md): se
+    // chequea ACÁ, antes de invocar el orquestador — así se evita
+    // resolver el proveedor de LLM (y su costo) para un tenant pausado.
+    // El mensaje del cliente se guarda igual (mismo par de llamadas que
+    // hace runTurn al principio) para no perder historial mientras el
+    // bot está pausado; si se reactiva, el operador lo ve pendiente en
+    // el inbox de Conversaciones.
+    const tenant = await getTenant(tenantId);
+    if (tenant?.bot_paused) {
+      const { conversationId } = await resolveConversation(tenantId, customerPhone, customerName);
+      await appendMessage(tenantId, conversationId, "inbound", "customer", message.body ?? "");
+      entryLogger.info(
+        { event: "orchestrator.bot_pausado" },
+        "Bot pausado para este tenant — mensaje guardado sin respuesta automática",
+      );
+      await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
+      return;
+    }
+
     const { responseText, mediaUrl } = await runTurn(
       tenantId,
       customerPhone,
