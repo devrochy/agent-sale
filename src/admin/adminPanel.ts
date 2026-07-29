@@ -1,11 +1,15 @@
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import { env } from "../config/env.js";
+import { isEstiloMensajes, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import { isProviderKey, PROVIDER_CATALOG, testLlmConfig, type ProviderKey } from "../orchestrator/llm/index.js";
+import { isTono } from "../orchestrator/toneBlocks.js";
 import {
   clearLlmConfig,
+  getBehaviorConfig,
   getLlmConfig,
   getTenant,
   listTenants,
+  saveBehaviorConfig,
   saveLlmConfig,
   setBotPaused,
   type TenantSummary,
@@ -1857,6 +1861,7 @@ export async function renderConfiguracionPage(
     return null;
   }
   const llmConfig = await getLlmConfig(tenantId);
+  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
   const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
@@ -1926,6 +1931,30 @@ export async function renderConfiguracionPage(
         <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
       </div>
     </section>
+    <section class="block block--narrow" aria-label="Voz y estilo del agente">
+      <div class="blockhead"><h2>Voz y estilo del agente</h2></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/configuracion/comportamiento">
+          <div class="field">
+            <label for="tono">Tono</label>
+            <select id="tono" name="tono">
+              <option value="calido"${behaviorConfig.tono === "calido" ? " selected" : ""}>Cálido — amable y cercano, como un amigo</option>
+              <option value="formal"${behaviorConfig.tono === "formal" ? " selected" : ""}>Formal — serio y profesional, trato de usted</option>
+              <option value="divertido"${behaviorConfig.tono === "divertido" ? " selected" : ""}>Divertido — relajado y con buen humor</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="estilo-mensajes">Estilo de mensajes</label>
+            <select id="estilo-mensajes" name="estiloMensajes">
+              <option value="un_mensaje"${behaviorConfig.estiloMensajes === "un_mensaje" ? " selected" : ""}>Un mensaje — toda la respuesta en una sola burbuja</option>
+              <option value="pocos_cortos"${behaviorConfig.estiloMensajes === "pocos_cortos" ? " selected" : ""}>2-3 cortos — parte la respuesta en pocas burbujas</option>
+              <option value="varios_cortos"${behaviorConfig.estiloMensajes === "varios_cortos" ? " selected" : ""}>Varios cortos — muchas burbujas, estilo chat</option>
+            </select>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+        </form>
+      </div>
+    </section>
   `;
 
   return layout("Configuración", tenant, body, "configuracion");
@@ -1937,6 +1966,25 @@ export async function pausarBot(tenantId: string): Promise<void> {
 
 export async function reactivarBot(tenantId: string): Promise<void> {
   await setBotPaused(tenantId, false);
+}
+
+/**
+ * Tono/Estilo de mensajes (Fase 11.4 extendida, ver ADR-021) — a diferencia
+ * de "Probar y guardar" del modelo de IA, acá no hay nada que validar
+ * contra una API externa, se guarda directo.
+ */
+export async function guardarComportamiento(
+  tenantId: string,
+  input: { tono: string; estiloMensajes: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!isTono(input.tono)) {
+    return { ok: false, error: "Tono no válido." };
+  }
+  if (!isEstiloMensajes(input.estiloMensajes)) {
+    return { ok: false, error: "Estilo de mensajes no válido." };
+  }
+  await saveBehaviorConfig(tenantId, { tono: input.tono, estiloMensajes: input.estiloMensajes });
+  return { ok: true };
 }
 
 /**

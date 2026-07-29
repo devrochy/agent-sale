@@ -1,8 +1,10 @@
+import { splitForBubbles } from "../gateway/messageSplitter.js";
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { INBOUND_STREAM } from "../gateway/queue.js";
-import { getTenant } from "../shared/db/tenantsDirectory.js";
+import { getBehaviorConfig, getTenant } from "../shared/db/tenantsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
+import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import { runTurn } from "./loop.js";
 import { appendMessage, resolveConversation } from "./memory.js";
 
@@ -10,6 +12,11 @@ const CONSUMER_GROUP = "orchestrator-group";
 const CONSUMER_NAME = `orchestrator-${process.pid}`;
 const DEAD_LETTER_STREAM = `${INBOUND_STREAM}:dead-letter`;
 const MAX_DELIVERIES = 3;
+// Estilo de mensajes (Fase 11.4 extendida, ver ADR-021): reintento chico
+// del envío de UNA burbuja puntual — nunca del turno completo, eso
+// dispararía una respuesta NUEVA del LLM (ver sendBubbles).
+const BUBBLE_SEND_ATTEMPTS = 2;
+const BUBBLE_SEND_DELAY_MS = 700;
 
 type StreamEntries = Array<[string, string[]]>;
 type ReadGroupResult = Array<[string, StreamEntries]> | null;
@@ -94,10 +101,41 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     );
     if (responseText !== null) {
       entryLogger.info({ event: "orchestrator.respuesta_lista" }, "Respuesta lista, enviando por Twilio");
-      await sendWhatsAppMessage(customerPhone, responseText, mediaUrl ?? undefined);
+      // Estilo de mensajes (Fase 11.4 extendida, ver ADR-021): la
+      // respuesta puede partirse en varias burbujas de WhatsApp — cada
+      // envío tiene su propio reintento chico (nunca se vuelve a llamar
+      // runTurn por un fallo de envío parcial, eso generaría una
+      // respuesta NUEVA del LLM y el cliente terminaría con una burbuja
+      // vieja + una respuesta entera distinta después).
+      const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+      const bubbles = splitForBubbles(responseText, behaviorConfig.estiloMensajes);
+      for (let index = 0; index < bubbles.length; index++) {
+        const isLast = index === bubbles.length - 1;
+        let sent = false;
+        for (let attempt = 1; attempt <= BUBBLE_SEND_ATTEMPTS && !sent; attempt++) {
+          try {
+            await sendWhatsAppMessage(customerPhone, bubbles[index]!, isLast ? mediaUrl ?? undefined : undefined);
+            sent = true;
+          } catch (error) {
+            entryLogger.warn(
+              { event: "gateway.envio_burbuja_fallido", index, attempt, error },
+              "Fallo al enviar una burbuja, reintentando",
+            );
+          }
+        }
+        if (!sent) {
+          entryLogger.error(
+            { event: "gateway.envio_burbuja_perdido", index },
+            "No se pudo enviar una burbuja tras reintentos — se continúa con las siguientes",
+          );
+        }
+        if (!isLast) {
+          await new Promise((resolve) => setTimeout(resolve, BUBBLE_SEND_DELAY_MS));
+        }
+      }
       const totalLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
       entryLogger.info(
-        { event: "gateway.confirmacion_envio", total_latency_ms: totalLatencyMs },
+        { event: "gateway.confirmacion_envio", total_latency_ms: totalLatencyMs, bubble_count: bubbles.length },
         "Mensaje enviado por Twilio y confirmado",
       );
     } else {

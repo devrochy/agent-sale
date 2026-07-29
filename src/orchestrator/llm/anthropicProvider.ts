@@ -53,16 +53,24 @@ export class AnthropicProvider implements LLMProvider {
     tools,
     messages,
   }: {
-    systemPrompt: string;
+    systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
   }): Promise<TurnResponse> {
+    // Un breakpoint de cache_control por bloque (ver ADR-021): el bloque
+    // compartido (idéntico para todos los tenants) y el bloque de tono
+    // (idéntico entre tenants que eligen el mismo tono) son checkpoints
+    // de prefijo independientes — invalidar uno no invalida el anterior.
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 4096,
       thinking: { type: "adaptive" },
       output_config: { effort: "medium" },
-      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+      system: systemPrompt.map((text) => ({
+        type: "text" as const,
+        text,
+        cache_control: { type: "ephemeral" as const },
+      })),
       tools: toAnthropicTools(tools),
       messages: messages as Anthropic.MessageParam[],
     });

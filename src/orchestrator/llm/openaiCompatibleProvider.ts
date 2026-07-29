@@ -120,7 +120,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     tools,
     messages,
   }: {
-    systemPrompt: string;
+    systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
   }): Promise<TurnResponse> {
@@ -128,6 +128,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     const apiKey = this.config.apiKey ?? env.llmApiKey;
     const model = this.config.model ?? env.llmModel;
 
+    // Este formato no tiene un equivalente a cache_control explícito (su
+    // caching de contexto es automático, ver ADR-010) — los bloques del
+    // system prompt simplemente se concatenan en un único mensaje "system".
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -136,7 +139,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       },
       body: JSON.stringify({
         model,
-        messages: toOpenAIMessages(systemPrompt, messages),
+        messages: toOpenAIMessages(systemPrompt.join("\n\n"), messages),
         tools: toOpenAITools(tools),
       }),
     });

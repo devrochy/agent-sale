@@ -150,20 +150,22 @@ export class GeminiProvider implements LLMProvider {
     tools,
     messages,
   }: {
-    systemPrompt: string;
+    systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
   }): Promise<TurnResponse> {
     const apiKey = this.config.apiKey ?? env.geminiApiKey;
     const model = this.config.model ?? "gemini-2.5-flash";
 
+    // Gemini tampoco tiene un equivalente a cache_control explícito — los
+    // bloques del system prompt se concatenan en una sola instrucción.
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
+          system_instruction: { parts: [{ text: systemPrompt.join("\n\n") }] },
           contents: toGeminiContents(messages),
           tools: toGeminiTools(tools),
         }),

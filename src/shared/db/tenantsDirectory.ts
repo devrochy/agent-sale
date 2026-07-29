@@ -142,3 +142,30 @@ export async function getEscalationConfig(
   );
   return result.rows[0]?.escalation_config ?? null;
 }
+
+/**
+ * Overrides de comportamiento del tenant — tono de voz y estilo de
+ * mensajes (Fase 11.4 extendida, ver
+ * docs/fase-11-panel-admin-dashboard/adrs/ADR-021-tono-personalizable-cache-jerarquico.md).
+ * Mismo patrón que `getEscalationConfig`: `null` si el tenant no configuró
+ * nada, en cuyo caso `src/orchestrator/behaviorConfig.ts` aplica los
+ * defaults (comportamiento idéntico al de antes de esta fase).
+ */
+export async function getBehaviorConfig(tenantId: string): Promise<Record<string, unknown> | null> {
+  const result = await pool.query<{ behavior_config: Record<string, unknown> | null }>(
+    "SELECT behavior_config FROM tenants WHERE id = $1",
+    [tenantId],
+  );
+  return result.rows[0]?.behavior_config ?? null;
+}
+
+/** Guarda el override de comportamiento del tenant — reemplaza el objeto completo, sin merge (el merge campo-a-campo pasa en resolveBehaviorConfig, no acá). */
+export async function saveBehaviorConfig(
+  tenantId: string,
+  config: Record<string, unknown>,
+): Promise<void> {
+  await pool.query("UPDATE tenants SET behavior_config = $1 WHERE id = $2", [
+    JSON.stringify(config),
+    tenantId,
+  ]);
+}

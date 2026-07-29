@@ -1,7 +1,7 @@
 import type { EscalationReason } from "../domains/escalation/escalarHumano.js";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
-import { getEscalationConfig } from "../shared/db/index.js";
+import { getBehaviorConfig, getEscalationConfig } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import {
   extractMonetaryValues,
@@ -9,12 +9,14 @@ import {
   verifyPriceGuardrail,
   verifyStockGuardrail,
 } from "../shared/observability/priceGuardrail.js";
+import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import { resolveLlmProviderForTenant, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
 import { executeTool } from "./toolExecutor.js";
+import { TONE_BLOCKS } from "./toneBlocks.js";
 
 // Límite de iteraciones del loop (ver docs/fase-4-motor-agente/orquestador.md):
 // evita que un error de razonamiento deje al agente llamando tools indefinidamente.
@@ -156,6 +158,10 @@ export async function runTurn(
   // proveedor/modelo, nunca se re-resuelve a mitad de turno. `model`/
   // `providerKey` quedan disponibles para el insert de llm_usage (Fase 11.5).
   const { provider: llmProvider } = await resolveLlmProviderForTenant(tenantId);
+  // Tono de voz del tenant (Fase 11.4 extendida, ver ADR-021) — segundo
+  // bloque de `system`, con su propio cache_control en AnthropicProvider.
+  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+  const systemPrompt = [SYSTEM_PROMPT, TONE_BLOCKS[behaviorConfig.tono]];
 
   const keywordMatch = matchKeywordEscalation(incomingBody, escalationConfig);
   if (keywordMatch) {
@@ -210,7 +216,7 @@ export async function runTurn(
     turnLogger.info({ event: "orchestrator.llm_iniciado", iteration }, "Llamada al LLM iniciada");
     const llmStartedAt = Date.now();
     const response = await llmProvider.converse({
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt,
       tools: TOOL_DEFINITIONS,
       messages,
     });

@@ -9,6 +9,7 @@ import {
 } from "../advisor/handoffView.js";
 import {
   exportLeadsCsv,
+  guardarComportamiento,
   guardarModeloIa,
   pausarBot,
   reactivarBot,
@@ -188,6 +189,19 @@ export async function buildServer() {
       provider: provider ?? "",
       model: model ?? "",
       apiKey: apiKey ?? "",
+    });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/configuracion?guardado=1`
+      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/:tenantId/configuracion/comportamiento", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { tono, estiloMensajes } = request.body as { tono?: string; estiloMensajes?: string };
+    const result = await guardarComportamiento(tenantId, {
+      tono: tono ?? "",
+      estiloMensajes: estiloMensajes ?? "",
     });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/configuracion?guardado=1`

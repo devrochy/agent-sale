@@ -120,7 +120,7 @@ export async function testLlmConfig(candidate: LlmConfigCandidate): Promise<void
   }
 
   await provider.converse({
-    systemPrompt: "Eres una prueba de conexión. Responde únicamente con la palabra: ok",
+    systemPrompt: ["Eres una prueba de conexión. Responde únicamente con la palabra: ok"],
     tools: [],
     messages: [{ role: "user", content: "ping" }],
   });

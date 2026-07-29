@@ -30,7 +30,7 @@ describe("GeminiProvider", () => {
 
     const provider = new GeminiProvider({ apiKey: "test-key", model: "gemini-2.5-flash" });
     const result = await provider.converse({
-      systemPrompt: "Sos un asistente.",
+      systemPrompt: ["Sos un asistente."],
       tools: [],
       messages: [{ role: "user", content: "Hola" }],
     });
@@ -62,7 +62,7 @@ describe("GeminiProvider", () => {
 
     const provider = new GeminiProvider({ apiKey: "test-key" });
     const result = await provider.converse({
-      systemPrompt: "...",
+      systemPrompt: ["..."],
       tools: [{ name: "consultar_inventario", description: "...", inputSchema: { type: "object" } }],
       messages: [{ role: "user", content: "tienen cascos?" }],
     });
@@ -100,7 +100,7 @@ describe("GeminiProvider", () => {
       },
     ];
 
-    await provider.converse({ systemPrompt: "...", tools: [], messages });
+    await provider.converse({ systemPrompt: ["..."], tools: [], messages });
 
     const [, init] = vi.mocked(fetch).mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string);
@@ -119,7 +119,11 @@ describe("GeminiProvider", () => {
     );
 
     const provider = new GeminiProvider({ apiKey: "test-key" });
-    const result = await provider.converse({ systemPrompt: "...", tools: [], messages: [{ role: "user", content: "hola" }] });
+    const result = await provider.converse({
+      systemPrompt: ["..."],
+      tools: [],
+      messages: [{ role: "user", content: "hola" }],
+    });
 
     expect(result.stopReason).toBe("refusal");
     expect(result.refusalCategory).toBe("SAFETY");
@@ -130,7 +134,7 @@ describe("GeminiProvider", () => {
 
     const provider = new GeminiProvider({ apiKey: "key-invalida" });
     await expect(
-      provider.converse({ systemPrompt: "...", tools: [], messages: [{ role: "user", content: "hola" }] }),
+      provider.converse({ systemPrompt: ["..."], tools: [], messages: [{ role: "user", content: "hola" }] }),
     ).rejects.toThrow(/401/);
   });
 });
