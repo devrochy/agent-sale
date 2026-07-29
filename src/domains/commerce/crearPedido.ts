@@ -11,8 +11,8 @@ export interface CrearPedidoInput {
 }
 
 export interface CrearPedidoOutput {
-  order_id: string;
-  status: "confirmed" | "duplicate";
+  order_id: string | null;
+  status: "confirmed" | "duplicate" | "monto_alto";
   total: number;
 }
 
@@ -41,11 +41,21 @@ function buildIdempotencyKey(quoteId: string, messageSid: string): string {
  * modelo de datos trata `quotes -> orders` como 0..1; (2) el
  * idempotency_key (UNIQUE en Postgres) protege además contra una carrera
  * entre dos intentos concurrentes para la misma cotización.
+ *
+ * `montoAltoThreshold` lo inyecta el orquestador (viene de
+ * `escalation_config` del tenant, ver escalationRules.ts) — se evalúa acá,
+ * *antes* de insertar el pedido, para que un monto alto nunca llegue a
+ * quedar `status: 'confirmed'` ni descuente stock. Antes este chequeo
+ * vivía en el orquestador y se aplicaba sobre el resultado de esta misma
+ * tool, es decir después de que el pedido ya existía en la base — el
+ * cliente recibía el mensaje de escalamiento, pero el pedido real ya
+ * estaba confirmado (ver docs/fase-7-escalamiento-humano/reglas-escalamiento.md).
  */
 export async function crearPedido(
   tenantId: string,
   messageSid: string,
   input: CrearPedidoInput,
+  montoAltoThreshold: number,
 ): Promise<CrearPedidoOutput> {
   const idempotencyKey = buildIdempotencyKey(input.quote_id, messageSid);
 
@@ -73,6 +83,11 @@ export async function crearPedido(
     const quote = quoteResult.rows[0];
     if (!quote) {
       throw new Error(`Cotización no encontrada: ${input.quote_id}`);
+    }
+
+    const total = Number(quote.total);
+    if (total > montoAltoThreshold) {
+      return { order_id: null, status: "monto_alto", total };
     }
 
     const order = await client.query<{ id: string }>(
@@ -131,6 +146,6 @@ export async function crearPedido(
       [orderId, tenantId],
     );
 
-    return { order_id: orderId, status: "confirmed", total: Number(quote.total) };
+    return { order_id: orderId, status: "confirmed", total };
   });
 }

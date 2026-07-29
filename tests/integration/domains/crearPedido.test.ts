@@ -60,11 +60,16 @@ describe("crearPedido", () => {
       items: [{ product_id: productA, quantity: 2 }],
     });
 
-    const result = await crearPedido(tenantA, "sid-1", {
-      quote_id: quote.quote_id,
-      payment_method: "transferencia",
-      delivery_method: "domicilio",
-    });
+    const result = await crearPedido(
+      tenantA,
+      "sid-1",
+      {
+        quote_id: quote.quote_id,
+        payment_method: "transferencia",
+        delivery_method: "domicilio",
+      },
+      1000000,
+    );
 
     expect(result.status).toBe("confirmed");
     expect(result.total).toBe(200000);
@@ -88,16 +93,18 @@ describe("crearPedido", () => {
       items: [{ product_id: productA, quantity: 1 }],
     });
 
-    const first = await crearPedido(tenantA, "sid-2", {
-      quote_id: quote.quote_id,
-      payment_method: "tarjeta",
-      delivery_method: "recoger_en_tienda",
-    });
-    const second = await crearPedido(tenantA, "sid-2", {
-      quote_id: quote.quote_id,
-      payment_method: "tarjeta",
-      delivery_method: "recoger_en_tienda",
-    });
+    const first = await crearPedido(
+      tenantA,
+      "sid-2",
+      { quote_id: quote.quote_id, payment_method: "tarjeta", delivery_method: "recoger_en_tienda" },
+      1000000,
+    );
+    const second = await crearPedido(
+      tenantA,
+      "sid-2",
+      { quote_id: quote.quote_id, payment_method: "tarjeta", delivery_method: "recoger_en_tienda" },
+      1000000,
+    );
 
     expect(second.status).toBe("duplicate");
     expect(second.order_id).toBe(first.order_id);
@@ -121,16 +128,26 @@ describe("crearPedido", () => {
       items: [{ product_id: productA, quantity: 1 }],
     });
 
-    const first = await crearPedido(tenantA, "sid-3", {
-      quote_id: quote.quote_id,
-      payment_method: "efectivo_contraentrega",
-      delivery_method: "domicilio",
-    });
-    const second = await crearPedido(tenantA, "sid-distinto", {
-      quote_id: quote.quote_id,
-      payment_method: "efectivo_contraentrega",
-      delivery_method: "domicilio",
-    });
+    const first = await crearPedido(
+      tenantA,
+      "sid-3",
+      {
+        quote_id: quote.quote_id,
+        payment_method: "efectivo_contraentrega",
+        delivery_method: "domicilio",
+      },
+      1000000,
+    );
+    const second = await crearPedido(
+      tenantA,
+      "sid-distinto",
+      {
+        quote_id: quote.quote_id,
+        payment_method: "efectivo_contraentrega",
+        delivery_method: "domicilio",
+      },
+      1000000,
+    );
 
     expect(second.status).toBe("duplicate");
     expect(second.order_id).toBe(first.order_id);
@@ -143,11 +160,51 @@ describe("crearPedido", () => {
 
   it("falla si la cotización no existe", async () => {
     await expect(
-      crearPedido(tenantA, "sid-4", {
-        quote_id: "00000000-0000-0000-0000-000000000000",
+      crearPedido(
+        tenantA,
+        "sid-4",
+        {
+          quote_id: "00000000-0000-0000-0000-000000000000",
+          payment_method: "transferencia",
+          delivery_method: "domicilio",
+        },
+        1000000,
+      ),
+    ).rejects.toThrow(/Cotización no encontrada/);
+  });
+
+  it("se niega a confirmar un pedido de monto alto: no crea la orden ni descuenta stock", async () => {
+    const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+      items: [{ product_id: productA, quantity: 5 }], // 5 x 100.000 = 500.000
+    });
+
+    const stockBefore = await adminPool.query<{ stock_quantity: number }>(
+      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
+      [productA],
+    );
+
+    const result = await crearPedido(
+      tenantA,
+      "sid-5",
+      {
+        quote_id: quote.quote_id,
         payment_method: "transferencia",
         delivery_method: "domicilio",
-      }),
-    ).rejects.toThrow(/Cotización no encontrada/);
+      },
+      300000, // umbral menor que el subtotal de la cotización (500.000)
+    );
+
+    expect(result).toEqual({ order_id: null, status: "monto_alto", total: 500000 });
+
+    const count = await adminPool.query(`SELECT COUNT(*) FROM orders WHERE quote_id = $1`, [
+      quote.quote_id,
+    ]);
+    expect(Number(count.rows[0].count)).toBe(0);
+
+    const stockAfter = await adminPool.query<{ stock_quantity: number }>(
+      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
+      [productA],
+    );
+    expect(stockAfter.rows[0]!.stock_quantity).toBe(stockBefore.rows[0]!.stock_quantity);
   });
 });

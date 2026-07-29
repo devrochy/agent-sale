@@ -4,7 +4,7 @@ import { recordAudit } from "../shared/audit/auditLog.js";
 import { getEscalationConfig } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { extractMonetaryValues, verifyPriceGuardrail } from "../shared/observability/priceGuardrail.js";
-import { isMontoAlto, matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
+import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import { llmProvider, type ContentBlock } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
@@ -14,18 +14,6 @@ import { executeTool } from "./toolExecutor.js";
 // Límite de iteraciones del loop (ver docs/fase-4-motor-agente/orquestador.md):
 // evita que un error de razonamiento deje al agente llamando tools indefinidamente.
 const MAX_ITERATIONS = 6;
-
-// Solo "crear_pedido" (no "generar_cotizacion" ni "aplicar_promocion")
-// dispara la regla de "monto alto" (ver
-// docs/fase-7-escalamiento-humano/reglas-escalamiento.md: "el total de la
-// cotización **o pedido activo**" — la cifra real que pagaría el cliente).
-// generar_cotizacion devuelve el subtotal sin descuento todavía — evaluar
-// monto alto ahí escalaba cotizaciones que, con una promoción real
-// aplicada (aplicar_promocion sí actualiza quotes.total), habrían quedado
-// bajo el umbral. crear_pedido siempre lee quotes.total ya actualizado
-// por cualquier promoción aplicada, así que es el único punto donde el
-// monto es realmente definitivo.
-const QUOTE_AMOUNT_TOOLS = new Set(["crear_pedido"]);
 
 const FALLBACK_ESCALATION_MESSAGE =
   "En este momento no puedo continuar por acá — ya avisé a un asesor de ForMotos para que te contacte en breve.";
@@ -56,21 +44,18 @@ function extractText(content: ContentBlock[]): string {
 }
 
 /**
- * Si el tool_result es de una tool comercial, extrae el monto relevante
- * (`total` si existe, si no `subtotal`) para la regla de monto alto. `null`
- * si la tool no aplica, o si el resultado vino con error.
+ * "monto_alto" de crear_pedido significa que la tool se negó a confirmar
+ * el pedido (ver crearPedido.ts: el chequeo corre *antes* del INSERT, así
+ * que si devuelve esto no se creó ningún pedido ni se descontó stock —
+ * evita el problema de escalar después de haber confirmado ya el pedido).
  */
-function extractQuoteAmount(toolName: string, toolResult: ContentBlock): number | null {
-  if (
-    toolResult.type !== "tool_result" ||
-    toolResult.is_error ||
-    !QUOTE_AMOUNT_TOOLS.has(toolName)
-  ) {
+function isPedidoRechazadoPorMontoAlto(toolName: string, toolResult: ContentBlock): number | null {
+  if (toolName !== "crear_pedido" || toolResult.type !== "tool_result" || toolResult.is_error) {
     return null;
   }
   try {
-    const parsed = JSON.parse(toolResult.content) as { subtotal?: number; total?: number };
-    return parsed.total ?? parsed.subtotal ?? null;
+    const parsed = JSON.parse(toolResult.content) as { status?: string; total?: number };
+    return parsed.status === "monto_alto" ? parsed.total ?? null : null;
   } catch {
     return null;
   }
@@ -254,14 +239,15 @@ export async function runTurn(
           conversationId,
           customerId,
           messageSid,
+          escalationConfig.montoAltoThreshold,
           toolUse,
         );
         toolResults.push(toolResult);
         if (!toolResult.is_error) {
           knownToolAmounts.push(...extractMonetaryValues(JSON.parse(toolResult.content)));
         }
-        const amount = extractQuoteAmount(toolUse.name, toolResult);
-        if (amount !== null && isMontoAlto(amount, escalationConfig)) {
+        const amount = isPedidoRechazadoPorMontoAlto(toolUse.name, toolResult);
+        if (amount !== null) {
           montoAltoAmount = amount;
         }
         const singleMatchImageUrl = extractSingleMatchImageUrl(toolUse.name, toolResult);
@@ -277,7 +263,7 @@ export async function runTurn(
           tenantId,
           conversationId,
           "monto_alto",
-          `El monto de la cotización/pedido ($${montoAltoAmount}) supera el umbral configurado ($${escalationConfig.montoAltoThreshold}).`,
+          `El pedido ($${montoAltoAmount}) supera el umbral configurado ($${escalationConfig.montoAltoThreshold}) — crear_pedido se negó a confirmarlo.`,
         );
       }
 

@@ -182,11 +182,11 @@ describe("runTurn — regla de monto alto", () => {
     expect(escalarHumano).not.toHaveBeenCalled();
   });
 
-  it("escala en crear_pedido si el total final (ya con cualquier promoción aplicada) supera el umbral", async () => {
+  it("escala si crear_pedido se niega a confirmar por monto alto (no crea el pedido, solo entonces escala)", async () => {
     vi.mocked(executeTool).mockResolvedValue({
       type: "tool_result",
       tool_use_id: "toolu_1",
-      content: JSON.stringify({ order_id: "o1", status: "confirmed", total: 1500000 }),
+      content: JSON.stringify({ order_id: null, status: "monto_alto", total: 1500000 }),
     });
     vi.mocked(llmProvider.converse).mockResolvedValueOnce({
       stopReason: "tool_use",
