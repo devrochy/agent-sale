@@ -113,6 +113,24 @@ export async function crearPedido(
       [tenantId, orderId, input.quote_id],
     );
 
+    // Descuento de stock al confirmar (ver docs/fase-5-catalogo-inventario/
+    // sincronizacion-inventario.md): el diseño original deja el inventario
+    // como propiedad exclusiva de la fuente externa (Sheets/ERP) — pero esa
+    // sincronización nunca se implementó, así que sin este descuento el
+    // stock nunca baja por ventas reales del agente y dos pedidos podrían
+    // "vender" la misma última unidad. `GREATEST(...,0)` evita que quede
+    // negativo si dos pedidos concurrentes agotan el mismo producto. Si en
+    // el futuro se conecta una sincronización real con la fuente externa,
+    // hay que decidir quién manda (este INSERT vs. el próximo sync) antes
+    // de dejar ambos escribiendo `stock_quantity`.
+    await client.query(
+      `UPDATE inventory i
+       SET stock_quantity = GREATEST(i.stock_quantity - oi.quantity, 0)
+       FROM order_items oi
+       WHERE oi.order_id = $1 AND oi.tenant_id = $2 AND i.tenant_id = $2 AND i.product_id = oi.product_id`,
+      [orderId, tenantId],
+    );
+
     return { order_id: orderId, status: "confirmed", total: Number(quote.total) };
   });
 }

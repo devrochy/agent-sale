@@ -75,6 +75,12 @@ describe("crearPedido", () => {
     );
     expect(items.rows).toHaveLength(1);
     expect(items.rows[0]).toMatchObject({ product_id: productA, quantity: 2 });
+
+    const stock = await adminPool.query<{ stock_quantity: number }>(
+      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
+      [productA],
+    );
+    expect(stock.rows[0]!.stock_quantity).toBe(48); // 50 - 2
   });
 
   it("el mismo message_sid reintentado sobre la misma cotización devuelve el mismo pedido (status duplicate)", async () => {
@@ -100,6 +106,14 @@ describe("crearPedido", () => {
       quote.quote_id,
     ]);
     expect(Number(count.rows[0].count)).toBe(1);
+
+    // El reintento "duplicate" no debe descontar stock una segunda vez
+    // para la misma cotización — solo la creación real del pedido resta.
+    const stock = await adminPool.query<{ stock_quantity: number }>(
+      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
+      [productA],
+    );
+    expect(stock.rows[0]!.stock_quantity).toBe(47); // 48 - 1 (de este test), no -2
   });
 
   it("un message_sid distinto sobre una cotización ya convertida en pedido también devuelve 'duplicate' (0..1 quote->order)", async () => {
