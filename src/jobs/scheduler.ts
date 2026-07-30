@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { logger } from "../shared/observability/logger.js";
+import { runCazadorDeVentas } from "./cazadorDeVentas.js";
 import { sendDailyReports } from "./dailyReport.js";
 
 /**
@@ -25,6 +26,21 @@ export function startJobScheduler(): void {
         logger.error(
           { error, event: "jobs.reporte_diario_fallido" },
           "Falló la corrida del Reporte diario",
+        );
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
+  cron.schedule(
+    "0 * * * *",
+    async () => {
+      try {
+        await runCazadorDeVentas();
+      } catch (error) {
+        logger.error(
+          { error, event: "jobs.cazador_ventas_fallido" },
+          "Falló la corrida del Cazador de ventas",
         );
       }
     },
