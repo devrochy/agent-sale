@@ -5,9 +5,9 @@ El prompt caching es la principal palanca de costo del agente (ver estimación e
 
 ## Qué se cachea
 - **Definiciones de tools** (las 6 tools de la Fase 1) — fijas, no cambian entre turnos ni entre tenants (el esquema es el mismo; solo los datos que devuelven cambian).
-- **System prompt** — persona del agente, reglas de negocio generales ("el LLM propone, la tool decide", cuándo escalar, tono de la marca). Se marca con `cache_control: {"type": "ephemeral"}` en el último bloque de texto del system prompt.
+- **System prompt — dos bloques, dos breakpoints** (Fase 11.4 extendida, ver [ADR-021](../fase-11-panel-admin-dashboard/adrs/ADR-021-tono-personalizable-cache-jerarquico.md)): un bloque **compartido** (persona del agente, reglas de negocio generales, escalamiento — byte-idéntico para todos los tenants) y un bloque de **tono de voz**, configurable por tenant entre 3 variantes fijas (Cálido/Formal/Divertido). Cada uno se marca con su propio `cache_control: {"type": "ephemeral"}` — son checkpoints de prefijo independientes (invalidar el segundo no invalida el primero). Como solo hay 3 variantes fijas de tono (no texto libre por tenant), el segundo breakpoint también se comparte entre todos los tenants que eligen el mismo tono, no solo dentro de un mismo tenant.
 
-Como el orden de renderizado de la API es `tools → system → messages`, un breakpoint al final del system prompt cachea **tools + system juntos** en una sola entrada.
+Como el orden de renderizado de la API es `tools → system → messages`, un breakpoint al final del último bloque de system cachea **tools + ambos bloques de system** en una sola entrada; el primer breakpoint (fin del bloque compartido) cachea tools + el bloque compartido por separado.
 
 ## Qué NO se cachea (va después del breakpoint)
 - El catálogo completo de ForMotos **no** se embebe en el system prompt — son 300+ productos, y cambiaría en cada actualización de inventario, invalidando el caché constantemente. El catálogo se consulta bajo demanda vía la tool `consultar_inventario` (Fase 1), no como contexto estático.
@@ -24,7 +24,7 @@ Cada respuesta de Claude incluye en `usage`:
 Estos valores se registran en `audit_log` (o en una métrica agregada, ver Fase 8) por cada llamada — si `cache_read_input_tokens` es consistentemente cero, es señal de un invalidador silencioso (ej. el system prompt cambiando por accidente entre llamadas) y debe investigarse antes de asumir que el caching está funcionando.
 
 ## Riesgo a vigilar: invalidadores silenciosos
-El system prompt debe ser **byte-idéntico** entre llamadas para que el caché funcione. Esto implica una regla de diseño para cuando se implemente el código: no interpolar fecha/hora, IDs de sesión, ni ningún valor variable dentro del texto del system prompt — cualquier contexto dinámico (ej. "son las 3pm, fuera de horario") debe ir en los `messages`, no en `system`.
+Cada bloque de system debe ser **byte-idéntico** entre llamadas para que su breakpoint funcione (el bloque compartido, siempre; el bloque de tono, entre llamadas que usan la misma variante). Esto implica una regla de diseño: no interpolar fecha/hora, IDs de sesión, ni ningún valor variable dentro del texto de ningún bloque de system — cualquier contexto dinámico (ej. "son las 3pm, fuera de horario") debe ir en los `messages`, no en `system`. Por esto mismo el tono es un selector de 3 variantes fijas, no texto libre por tenant — texto libre haría que cada tenant tuviera un bloque distinto, sin reuso posible entre tenants.
 
 ## Qué no cubre este documento
 - Los "mid-conversation system messages" (inyectar instrucciones sin invalidar caché) son una función disponible solo en Opus 4.8, no en Sonnet 5 (modelo elegido en el ADR-008) — no se diseña esa capacidad para este proyecto por ahora.

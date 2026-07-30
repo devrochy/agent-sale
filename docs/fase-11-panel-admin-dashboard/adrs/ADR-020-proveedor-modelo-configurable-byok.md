@@ -1,5 +1,7 @@
 # ADR-020: Proveedor y modelo de LLM configurable por tenant, con BYOK
 
+> **Nota de actualización**: la sección "Opciones consideradas" de más abajo descartaba explícitamente el ruteo automático de modelo por dificultad ("Enrutamiento dinámico... descartado explícitamente por el usuario"). Ese punto puntual fue revisado y revertido — ver [ADR-023](./ADR-023-ruteo-automatico-dificultad.md). El resto de esta ADR (catálogo, BYOK, cifrado, resolución de "Automático") sigue vigente sin cambios.
+
 ## Estado
 Aceptado.
 

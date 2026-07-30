@@ -16,6 +16,7 @@ vi.mock("../../../src/orchestrator/memory.js", () => ({
   updateState: vi.fn(),
 }));
 vi.mock("../../../src/shared/db/index.js", () => ({
+  getBehaviorConfig: vi.fn(),
   getEscalationConfig: vi.fn(),
 }));
 vi.mock("../../../src/shared/audit/auditLog.js", () => ({
@@ -28,7 +29,7 @@ import type { TurnResponse } from "../../../src/orchestrator/llm/types.js";
 import { runTurn } from "../../../src/orchestrator/loop.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "../../../src/orchestrator/memory.js";
 import { executeTool } from "../../../src/orchestrator/toolExecutor.js";
-import { getEscalationConfig } from "../../../src/shared/db/index.js";
+import { getBehaviorConfig, getEscalationConfig } from "../../../src/shared/db/index.js";
 import { recordAudit } from "../../../src/shared/audit/auditLog.js";
 
 const USAGE = { inputTokens: 10, outputTokens: 10 };
@@ -54,6 +55,7 @@ describe("runTurn — guardrail de precios", () => {
     vi.mocked(appendMessage).mockReset();
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
@@ -68,6 +70,7 @@ describe("runTurn — guardrail de precios", () => {
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
+    vi.mocked(getBehaviorConfig).mockResolvedValue(null);
   });
 
   it("responde normalmente cuando el monto del texto coincide con el resultado real de una tool", async () => {
@@ -162,6 +165,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     vi.mocked(appendMessage).mockReset();
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
@@ -176,6 +180,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
+    vi.mocked(getBehaviorConfig).mockResolvedValue(null);
   });
 
   it("responde normalmente cuando la cantidad de stock del texto coincide con el resultado real de una tool", async () => {
@@ -248,6 +253,7 @@ describe("runTurn — regla de monto alto", () => {
     vi.mocked(appendMessage).mockReset();
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
@@ -262,6 +268,7 @@ describe("runTurn — regla de monto alto", () => {
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
+    vi.mocked(getBehaviorConfig).mockResolvedValue(null);
   });
 
   it("no escala en generar_cotizacion aunque el subtotal supere el umbral (todavía no es el monto final, puede bajar con una promoción)", async () => {

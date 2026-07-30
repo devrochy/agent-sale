@@ -40,7 +40,13 @@ export interface TurnResponse {
 
 export interface LLMProvider {
   converse(params: {
-    systemPrompt: string;
+    // Array ordenado de bloques de texto plano del system prompt (Fase
+    // 11.4 extendida, ver ADR-021) — ej. [bloque compartido, bloque de
+    // tono del tenant]. Sin metadata de cache acá a propósito: eso es
+    // Anthropic-específico (cache_control), cada provider decide cómo
+    // traducir el array (Anthropic le pone un breakpoint por bloque;
+    // los demás simplemente lo concatenan, su caching ya es opaco).
+    systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
   }): Promise<TurnResponse>;

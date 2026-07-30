@@ -1,11 +1,21 @@
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import { env } from "../config/env.js";
-import { isProviderKey, PROVIDER_CATALOG, testLlmConfig, type ProviderKey } from "../orchestrator/llm/index.js";
+import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
+import {
+  isLlmRoutingMode,
+  isProviderKey,
+  PROVIDER_CATALOG,
+  testLlmConfig,
+  type ProviderKey,
+} from "../orchestrator/llm/index.js";
+import { isTono } from "../orchestrator/toneBlocks.js";
 import {
   clearLlmConfig,
+  getBehaviorConfig,
   getLlmConfig,
   getTenant,
   listTenants,
+  saveBehaviorConfig,
   saveLlmConfig,
   setBotPaused,
   type TenantSummary,
@@ -831,20 +841,34 @@ const CLIENT_SCRIPT = `
     }
     var modelSelect = document.querySelector("[data-model-select]");
     var apiKeyInput = document.querySelector("[data-apikey-input]");
+    var routingModeSelect = document.querySelector("[data-routing-mode-select]");
     var initialModel = modelSelect.getAttribute("data-initial-model") || "";
+
+    function placeholderOption(text) {
+      modelSelect.innerHTML = "";
+      modelSelect.disabled = true;
+      var opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = text;
+      modelSelect.appendChild(opt);
+    }
 
     function renderModelOptions() {
       var entry = catalog ? catalog[providerSelect.value] : null;
-      modelSelect.innerHTML = "";
       if (!entry) {
-        modelSelect.disabled = true;
-        var placeholderOpt = document.createElement("option");
-        placeholderOpt.value = "";
-        placeholderOpt.textContent = "— usa el default de la plataforma —";
-        modelSelect.appendChild(placeholderOpt);
+        placeholderOption("— usa el default de la plataforma —");
         if (apiKeyInput) apiKeyInput.placeholder = "";
         return;
       }
+      if (apiKeyInput) apiKeyInput.placeholder = entry.keyPlaceholder || "";
+      // "Cerebro del bot" (ver ADR-023): en automático, el modelo lo
+      // elige el resolver por turno según la dificultad del mensaje — el
+      // select de Modelo no aplica, se deshabilita.
+      if (routingModeSelect && routingModeSelect.value === "auto_dificultad") {
+        placeholderOption("— se elige automáticamente según la dificultad del mensaje —");
+        return;
+      }
+      modelSelect.innerHTML = "";
       modelSelect.disabled = false;
       entry.models.forEach(function (m) {
         var opt = document.createElement("option");
@@ -853,9 +877,9 @@ const CLIENT_SCRIPT = `
         if (m.id === initialModel) opt.selected = true;
         modelSelect.appendChild(opt);
       });
-      if (apiKeyInput) apiKeyInput.placeholder = entry.keyPlaceholder || "";
     }
     providerSelect.addEventListener("change", renderModelOptions);
+    if (routingModeSelect) routingModeSelect.addEventListener("change", renderModelOptions);
     renderModelOptions();
   }
 
@@ -1857,6 +1881,7 @@ export async function renderConfiguracionPage(
     return null;
   }
   const llmConfig = await getLlmConfig(tenantId);
+  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
   const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
@@ -1913,6 +1938,14 @@ export async function renderConfiguracionPage(
             <p class="hint">Sin seleccionar, usa el proveedor y modelo por defecto de la plataforma.</p>
           </div>
           <div class="field">
+            <label for="llm-routing-mode">Selección de modelo</label>
+            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select>
+              <option value="manual"${llmConfig.routingMode === "manual" ? " selected" : ""}>Manual — elijo el modelo yo mismo</option>
+              <option value="auto_dificultad"${llmConfig.routingMode === "auto_dificultad" ? " selected" : ""}>Automático según dificultad (Cerebro del bot)</option>
+            </select>
+            <p class="hint">"Cerebro del bot" usa el modelo más barato del proveedor para preguntas simples y el más potente para las difíciles — requiere elegir un proveedor arriba (no "Automático").</p>
+          </div>
+          <div class="field">
             <label for="llm-model">Modelo</label>
             <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
           </div>
@@ -1924,6 +1957,40 @@ export async function renderConfiguracionPage(
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
         <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
+      </div>
+    </section>
+    <section class="block block--narrow" aria-label="Voz y estilo del agente">
+      <div class="blockhead"><h2>Voz y estilo del agente</h2></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/configuracion/comportamiento">
+          <div class="field">
+            <label for="tono">Tono</label>
+            <select id="tono" name="tono">
+              <option value="calido"${behaviorConfig.tono === "calido" ? " selected" : ""}>Cálido — amable y cercano, como un amigo</option>
+              <option value="formal"${behaviorConfig.tono === "formal" ? " selected" : ""}>Formal — serio y profesional, trato de usted</option>
+              <option value="divertido"${behaviorConfig.tono === "divertido" ? " selected" : ""}>Divertido — relajado y con buen humor</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="estilo-mensajes">Estilo de mensajes</label>
+            <select id="estilo-mensajes" name="estiloMensajes">
+              <option value="un_mensaje"${behaviorConfig.estiloMensajes === "un_mensaje" ? " selected" : ""}>Un mensaje — toda la respuesta en una sola burbuja</option>
+              <option value="pocos_cortos"${behaviorConfig.estiloMensajes === "pocos_cortos" ? " selected" : ""}>2-3 cortos — parte la respuesta en pocas burbujas</option>
+              <option value="varios_cortos"${behaviorConfig.estiloMensajes === "varios_cortos" ? " selected" : ""}>Varios cortos — muchas burbujas, estilo chat</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="velocidad-respuesta">Velocidad de respuesta</label>
+            <select id="velocidad-respuesta" name="velocidadRespuesta">
+              <option value="inmediato"${behaviorConfig.velocidadRespuesta === "inmediato" ? " selected" : ""}>Inmediato (recomendado) — responde apenas llega el mensaje</option>
+              <option value="rapido"${behaviorConfig.velocidadRespuesta === "rapido" ? " selected" : ""}>Rápido — espera 5 segundos por si el cliente sigue escribiendo</option>
+              <option value="normal"${behaviorConfig.velocidadRespuesta === "normal" ? " selected" : ""}>Normal — espera 15 segundos</option>
+              <option value="pausado"${behaviorConfig.velocidadRespuesta === "pausado" ? " selected" : ""}>Pausado — espera 30 segundos para juntar todo el mensaje</option>
+            </select>
+            <p class="hint">Fuera de "Inmediato", el agente agrupa los mensajes seguidos del cliente en un solo turno de respuesta.</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+        </form>
       </div>
     </section>
   `;
@@ -1940,6 +2007,32 @@ export async function reactivarBot(tenantId: string): Promise<void> {
 }
 
 /**
+ * Tono/Estilo de mensajes (Fase 11.4 extendida, ver ADR-021) — a diferencia
+ * de "Probar y guardar" del modelo de IA, acá no hay nada que validar
+ * contra una API externa, se guarda directo.
+ */
+export async function guardarComportamiento(
+  tenantId: string,
+  input: { tono: string; estiloMensajes: string; velocidadRespuesta: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!isTono(input.tono)) {
+    return { ok: false, error: "Tono no válido." };
+  }
+  if (!isEstiloMensajes(input.estiloMensajes)) {
+    return { ok: false, error: "Estilo de mensajes no válido." };
+  }
+  if (!isVelocidadRespuesta(input.velocidadRespuesta)) {
+    return { ok: false, error: "Velocidad de respuesta no válida." };
+  }
+  await saveBehaviorConfig(tenantId, {
+    tono: input.tono,
+    estiloMensajes: input.estiloMensajes,
+    velocidadRespuesta: input.velocidadRespuesta,
+  });
+  return { ok: true };
+}
+
+/**
  * "Probar y guardar" (ver renderConfiguracionPage): prueba la combinación
  * ANTES de persistir — solo guarda si testLlmConfig no lanza. `provider`
  * vacío es "Automático" (vuelve al default de plataforma, sin llamada de
@@ -1947,7 +2040,7 @@ export async function reactivarBot(tenantId: string): Promise<void> {
  */
 export async function guardarModeloIa(
   tenantId: string,
-  input: { provider: string; model: string; apiKey: string },
+  input: { provider: string; model: string; apiKey: string; routingMode: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (input.provider === "") {
     await clearLlmConfig(tenantId);
@@ -1957,8 +2050,19 @@ export async function guardarModeloIa(
   if (!isProviderKey(input.provider)) {
     return { ok: false, error: "Proveedor no válido." };
   }
+  // "Cerebro del bot" (ADR-023): en automático el modelo puntual no
+  // importa (se elige por turno según dificultad) — se guarda el default
+  // del proveedor solo para no dejar el campo vacío, y "Probar y guardar"
+  // prueba con ese default (representativo del proveedor, no
+  // necesariamente el que se use en cada turno real).
+  const routingMode = isLlmRoutingMode(input.routingMode) ? input.routingMode : "manual";
   const entry = PROVIDER_CATALOG[input.provider];
-  const model = entry.models.some((m) => m.id === input.model) ? input.model : entry.defaultModel;
+  const model =
+    routingMode === "auto_dificultad"
+      ? entry.defaultModel
+      : entry.models.some((m) => m.id === input.model)
+        ? input.model
+        : entry.defaultModel;
 
   const existing = await getLlmConfig(tenantId);
   const trimmedKey = input.apiKey.trim();
@@ -1976,6 +2080,6 @@ export async function guardarModeloIa(
     return { ok: false, error: message };
   }
 
-  await saveLlmConfig(tenantId, { provider: input.provider, model, apiKey });
+  await saveLlmConfig(tenantId, { provider: input.provider, model, apiKey, routingMode });
   return { ok: true };
 }

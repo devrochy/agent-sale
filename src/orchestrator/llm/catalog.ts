@@ -86,3 +86,15 @@ export const PROVIDER_CATALOG: Record<ProviderKey, ProviderCatalogEntry> = {
 export function isProviderKey(value: string): value is ProviderKey {
   return Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, value);
 }
+
+/**
+ * "Cerebro del bot" (Fase 11.4 extendida, ver ADR-023): modo de ruteo del
+ * modelo dentro del proveedor ya elegido. 'manual' (default) = usa
+ * `llm_model` tal cual (ADR-020). 'auto_dificultad' = el modelo se elige
+ * por turno según `difficultyRouting.ts`, ignorando `llm_model`.
+ */
+export type LlmRoutingMode = "manual" | "auto_dificultad";
+
+export function isLlmRoutingMode(value: string): value is LlmRoutingMode {
+  return value === "manual" || value === "auto_dificultad";
+}

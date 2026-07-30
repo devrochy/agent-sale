@@ -9,6 +9,7 @@ import {
 } from "../advisor/handoffView.js";
 import {
   exportLeadsCsv,
+  guardarComportamiento,
   guardarModeloIa,
   pausarBot,
   reactivarBot,
@@ -179,15 +180,35 @@ export async function buildServer() {
 
   app.post("/admin/:tenantId/configuracion/modelo-ia", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const { provider, model, apiKey } = request.body as {
+    const { provider, model, apiKey, routingMode } = request.body as {
       provider?: string;
       model?: string;
       apiKey?: string;
+      routingMode?: string;
     };
     const result = await guardarModeloIa(tenantId, {
       provider: provider ?? "",
       model: model ?? "",
       apiKey: apiKey ?? "",
+      routingMode: routingMode ?? "",
+    });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/configuracion?guardado=1`
+      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/:tenantId/configuracion/comportamiento", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { tono, estiloMensajes, velocidadRespuesta } = request.body as {
+      tono?: string;
+      estiloMensajes?: string;
+      velocidadRespuesta?: string;
+    };
+    const result = await guardarComportamiento(tenantId, {
+      tono: tono ?? "",
+      estiloMensajes: estiloMensajes ?? "",
+      velocidadRespuesta: velocidadRespuesta ?? "",
     });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/configuracion?guardado=1`

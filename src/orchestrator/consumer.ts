@@ -1,10 +1,12 @@
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { INBOUND_STREAM } from "../gateway/queue.js";
-import { getTenant } from "../shared/db/tenantsDirectory.js";
+import { getBehaviorConfig, getTenant } from "../shared/db/tenantsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
-import { runTurn } from "./loop.js";
+import { resolveBehaviorConfig, DEBOUNCE_DELAY_MS } from "./behaviorConfig.js";
+import { scheduleDebounce } from "./debounceScheduler.js";
+import { appendInbound, processConversation } from "./loop.js";
 import { appendMessage, resolveConversation } from "./memory.js";
+import { sendTurnBubbles } from "./sendTurnResult.js";
 
 const CONSUMER_GROUP = "orchestrator-group";
 const CONSUMER_NAME = `orchestrator-${process.pid}`;
@@ -70,9 +72,11 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // chequea ACÁ, antes de invocar el orquestador — así se evita
     // resolver el proveedor de LLM (y su costo) para un tenant pausado.
     // El mensaje del cliente se guarda igual (mismo par de llamadas que
-    // hace runTurn al principio) para no perder historial mientras el
-    // bot está pausado; si se reactiva, el operador lo ve pendiente en
-    // el inbox de Conversaciones.
+    // usa appendInbound) para no perder historial mientras el bot está
+    // pausado; si se reactiva, el operador lo ve pendiente en el inbox de
+    // Conversaciones. Deliberadamente NO pasa por appendInbound (que
+    // podría escalar por palabra clave y mandar un mensaje automático de
+    // fallback) — un bot pausado no manda absolutamente nada.
     const tenant = await getTenant(tenantId);
     if (tenant?.bot_paused) {
       const { conversationId } = await resolveConversation(tenantId, customerPhone, customerName);
@@ -85,27 +89,43 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
       return;
     }
 
-    const { responseText, mediaUrl } = await runTurn(
+    // Ingesta inmediata (ver ADR-022): guarda el mensaje y corre las
+    // reglas que no pueden esperar (escalado ya, keyword) sin importar la
+    // velocidad de respuesta configurada.
+    const { conversationId, escalatedNow } = await appendInbound(
       tenantId,
       customerPhone,
       message.body ?? "",
-      messageSid,
       customerName,
     );
-    if (responseText !== null) {
-      entryLogger.info({ event: "orchestrator.respuesta_lista" }, "Respuesta lista, enviando por Twilio");
-      await sendWhatsAppMessage(customerPhone, responseText, mediaUrl ?? undefined);
-      const totalLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
-      entryLogger.info(
-        { event: "gateway.confirmacion_envio", total_latency_ms: totalLatencyMs },
-        "Mensaje enviado por Twilio y confirmado",
-      );
+
+    if (escalatedNow) {
+      await sendTurnBubbles(tenantId, customerPhone, escalatedNow, entryLogger, receivedAt);
+      await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
+      return;
+    }
+
+    const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+    if (behaviorConfig.velocidadRespuesta === "inmediato") {
+      const result = await processConversation(tenantId, customerPhone, messageSid, customerName);
+      await sendTurnBubbles(tenantId, customerPhone, result, entryLogger, receivedAt);
     } else {
+      // Velocidad de respuesta (Fase 11.4 extendida, ver ADR-022): difiere
+      // el disparo del turno — si llega otro mensaje de esta conversación
+      // antes de que venza la ventana, scheduleDebounce la reinicia sola
+      // (mismo `conversationId` como member del sorted set).
+      await scheduleDebounce(conversationId, DEBOUNCE_DELAY_MS[behaviorConfig.velocidadRespuesta], {
+        tenantId,
+        customerPhone,
+        messageSid,
+        customerName,
+      });
       entryLogger.info(
-        { event: "orchestrator.conversacion_escalada" },
-        "Conversación ya escalada, sin respuesta automática",
+        { event: "orchestrator.turno_diferido", velocidad: behaviorConfig.velocidadRespuesta },
+        "Turno diferido por debounce, se disparará cuando venza la ventana",
       );
     }
+
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
   } catch (error) {
     const pending = (await redis.xpending(INBOUND_STREAM, CONSUMER_GROUP, id, id, 1)) as Array<
