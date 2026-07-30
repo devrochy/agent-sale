@@ -596,9 +596,16 @@ const CLIENT_SCRIPT = `
   var wrap = document.getElementById("chartWrap");
   if (wrap && chartData && chartData.length) {
     var data = chartData;
+    var chartFormat = wrap.getAttribute("data-format") || "int";
+    function formatValor(v) {
+      if (chartFormat === "usd") {
+        return "$" + (v > 0 && v < 1 ? v.toFixed(4) : v.toFixed(2));
+      }
+      return String(v);
+    }
     var W = 900, H = 220, padL = 8, padR = 8, padT = 26, padB = 28;
     var plotW = W - padL - padR, plotH = H - padT - padB;
-    var maxV = Math.max(1, Math.max.apply(null, data.map(function (d) { return d.valor; })));
+    var maxV = Math.max(chartFormat === "usd" ? 0.0001 : 1, Math.max.apply(null, data.map(function (d) { return d.valor; })));
 
     function x(i) { return padL + (i / (data.length - 1)) * plotW; }
     function y(v) { return padT + plotH - (v / maxV) * plotH; }
@@ -620,13 +627,14 @@ const CLIENT_SCRIPT = `
       var cls = "chart-point" + (i === peakIdx ? " chart-point--peak" : "");
       return '<circle class="' + cls + '" cx="' + x(i) + '" cy="' + y(d.valor) + '" r="' + (i === peakIdx ? 4 : 3) + '"></circle>';
     }).join("");
-    var peakLabel = '<text class="chart-peaklabel" x="' + x(peakIdx) + '" y="' + (y(data[peakIdx].valor) - 12) + '">' + data[peakIdx].valor + "</text>";
+    var peakLabel = '<text class="chart-peaklabel" x="' + x(peakIdx) + '" y="' + (y(data[peakIdx].valor) - 12) + '">' + formatValor(data[peakIdx].valor) + "</text>";
     var hitCols = data.map(function (d, i) {
       var cw = plotW / data.length, cx0 = padL + i * cw;
       return '<rect class="chart-hit" data-i="' + i + '" x="' + cx0 + '" y="0" width="' + cw + '" height="' + H + '"></rect>';
     }).join("");
 
-    wrap.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" role="img" aria-label="Mensajes por dia, ultimos 7 dias">'
+    var ariaLabel = wrap.getAttribute("data-aria-label") || "Mensajes por dia, ultimos 7 dias";
+    wrap.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" role="img" aria-label="' + ariaLabel + '">'
       + gridLines + '<path class="chart-area" d="' + areaD + '"></path>'
       + '<path class="chart-line" id="chartLine" d="' + lineD + '"></path>'
       + points + peakLabel + dayLabels
@@ -648,7 +656,7 @@ const CLIENT_SCRIPT = `
       crosshair.classList.add("visible");
       tooltip.style.left = (px * (rect.width / W)) + "px";
       tooltip.style.top = (py * (rect.height / H) - 10) + "px";
-      tooltip.innerHTML = d.label + " &nbsp; <b>" + d.valor + "</b> msj";
+      tooltip.innerHTML = d.label + " &nbsp; <b>" + formatValor(d.valor) + "</b>" + (chartFormat === "usd" ? "" : " msj");
       tooltip.classList.add("visible");
     });
     wrap.addEventListener("mouseleave", function () {
@@ -1665,7 +1673,10 @@ export async function renderAnaliticaPage(tenantId: string): Promise<string | nu
     date.setUTCDate(date.getUTCDate() - (29 - i));
     const iso = date.toISOString().slice(0, 10);
     const label = `${String(date.getUTCDate()).padStart(2, "0")}/${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
-    return { label, valor: Math.round((tendenciaPorDia.get(iso) ?? 0) * 100) / 100 };
+    // Sin redondear a 2 decimales: a escala piloto el costo diario real es
+    // fracciones de centavo (ver el mismo bug ya corregido en formatUSD) —
+    // redondear acá antes de graficar colapsaba días con costo real a 0.
+    return { label, valor: Math.round((tendenciaPorDia.get(iso) ?? 0) * 1e6) / 1e6 };
   });
 
   const costoConPedido = costoPorResultado.find((row) => row.resultado === "con_pedido")?.costo_promedio_usd;
@@ -1700,7 +1711,7 @@ export async function renderAnaliticaPage(tenantId: string): Promise<string | nu
     <section class="block" aria-label="Tendencia de costo">
       <div class="blockhead"><h2>Costo — últimos 30 días</h2><span class="hint">USD / día</span></div>
       <div class="panel chartpanel">
-        <div class="chart-wrap" id="chartWrap"></div>
+        <div class="chart-wrap" id="chartWrap" data-format="usd" data-aria-label="Costo por dia, ultimos 30 dias"></div>
         <script type="application/json" id="actividad-data">${JSON.stringify(dias)}</script>
       </div>
     </section>
