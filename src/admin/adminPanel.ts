@@ -1631,6 +1631,23 @@ interface CostoPorResultadoRow {
   conversaciones: string;
 }
 
+interface SatisfaccionPromedioRow {
+  promedio: string | null;
+  total: string;
+}
+
+interface SatisfaccionDistribucionRow {
+  satisfaction_score: number;
+  cantidad: string;
+}
+
+interface ReviewRow {
+  score: number | null;
+  review_text: string;
+  created_at: string;
+  shared_publicly: boolean;
+}
+
 /**
  * Analítica de costos (Fase 11.5, ver docs/fase-11-panel-admin-dashboard/
  * analitica-costos.md): fuente Postgres nativa (`llm_usage`, ADR-017), no
@@ -1657,7 +1674,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
   const moneda: Currency = tasaNoDisponible ? "USD" : monedaPedida;
   const toDisplay = (usd: number): number => convertFromUsd(usd, moneda, rates) ?? usd;
 
-  const { costoMes, tendencia, costoPorResultado } = await withTenant(tenantId, async (client) => {
+  const { costoMes, tendencia, costoPorResultado, satisfaccion, distribucion, reviews } = await withTenant(tenantId, async (client) => {
     const costoMesResult = await client.query<CostoMesRow>(
       `SELECT
         coalesce(sum(input_tokens), 0) AS tokens_entrada,
@@ -1699,10 +1716,30 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
        GROUP BY 1`,
     );
 
+    // Satisfacción de clientes (extensión post-QA de Fase 12.2, ver
+    // src/orchestrator/satisfactionSurvey.ts): el dato ya se guardaba
+    // desde la encuesta, faltaba mostrarlo.
+    const satisfaccionResult = await client.query<SatisfaccionPromedioRow>(
+      `SELECT round(avg(satisfaction_score), 2) AS promedio, count(*) AS total
+       FROM conversations WHERE satisfaction_score IS NOT NULL`,
+    );
+    const distribucionResult = await client.query<SatisfaccionDistribucionRow>(
+      `SELECT satisfaction_score, count(*) AS cantidad
+       FROM conversations WHERE satisfaction_score IS NOT NULL
+       GROUP BY satisfaction_score`,
+    );
+    const reviewsResult = await client.query<ReviewRow>(
+      `SELECT score, review_text, created_at, shared_publicly
+       FROM reviews ORDER BY created_at DESC LIMIT 10`,
+    );
+
     return {
       costoMes: costoMesResult.rows[0]!,
       tendencia: tendenciaResult.rows,
       costoPorResultado: costoPorResultadoResult.rows,
+      satisfaccion: satisfaccionResult.rows[0]!,
+      distribucion: distribucionResult.rows,
+      reviews: reviewsResult.rows,
     };
   });
 
@@ -1742,6 +1779,27 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
   const totalConversacionesPromediadas = Number(filaConPedido?.conversaciones ?? 0) + Number(filaSinPedido?.conversaciones ?? 0);
   const pluralConversaciones = (n: number): string => (n === 1 ? "1 conversación cerrada" : `${n} conversaciones cerradas`);
   const currencyMeta = CURRENCY_META[moneda];
+
+  const distribucionMap = new Map(distribucion.map((row) => [row.satisfaction_score, Number(row.cantidad)]));
+  const totalCalificaciones = Number(satisfaccion.total);
+  const promedioSatisfaccion = satisfaccion.promedio;
+  const distribucionHtml = [5, 4, 3, 2, 1]
+    .map(
+      (n) =>
+        `<div class="toolpill"><span>${"★".repeat(n)}</span><span class="toolpill__count tabular">${distribucionMap.get(n) ?? 0}</span></div>`,
+    )
+    .join("");
+  const reviewsHtml = reviews.length
+    ? reviews
+        .map(
+          (r) => `
+        <div style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+          <p class="hint">${r.score ? "★".repeat(r.score) : "—"} · ${formatRelativo(r.created_at)}${r.shared_publicly ? ' · <span class="chip chip--go">Compartida</span>' : ""}</p>
+          <p>"${escapeHtml(r.review_text)}"</p>
+        </div>`,
+        )
+        .join("\n")
+    : `<p class="hint">Todavía no hay reseñas.</p>`;
 
   const currencyOptionsHtml = SUPPORTED_CURRENCIES.map(
     (c) => `<option value="${c}"${c === moneda ? " selected" : ""}>${c}</option>`,
@@ -1796,6 +1854,23 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
           <div class="toolpill"><span>Con pedido</span><span class="toolpill__count tabular">${costoConPedidoDisplay !== null ? escapeHtml(formatMoney(costoConPedidoDisplay, moneda)) : "—"}</span></div>
           <div class="toolpill"><span>Sin pedido</span><span class="toolpill__count tabular">${costoSinPedidoDisplay !== null ? escapeHtml(formatMoney(costoSinPedidoDisplay, moneda)) : "—"}</span></div>
         </div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Satisfacción de clientes">
+      <div class="blockhead"><h2>Satisfacción de clientes</h2><span class="hint">${totalCalificaciones} calificaciones</span></div>
+      <div class="panel connection">
+        <div class="connection__head">
+          <h2>${promedioSatisfaccion ?? "—"}${promedioSatisfaccion ? " / 5" : ""}</h2>
+        </div>
+        <div class="toolgrid">${distribucionHtml}</div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Reseñas recientes">
+      <div class="blockhead"><h2>Reseñas recientes</h2></div>
+      <div class="panel connection">
+        ${reviewsHtml}
       </div>
     </section>
   `;

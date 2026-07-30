@@ -28,6 +28,7 @@ import {
   renderTicketsPage,
 } from "../admin/adminPanel.js";
 import { env } from "../config/env.js";
+import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 
@@ -297,6 +298,34 @@ export async function buildServer() {
     const { token } = request.params as { token: string };
     await resolverConversacion(token);
     return reply.status(303).redirect(`/asesor/${token}`);
+  });
+
+  app.get("/resena/:token", async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const result = await renderReviewForm(token);
+    if (!result.html) {
+      return reply.status(result.status).send();
+    }
+    return reply.status(result.status).type("text/html").send(result.html);
+  });
+
+  app.post("/resena/:token", async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const { review_text: reviewText } = request.body as { review_text?: string };
+    const result = await submitReview(token, reviewText ?? "");
+    if (!result.html) {
+      return reply.status(result.status).send();
+    }
+    return reply.status(result.status).type("text/html").send(result.html);
+  });
+
+  app.get("/resena/:token/compartir", async (request, reply) => {
+    const { token } = request.params as { token: string };
+    const result = await shareReviewPublicly(token);
+    if (!result.redirectUrl) {
+      return reply.status(result.status).send();
+    }
+    return reply.status(result.status).redirect(result.redirectUrl);
   });
 
   return app;
