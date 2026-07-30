@@ -8,7 +8,9 @@ Esa lectura resultó más estricta de lo necesario: como ya señalaba [comparati
 
 **Estilo de mensajes** (en cuántas burbujas de WhatsApp se parte la respuesta) nunca estuvo realmente bloqueado por esto — es post-procesamiento puro sobre el texto ya generado (`src/gateway/messageSplitter.ts`), no toca el prompt en absoluto. Se resolvió en el mismo incremento que Tono por compartir tabla (`tenants.behavior_config`) y sección de UI.
 
-**Velocidad de respuesta** (debounce de mensajes seguidos) y **Cerebro del bot** (ruteo automático de modelo por dificultad) quedan fuera de este documento — son ejes distintos (timing de procesamiento y selección de modelo, no contenido del prompt) y se abordan en incrementos separados, con sus propias ADRs.
+**Velocidad de respuesta** (debounce de mensajes seguidos) tampoco tocaba el prompt — es un mecanismo de timing sobre cuándo se dispara el turno, resuelto en [ADR-022](./adrs/ADR-022-debounce-velocidad-respuesta.md) con una cola de espera sobre Redis (Sorted Set).
+
+**Cerebro del bot** (ruteo automático de modelo por dificultad) queda fuera de este documento — es un eje distinto (selección de modelo, no contenido del prompt) y se aborda en un incremento separado con su propia ADR.
 
 El eje de **qué modelo procesa el prompt** (Proveedor/Modelo explícito) es distinto y **sí** entró en la Fase 11.4 original — no interpola nada dentro del `system` prompt, solo cambia qué `LLMProvider` se instancia por turno. Ver [ADR-020](./adrs/ADR-020-proveedor-modelo-configurable-byok.md) para el diseño completo.
 
@@ -29,12 +31,11 @@ Un toggle activo/pausado en `GET /admin/:tenantId/configuracion`, con confirmaci
 
 Segundo bloque de la misma página: selector de Proveedor (Claude/DeepSeek/ChatGPT/Grok/Gemini, más "Automático" = default de plataforma) + Modelo + API key propia opcional, con "Probar y guardar" — diseño completo, opciones consideradas y alcance excluido (ruteo automático por dificultad del mensaje) en [ADR-020](./adrs/ADR-020-proveedor-modelo-configurable-byok.md).
 
-## Voz y estilo del agente
+## Voz, estilo y velocidad del agente
 
-Tercer bloque de la misma página: selector de Tono (Cálido/Formal/Divertido) + Estilo de mensajes (Un mensaje/2-3 cortos/Varios cortos) — diseño completo en [ADR-021](./adrs/ADR-021-tono-personalizable-cache-jerarquico.md). Guardado directo (`POST /admin/:tenantId/configuracion/comportamiento`), sin llamada de prueba — a diferencia del modelo de IA, acá no hay nada que validar contra una API externa.
+Tercer bloque de la misma página: selector de Tono (Cálido/Formal/Divertido) + Estilo de mensajes (Un mensaje/2-3 cortos/Varios cortos) + Velocidad de respuesta (Inmediato/Rápido/Normal/Pausado) — diseño completo de Tono/Estilo en [ADR-021](./adrs/ADR-021-tono-personalizable-cache-jerarquico.md), de Velocidad en [ADR-022](./adrs/ADR-022-debounce-velocidad-respuesta.md). Guardado directo (`POST /admin/:tenantId/configuracion/comportamiento`), sin llamada de prueba — a diferencia del modelo de IA, acá no hay nada que validar contra una API externa.
 
 ## Qué no cubre esta fase
 
 - Ruteo automático de modelo por dificultad/costo del mensaje ("Cerebro económico/equilibrado/máximo" como lógica dinámica, no como selector explícito) — ver ADR-020, descartado explícitamente en su momento; se reconsidera en un incremento separado con su propia ADR.
-- Velocidad de respuesta (debounce de mensajes seguidos) — se aborda en un incremento separado con su propia ADR.
 - Ninguna cola de reproceso automático de mensajes recibidos durante la pausa — se manejan manualmente desde el inbox.

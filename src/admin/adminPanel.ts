@@ -1,6 +1,6 @@
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import { env } from "../config/env.js";
-import { isEstiloMensajes, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
+import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import { isProviderKey, PROVIDER_CATALOG, testLlmConfig, type ProviderKey } from "../orchestrator/llm/index.js";
 import { isTono } from "../orchestrator/toneBlocks.js";
 import {
@@ -1951,6 +1951,16 @@ export async function renderConfiguracionPage(
               <option value="varios_cortos"${behaviorConfig.estiloMensajes === "varios_cortos" ? " selected" : ""}>Varios cortos — muchas burbujas, estilo chat</option>
             </select>
           </div>
+          <div class="field">
+            <label for="velocidad-respuesta">Velocidad de respuesta</label>
+            <select id="velocidad-respuesta" name="velocidadRespuesta">
+              <option value="inmediato"${behaviorConfig.velocidadRespuesta === "inmediato" ? " selected" : ""}>Inmediato (recomendado) — responde apenas llega el mensaje</option>
+              <option value="rapido"${behaviorConfig.velocidadRespuesta === "rapido" ? " selected" : ""}>Rápido — espera 5 segundos por si el cliente sigue escribiendo</option>
+              <option value="normal"${behaviorConfig.velocidadRespuesta === "normal" ? " selected" : ""}>Normal — espera 15 segundos</option>
+              <option value="pausado"${behaviorConfig.velocidadRespuesta === "pausado" ? " selected" : ""}>Pausado — espera 30 segundos para juntar todo el mensaje</option>
+            </select>
+            <p class="hint">Fuera de "Inmediato", el agente agrupa los mensajes seguidos del cliente en un solo turno de respuesta.</p>
+          </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
         </form>
       </div>
@@ -1975,7 +1985,7 @@ export async function reactivarBot(tenantId: string): Promise<void> {
  */
 export async function guardarComportamiento(
   tenantId: string,
-  input: { tono: string; estiloMensajes: string },
+  input: { tono: string; estiloMensajes: string; velocidadRespuesta: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!isTono(input.tono)) {
     return { ok: false, error: "Tono no válido." };
@@ -1983,7 +1993,14 @@ export async function guardarComportamiento(
   if (!isEstiloMensajes(input.estiloMensajes)) {
     return { ok: false, error: "Estilo de mensajes no válido." };
   }
-  await saveBehaviorConfig(tenantId, { tono: input.tono, estiloMensajes: input.estiloMensajes });
+  if (!isVelocidadRespuesta(input.velocidadRespuesta)) {
+    return { ok: false, error: "Velocidad de respuesta no válida." };
+  }
+  await saveBehaviorConfig(tenantId, {
+    tono: input.tono,
+    estiloMensajes: input.estiloMensajes,
+    velocidadRespuesta: input.velocidadRespuesta,
+  });
   return { ok: true };
 }
 

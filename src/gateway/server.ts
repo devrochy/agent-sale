@@ -198,10 +198,15 @@ export async function buildServer() {
 
   app.post("/admin/:tenantId/configuracion/comportamiento", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const { tono, estiloMensajes } = request.body as { tono?: string; estiloMensajes?: string };
+    const { tono, estiloMensajes, velocidadRespuesta } = request.body as {
+      tono?: string;
+      estiloMensajes?: string;
+      velocidadRespuesta?: string;
+    };
     const result = await guardarComportamiento(tenantId, {
       tono: tono ?? "",
       estiloMensajes: estiloMensajes ?? "",
+      velocidadRespuesta: velocidadRespuesta ?? "",
     });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/configuracion?guardado=1`

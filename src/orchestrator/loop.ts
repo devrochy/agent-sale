@@ -120,19 +120,67 @@ async function escalateAndReply(
 }
 
 /**
- * Orquesta un turno completo (ver docs/fase-4-motor-agente/orquestador.md
- * y docs/fase-7-escalamiento-humano/reglas-escalamiento.md): carga
- * memoria, aplica las reglas explícitas de escalamiento que no dependen
- * del LLM, llama al proveedor de LLM con tool calling manual, ejecuta
- * tools, persiste el resultado. `tenant_id`, `conversation_id` y
- * `customer_id` nunca se exponen al LLM como parámetros de tool — los
- * inyecta este módulo. `messageSid` se usa solo para el idempotency_key
- * de crear_pedido (ver domains/commerce/crearPedido.ts).
+ * Ingesta de un mensaje entrante (Fase 11.4 extendida — Velocidad de
+ * respuesta, ver ADR-022): se llama SIEMPRE, de inmediato, por cada
+ * mensaje que llega — nunca se difiere, ni siquiera con debounce activo.
+ * Guarda el mensaje y corre las dos únicas reglas que no pueden esperar a
+ * que venza la ventana de debounce: el estado ya escalado (no hay nada
+ * más que hacer) y el backstop de palabras clave (si un mensaje
+ * intermedio dentro de la ventana matchea una keyword, tiene que escalar
+ * ya — esperar al último mensaje de la ventana podría taparlo). Devuelve
+ * `conversationId` porque el caller lo necesita para programar/cancelar
+ * el timer de debounce, aunque `processConversation` lo vuelva a
+ * resolver — es más simple reusar `resolveConversation` (idempotente)
+ * que empezar a pasar el objeto de conversación entre funciones.
  */
-export async function runTurn(
+export async function appendInbound(
   tenantId: string,
   customerPhone: string,
   incomingBody: string,
+  customerName?: string,
+): Promise<{ conversationId: string; escalatedNow: TurnResult | null }> {
+  const { conversationId, state } = await resolveConversation(tenantId, customerPhone, customerName);
+  await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
+
+  if (state.step === "escalado") {
+    // El mensaje ya quedó guardado para que el asesor lo vea (vista del
+    // asesor, incremento separado) — el agente no responde automáticamente
+    // hasta que un humano cierre el caso.
+    return { conversationId, escalatedNow: { responseText: null, mediaUrl: null } };
+  }
+
+  const escalationConfig = resolveEscalationConfig(await getEscalationConfig(tenantId));
+  const keywordMatch = matchKeywordEscalation(incomingBody, escalationConfig);
+  if (keywordMatch) {
+    const result = await escalateAndReply(
+      tenantId,
+      conversationId,
+      keywordMatch.reason,
+      `El mensaje del cliente contiene el término "${keywordMatch.matchedTerm}" (regla de palabras clave).`,
+    );
+    return { conversationId, escalatedNow: result };
+  }
+
+  return { conversationId, escalatedNow: null };
+}
+
+/**
+ * Resto del turno (ver docs/fase-4-motor-agente/orquestador.md y
+ * docs/fase-7-escalamiento-humano/reglas-escalamiento.md): carga
+ * memoria, llama al proveedor de LLM con tool calling manual, ejecuta
+ * tools, persiste el resultado. Arranca desde `resolveConversation` de
+ * nuevo (no desde el mensaje puntual que disparó el turno) para que, si
+ * `appendInbound` se llamó varias veces durante una ventana de debounce
+ * (ver ADR-022), este turno vea el estado y el historial más recientes —
+ * incluye todos los mensajes acumulados, no solo el último. `tenant_id`,
+ * `conversation_id` y `customer_id` nunca se exponen al LLM como
+ * parámetros de tool — los inyecta este módulo. `messageSid` se usa solo
+ * para el idempotency_key de crear_pedido (ver domains/commerce/crearPedido.ts) —
+ * con debounce, es el Sid del último mensaje que (re)armó el timer.
+ */
+export async function processConversation(
+  tenantId: string,
+  customerPhone: string,
   messageSid: string,
   customerName?: string,
 ): Promise<TurnResult> {
@@ -143,12 +191,7 @@ export async function runTurn(
   );
   const turnLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
 
-  await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
-
   if (state.step === "escalado") {
-    // El mensaje ya quedó guardado para que el asesor lo vea (vista del
-    // asesor, incremento separado) — el agente no responde automáticamente
-    // hasta que un humano cierre el caso.
     return { responseText: null, mediaUrl: null };
   }
 
@@ -162,16 +205,6 @@ export async function runTurn(
   // bloque de `system`, con su propio cache_control en AnthropicProvider.
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
   const systemPrompt = [SYSTEM_PROMPT, TONE_BLOCKS[behaviorConfig.tono]];
-
-  const keywordMatch = matchKeywordEscalation(incomingBody, escalationConfig);
-  if (keywordMatch) {
-    return escalateAndReply(
-      tenantId,
-      conversationId,
-      keywordMatch.reason,
-      `El mensaje del cliente contiene el término "${keywordMatch.matchedTerm}" (regla de palabras clave).`,
-    );
-  }
 
   const messages = await loadHistory(tenantId, conversationId);
   let hadAnyToolCall = false;
@@ -392,4 +425,26 @@ export async function runTurn(
     "intentos_fallidos",
     "El agente alcanzó el límite de iteraciones de tool calling sin resolver.",
   );
+}
+
+/**
+ * Conveniencia para el caso "inmediato" (default — ver ADR-022): ingesta
+ * y procesamiento en la misma llamada, sin pasar por la cola de
+ * debounce. Firma y comportamiento idénticos a los del `runTurn` de
+ * antes de esta fase — cero regresión para tenants sin `behavior_config`
+ * configurado. Con debounce activo, `consumer.ts` llama `appendInbound` y
+ * `processConversation` por separado (ver debounceScheduler.ts).
+ */
+export async function runTurn(
+  tenantId: string,
+  customerPhone: string,
+  incomingBody: string,
+  messageSid: string,
+  customerName?: string,
+): Promise<TurnResult> {
+  const { escalatedNow } = await appendInbound(tenantId, customerPhone, incomingBody, customerName);
+  if (escalatedNow) {
+    return escalatedNow;
+  }
+  return processConversation(tenantId, customerPhone, messageSid, customerName);
 }
