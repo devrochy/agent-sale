@@ -57,6 +57,14 @@ export class AnthropicProvider implements LLMProvider {
     tools: ToolDefinition[];
     messages: LLMMessage[];
   }): Promise<TurnResponse> {
+    // Haiku no soporta thinking adaptativo ni effort (confirmado en vivo:
+    // la API rechaza la llamada con "adaptive thinking is not supported
+    // on this model") — a diferencia de Sonnet/Opus. Antes de la Fase
+    // 11.4 esto no se notaba porque Sonnet 5 era el único modelo posible;
+    // ahora que "Cerebro del bot" (ADR-023) puede elegir Haiku para
+    // mensajes triviales, hay que detectarlo y omitir esas opciones.
+    const supportsAdaptiveThinking = !this.model.includes("haiku");
+
     // Un breakpoint de cache_control por bloque (ver ADR-021): el bloque
     // compartido (idéntico para todos los tenants) y el bloque de tono
     // (idéntico entre tenants que eligen el mismo tono) son checkpoints
@@ -64,8 +72,9 @@ export class AnthropicProvider implements LLMProvider {
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: 4096,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
+      ...(supportsAdaptiveThinking
+        ? { thinking: { type: "adaptive" as const }, output_config: { effort: "medium" as const } }
+        : {}),
       system: systemPrompt.map((text) => ({
         type: "text" as const,
         text,

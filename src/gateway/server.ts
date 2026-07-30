@@ -180,15 +180,17 @@ export async function buildServer() {
 
   app.post("/admin/:tenantId/configuracion/modelo-ia", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const { provider, model, apiKey } = request.body as {
+    const { provider, model, apiKey, routingMode } = request.body as {
       provider?: string;
       model?: string;
       apiKey?: string;
+      routingMode?: string;
     };
     const result = await guardarModeloIa(tenantId, {
       provider: provider ?? "",
       model: model ?? "",
       apiKey: apiKey ?? "",
+      routingMode: routingMode ?? "",
     });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/configuracion?guardado=1`

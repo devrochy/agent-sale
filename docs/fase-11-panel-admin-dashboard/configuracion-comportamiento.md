@@ -10,7 +10,7 @@ Esa lectura resultó más estricta de lo necesario: como ya señalaba [comparati
 
 **Velocidad de respuesta** (debounce de mensajes seguidos) tampoco tocaba el prompt — es un mecanismo de timing sobre cuándo se dispara el turno, resuelto en [ADR-022](./adrs/ADR-022-debounce-velocidad-respuesta.md) con una cola de espera sobre Redis (Sorted Set).
 
-**Cerebro del bot** (ruteo automático de modelo por dificultad) queda fuera de este documento — es un eje distinto (selección de modelo, no contenido del prompt) y se aborda en un incremento separado con su propia ADR.
+**Cerebro del bot** (ruteo automático de modelo por dificultad) tampoco es un eje de este documento (es selección de modelo, no contenido del prompt) — **resuelto en [ADR-023](./adrs/ADR-023-ruteo-automatico-dificultad.md)**, que revierte el punto puntual de ADR-020 que lo descartaba.
 
 El eje de **qué modelo procesa el prompt** (Proveedor/Modelo explícito) es distinto y **sí** entró en la Fase 11.4 original — no interpola nada dentro del `system` prompt, solo cambia qué `LLMProvider` se instancia por turno. Ver [ADR-020](./adrs/ADR-020-proveedor-modelo-configurable-byok.md) para el diseño completo.
 
@@ -29,7 +29,7 @@ Un toggle activo/pausado en `GET /admin/:tenantId/configuracion`, con confirmaci
 
 ## Modelo de IA configurable (BYOK)
 
-Segundo bloque de la misma página: selector de Proveedor (Claude/DeepSeek/ChatGPT/Grok/Gemini, más "Automático" = default de plataforma) + Modelo + API key propia opcional, con "Probar y guardar" — diseño completo, opciones consideradas y alcance excluido (ruteo automático por dificultad del mensaje) en [ADR-020](./adrs/ADR-020-proveedor-modelo-configurable-byok.md).
+Segundo bloque de la misma página: selector de Proveedor (Claude/DeepSeek/ChatGPT/Grok/Gemini, más "Automático" = default de plataforma) + Modelo + API key propia opcional, con "Probar y guardar" — diseño completo en [ADR-020](./adrs/ADR-020-proveedor-modelo-configurable-byok.md). El mismo bloque gana un selector "Selección de modelo" (Manual / Automático según dificultad — "Cerebro del bot") en [ADR-023](./adrs/ADR-023-ruteo-automatico-dificultad.md), que revierte la exclusión original de ruteo automático que tenía ADR-020.
 
 ## Voz, estilo y velocidad del agente
 
@@ -37,5 +37,4 @@ Tercer bloque de la misma página: selector de Tono (Cálido/Formal/Divertido) +
 
 ## Qué no cubre esta fase
 
-- Ruteo automático de modelo por dificultad/costo del mensaje ("Cerebro económico/equilibrado/máximo" como lógica dinámica, no como selector explícito) — ver ADR-020, descartado explícitamente en su momento; se reconsidera en un incremento separado con su propia ADR.
 - Ninguna cola de reproceso automático de mensajes recibidos durante la pausa — se manejan manualmente desde el inbox.

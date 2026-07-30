@@ -11,7 +11,8 @@ import {
 } from "../shared/observability/priceGuardrail.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
-import { resolveLlmProviderForTenant, type ContentBlock } from "./llm/index.js";
+import type { DifficultySignal } from "./llm/difficultyRouting.js";
+import { resolveLlmProviderForTenant, type ContentBlock, type LLMMessage } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
@@ -53,6 +54,30 @@ function extractText(content: ContentBlock[]): string {
     .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
     .map((block) => block.text)
     .join("\n");
+}
+
+/**
+ * Señal de dificultad para "Cerebro del bot" (ADR-023): junta el texto de
+ * los mensajes de cliente en texto plano desde el final del historial
+ * hacia atrás, hasta el primero que no sea un mensaje de texto simple del
+ * cliente (un turno del agente, o un `tool_result` — que también es
+ * `role: "user"` pero con contenido en array, no string). Bajo debounce
+ * (ADR-022) esto puede juntar más de un mensaje del cliente en un mismo
+ * turno; sin debounce, es simplemente el último mensaje.
+ */
+function buildDifficultySignal(messages: LLMMessage[], state: Record<string, unknown>): DifficultySignal {
+  const texts: string[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== "user" || typeof message.content !== "string") {
+      break;
+    }
+    texts.unshift(message.content);
+  }
+  return {
+    latestCustomerText: texts.join(" "),
+    turnosSinResolver: typeof state.turnos_sin_resolver === "number" ? state.turnos_sin_resolver : 0,
+  };
 }
 
 /**
@@ -196,17 +221,26 @@ export async function processConversation(
   }
 
   const escalationConfig = resolveEscalationConfig(await getEscalationConfig(tenantId));
-  // Se resuelve una sola vez por turno (Fase 11.4, ver ADR-020) — un turno
-  // puede llamar al LLM varias veces (tool calling), todas usan el mismo
-  // proveedor/modelo, nunca se re-resuelve a mitad de turno. `model`/
-  // `providerKey` quedan disponibles para el insert de llm_usage (Fase 11.5).
-  const { provider: llmProvider } = await resolveLlmProviderForTenant(tenantId);
   // Tono de voz del tenant (Fase 11.4 extendida, ver ADR-021) — segundo
   // bloque de `system`, con su propio cache_control en AnthropicProvider.
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
   const systemPrompt = [SYSTEM_PROMPT, TONE_BLOCKS[behaviorConfig.tono]];
 
   const messages = await loadHistory(tenantId, conversationId);
+  // Se resuelve una sola vez por turno (Fase 11.4, ver ADR-020) — un turno
+  // puede llamar al LLM varias veces (tool calling), todas usan el mismo
+  // proveedor/modelo, nunca se re-resuelve a mitad de turno. `model`/
+  // `providerKey` quedan disponibles para el insert de llm_usage (Fase
+  // 11.5). `difficultySignal` solo importa si el tenant tiene "Cerebro del
+  // bot" activo (ADR-023) — se arma desde el historial recién cargado, no
+  // desde un `incomingBody` puntual (bajo debounce, ver ADR-022, puede
+  // haber más de un mensaje de cliente en este turno).
+  const difficultySignal = buildDifficultySignal(messages, state);
+  const { provider: llmProvider, model: resolvedModel, dificultad } = await resolveLlmProviderForTenant(
+    tenantId,
+    difficultySignal,
+  );
+
   let hadAnyToolCall = false;
   // Montos reales devueltos por tools — de toda la conversación, no solo
   // de este runTurn. Antes solo se sembraba con las tools llamadas en el
@@ -246,7 +280,10 @@ export async function processConversation(
   let mediaUrl: string | null = null;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    turnLogger.info({ event: "orchestrator.llm_iniciado", iteration }, "Llamada al LLM iniciada");
+    turnLogger.info(
+      { event: "orchestrator.llm_iniciado", iteration, model: resolvedModel, dificultad },
+      "Llamada al LLM iniciada",
+    );
     const llmStartedAt = Date.now();
     const response = await llmProvider.converse({
       systemPrompt,
@@ -257,6 +294,8 @@ export async function processConversation(
       {
         event: "orchestrator.llm_completado",
         iteration,
+        model: resolvedModel,
+        dificultad,
         latency_ms: Date.now() - llmStartedAt,
         stop_reason: response.stopReason,
         usage: response.usage,

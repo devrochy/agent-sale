@@ -2,6 +2,7 @@ import { env } from "../../config/env.js";
 import { getLlmConfig } from "../../shared/db/tenantsDirectory.js";
 import { AnthropicProvider } from "./anthropicProvider.js";
 import { isProviderKey, PROVIDER_CATALOG, type ProviderKey } from "./catalog.js";
+import { classifyDifficulty, pickModelByDifficulty, type DifficultySignal } from "./difficultyRouting.js";
 import { GeminiProvider } from "./geminiProvider.js";
 import { OpenAICompatibleProvider } from "./openaiCompatibleProvider.js";
 import type { LLMProvider } from "./types.js";
@@ -11,6 +12,8 @@ export interface ResolvedLlmProvider {
   model: string;
   /** Clave del catálogo (ver catalog.ts), o "env-default" cuando el tenant no configuró nada — Fase 11.5 usa esto para llm_usage.provider. */
   providerKey: ProviderKey | "env-default";
+  /** Solo presente cuando el modo de ruteo es "auto_dificultad" (ADR-023) — para loguear qué tier eligió la heurística. */
+  dificultad?: "economico" | "equilibrado" | "maximo";
 }
 
 /**
@@ -49,8 +52,16 @@ function systemApiKeyFor(providerKey: ProviderKey): string | null {
  * ADR-020-proveedor-modelo-configurable-byok.md). Sin config del tenant
  * (`llm_provider` NULL, el caso normal), el comportamiento es idéntico al
  * de antes de esta fase — cero regresión para tenants sin config.
+ *
+ * `difficultySignal` solo se usa si el tenant tiene `routingMode:
+ * "auto_dificultad"` ("Cerebro del bot", ver ADR-023) — el caller
+ * (loop.ts) lo arma a partir del mensaje del cliente y el estado de la
+ * conversación; si se omite, se asume el caso menos exigente (sin señal).
  */
-export async function resolveLlmProviderForTenant(tenantId: string): Promise<ResolvedLlmProvider> {
+export async function resolveLlmProviderForTenant(
+  tenantId: string,
+  difficultySignal?: DifficultySignal,
+): Promise<ResolvedLlmProvider> {
   const config = await getLlmConfig(tenantId);
 
   if (!config.provider || !isProviderKey(config.provider)) {
@@ -59,7 +70,11 @@ export async function resolveLlmProviderForTenant(tenantId: string): Promise<Res
 
   const providerKey = config.provider;
   const entry = PROVIDER_CATALOG[providerKey];
-  const model = config.model ?? entry.defaultModel;
+  const dificultad =
+    config.routingMode === "auto_dificultad"
+      ? classifyDifficulty(difficultySignal ?? { latestCustomerText: "", turnosSinResolver: 0 })
+      : undefined;
+  const model = dificultad ? pickModelByDifficulty(entry.models, dificultad) : (config.model ?? entry.defaultModel);
   const apiKey = config.apiKey ?? systemApiKeyFor(providerKey);
 
   if (!apiKey) {
@@ -70,14 +85,15 @@ export async function resolveLlmProviderForTenant(tenantId: string): Promise<Res
 
   switch (entry.family) {
     case "anthropic":
-      return { provider: new AnthropicProvider({ apiKey, model }), model, providerKey };
+      return { provider: new AnthropicProvider({ apiKey, model }), model, providerKey, dificultad };
     case "gemini":
-      return { provider: new GeminiProvider({ apiKey, model }), model, providerKey };
+      return { provider: new GeminiProvider({ apiKey, model }), model, providerKey, dificultad };
     case "openai_compatible":
       return {
         provider: new OpenAICompatibleProvider({ apiKey, model, baseUrl: entry.baseUrl }),
         model,
         providerKey,
+        dificultad,
       };
   }
 }
@@ -126,6 +142,12 @@ export async function testLlmConfig(candidate: LlmConfigCandidate): Promise<void
   });
 }
 
-export { PROVIDER_CATALOG, isProviderKey, type ProviderKey } from "./catalog.js";
+export {
+  PROVIDER_CATALOG,
+  isLlmRoutingMode,
+  isProviderKey,
+  type LlmRoutingMode,
+  type ProviderKey,
+} from "./catalog.js";
 export type { ContentBlock, LLMMessage, ToolDefinition, TurnResponse } from "./types.js";
 export type { LLMProvider } from "./types.js";
