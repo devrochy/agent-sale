@@ -12,6 +12,7 @@ import {
   guardarComportamiento,
   guardarModeloIa,
   guardarReporteDiario,
+  guardarReviewLink,
   pausarBot,
   reactivarBot,
   renderAnaliticaPage,
@@ -232,6 +233,16 @@ export async function buildServer() {
     const { tenantId } = request.params as { tenantId: string };
     const { telefono } = request.body as { telefono?: string };
     const result = await guardarReporteDiario(tenantId, { telefono: telefono ?? "" });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/configuracion?guardado=1`
+      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/:tenantId/configuracion/resenas", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { link } = request.body as { link?: string };
+    const result = await guardarReviewLink(tenantId, { link: link ?? "" });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/configuracion?guardado=1`
       : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;

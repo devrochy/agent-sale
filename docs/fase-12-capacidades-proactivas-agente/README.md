@@ -17,7 +17,7 @@ En agent-sale ninguna de estas capacidades se adopta como "función de pago" —
 ## Priorización recomendada (detalle en `analisis-superpoderes.md`)
 
 1. **12.1 — Quick wins**: multi-idioma, extender el guardrail de invención a stock, superficie de "Vigilante" (mayormente ya construido en la Fase 7).
-2. **12.2 — Jobs programados + mensajería dentro de 24h**: reporte diario (implementado, ver [analisis-superpoderes.md](./analisis-superpoderes.md#7)), cazador de ventas (implementado, ver [analisis-superpoderes.md](./analisis-superpoderes.md#3)), encuestas de satisfacción, solicitud de reseñas.
+2. **12.2 — Jobs programados + mensajería dentro de 24h: completa.** Reporte diario, cazador de ventas, encuestas de satisfacción y reseñas — todo implementado, ver [analisis-superpoderes.md](./analisis-superpoderes.md).
 3. **12.3 — Bloqueada por Meta**: reactivación de leads fríos (fuera de la ventana de 24h, requiere plantillas aprobadas).
 4. **Fuera de esta fase, candidatas a fase propia**: multimodalidad (voz/imágenes entrantes) y cobros por WhatsApp — ambas de alto esfuerzo, con integraciones externas (STT/visión, pasarela de pago) que ameritan su propio diseño detallado.
 
@@ -31,8 +31,8 @@ En agent-sale ninguna de estas capacidades se adopta como "función de pago" —
 
 ## Definición de terminado
 
-- [ ] 12.1 (quick wins) implementado y verificado con datos reales de ForMotos.
-- [ ] `node-cron` (ADR-018) corriendo en producción con al menos un job real (Reporte diario).
-- [ ] Cazador de ventas, Encuestas y Reseñas (12.2) implementados y respetando el límite de 24h de ADR-019 (verificado: ningún envío proactivo se intenta fuera de la ventana sin plantilla aprobada).
+- [x] 12.1 (quick wins) implementado y verificado con datos reales de ForMotos (PR #36, mergeado).
+- [x] `node-cron` (ADR-018) implementado con los 4 jobs de 12.2, verificados con WhatsApp real (Reporte diario, Cazador de ventas, Encuestas, Reseñas) — PRs #42/#43/(este) abiertos, pendientes de merge a `develop` y despliegue a producción.
+- [x] Cazador de ventas, Encuestas y Reseñas (12.2) implementados y respetando el límite de 24h de ADR-019 (verificado: ningún envío proactivo se intenta fuera de la ventana sin plantilla aprobada).
 - [ ] Reactivación de leads fríos (12.3) explícitamente marcada como bloqueada hasta que exista una plantilla aprobada por Meta — no se implementa código de esta capacidad antes de tener la aprobación.
 - [ ] Decisión explícita (no necesariamente en esta fase) de si se prioriza una fase futura para multimodalidad y/o cobros.

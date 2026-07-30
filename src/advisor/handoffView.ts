@@ -1,3 +1,4 @@
+import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { resolveHandoffToken } from "../shared/db/index.js";
 import { withTenant } from "../shared/db/withTenant.js";
 
@@ -222,7 +223,7 @@ export async function resolverConversacion(token: string): Promise<HandoffAction
     return { status: 404 };
   }
 
-  const updated = await withTenant(lookup.tenantId, async (client) => {
+  const closedConversationId = await withTenant(lookup.tenantId, async (client) => {
     const result = await client.query<{ conversation_id: string }>(
       `UPDATE handoff_queue SET status = 'resuelto', resolved_at = now()
        WHERE id = $1 AND status = 'en_atencion'
@@ -231,7 +232,7 @@ export async function resolverConversacion(token: string): Promise<HandoffAction
     );
     const row = result.rows[0];
     if (!row) {
-      return false;
+      return null;
     }
     // Cierra la conversación (ver handoff-queue.md, "reasignación y
     // cierre"): así resolveConversation() ya no la reutiliza y el
@@ -241,8 +242,17 @@ export async function resolverConversacion(token: string): Promise<HandoffAction
       `UPDATE conversations SET status = 'closed', closed_at = now() WHERE id = $1`,
       [row.conversation_id],
     );
-    return true;
+    return row.conversation_id;
   });
 
-  return { status: updated ? 200 : 409 };
+  if (!closedConversationId) {
+    return { status: 409 };
+  }
+
+  // Encuesta de satisfacción (Fase 12.2, ver satisfactionSurvey.ts):
+  // best-effort, fuera de la transacción de arriba — un fallo al mandarla
+  // no debe revertir el cierre, que ya quedó confirmado.
+  await sendSurveyOnClose(lookup.tenantId, closedConversationId);
+
+  return { status: 200 };
 }

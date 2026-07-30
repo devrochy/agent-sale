@@ -207,3 +207,22 @@ export async function saveReportRecipient(tenantId: string, phone: string | null
     tenantId,
   ]);
 }
+
+/**
+ * Link de reseña (Fase 12.2, ver migrations/0027_tenants_review_link.cjs)
+ * — `null` si el tenant no lo configuró, en cuyo caso
+ * `src/orchestrator/satisfactionSurvey.ts` manda el agradecimiento de la
+ * encuesta sin pedir reseña, nunca un link inventado.
+ */
+export async function getReviewLink(tenantId: string): Promise<string | null> {
+  const result = await pool.query<{ review_link: string | null }>(
+    "SELECT review_link FROM tenants WHERE id = $1",
+    [tenantId],
+  );
+  return result.rows[0]?.review_link ?? null;
+}
+
+/** `link: null` limpia el campo (deja de pedir reseñas). */
+export async function saveReviewLink(tenantId: string, link: string | null): Promise<void> {
+  await pool.query("UPDATE tenants SET review_link = $1 WHERE id = $2", [link, tenantId]);
+}
