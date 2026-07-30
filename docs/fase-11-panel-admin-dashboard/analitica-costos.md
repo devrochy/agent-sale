@@ -1,18 +1,19 @@
 # Fase 11.5 — Analítica (Costos/Estadísticas nativos en Postgres)
 
-Va último porque depende de que 11.1-11.3 ya hayan establecido el layout/navegación del panel completo, y porque introduce la única tabla nueva de escritura recurrente de esta fase — conviene que el resto del panel ya esté estable antes de agregar un punto de escritura por cada llamada al LLM.
+**Implementado.** Cierra la Fase 11 (11.1-11.4 ya mergeadas, incluyendo la extensión "Comportamiento del agente" — Tono/Estilo/Velocidad/Cerebro, ver [ADR-021](./adrs/ADR-021-tono-personalizable-cache-jerarquico.md)/[ADR-022](./adrs/ADR-022-debounce-velocidad-respuesta.md)/[ADR-023](./adrs/ADR-023-ruteo-automatico-dificultad.md)). El hueco que este documento dejaba pendiente ("de dónde sale `model`") quedó cerrado gratis por esa misma serie: `resolveLlmProviderForTenant` (ADR-020/021/023) ya devuelve `model`/`providerKey`/`dificultad` por turno, `src/orchestrator/loop.ts` ya los tiene en scope justo donde loguea `orchestrator.llm_completado` — no hizo falta ninguna inferencia manual.
 
 Fuente de datos decidida en [ADR-017](./adrs/ADR-017-persistencia-uso-llm-postgres.md): persistir en Postgres, no embeber Grafana ni consultar Loki en vivo desde el panel — evita acoplar la latencia de carga del panel a una query de logs externa.
 
 ## Tabla `llm_usage`
 
-Migración `0018_llm_usage.cjs` (siguiente número libre tras `0017_products_media.cjs`; si [ADR-016](./adrs/ADR-016-parametrizacion-marca-tenant.md)/[configuracion-comportamiento.md](./configuracion-comportamiento.md) ya tomaron ese número con sus columnas de `tenants`, esta migración toma el siguiente disponible en el momento de implementar — el orden exacto se resuelve en implementación, no aquí):
+Migración real: `migrations/0023_llm_usage.cjs` (no `0018` como preveía la estimación original de ADR-017 — otras columnas de `tenants` de la Fase 11.4 extendida tomaron los números 0018-0022 primero; confirma la nota que ya dejaba esa ADR sobre que el número exacto se resolvería en implementación).
 
 ```sql
 create table llm_usage (
   id uuid primary key default gen_random_uuid(),
   tenant_id uuid not null references tenants(id),
   conversation_id uuid references conversations(id),
+  provider text not null,   -- providerKey del catálogo o "env-default" — gratis desde ADR-020
   model text not null,
   input_tokens integer not null,
   output_tokens integer not null,
@@ -21,18 +22,28 @@ create table llm_usage (
   created_at timestamptz not null default now()
 );
 create index on llm_usage (tenant_id, created_at);
+
+-- RLS explícito (0010_rls_policies.cjs solo corrió una vez, contra las
+-- tablas que existían en ese momento — cualquier tabla tenant-scoped
+-- nueva necesita su propio ENABLE/FORCE + policy, mismo patrón):
+alter table llm_usage enable row level security;
+alter table llm_usage force row level security;
+create policy tenant_isolation on llm_usage
+  using (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+  with check (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 ```
+
+`provider` se agregó al diseño original (no estaba en la primera versión de este documento) porque ADR-020 ya lo devuelve gratis en `ResolvedLlmProvider.providerKey` — no tenía sentido guardar `model` sin el proveedor al que pertenece, sobre todo con IDs de modelo que podrían repetirse entre proveedores en el futuro.
 
 ## Punto de escritura
 
-Junto al log existente en `src/orchestrator/loop.ts:184-200` (evento `orchestrator.llm_completado`), agregar un insert best-effort a `llm_usage` — un fallo al escribir esta fila no debe interrumpir la respuesta al cliente; el log a Loki sigue siendo la fuente de verdad operacional, esta tabla es un espejo de negocio derivado, no la fuente primaria.
+Junto al log existente en `src/orchestrator/loop.ts` (evento `orchestrator.llm_completado`, dentro de `processConversation`), un insert best-effort a `llm_usage` vía `withTenant` — un fallo al escribir esta fila (capturado en un `try/catch` propio, logueado como `orchestrator.llm_usage_insert_fallido`) no interrumpe la respuesta al cliente; el log a Loki sigue siendo la fuente de verdad operacional, esta tabla es un espejo de negocio derivado, no la fuente primaria.
 
-Dos datos que el log actual no trae y que este insert debe resolver explícitamente en el momento de la llamada (no inferirlos después, porque no quedarían registrados en ningún otro lado):
-
-- **`model`** — no está en `Usage`/`TurnResponse` (`src/orchestrator/llm/types.ts:27-39`). Se lee de la config activa del proveedor en el momento de la llamada (`env.LLM_PROVIDER`/`env.LLM_MODEL` para `openai_compatible`, o el modelo Anthropic configurado para el proveedor `anthropic`).
-- **`cost_usd`** — no existe ningún cálculo de costo en el código hoy. Requiere una tabla (o mapa en código) de precios por modelo, USD por 1K tokens de entrada/salida — se agrega como parte de esta fase (`src/shared/pricing.ts` o similar, con los precios vigentes del/los modelo(s) en uso), no se asume que ya existe.
+`model`/`provider` ya vienen resueltos por `resolveLlmProviderForTenant` (ADR-020/021/023), destructurados en el mismo scope donde ya se arma el log — no hizo falta ninguna inferencia adicional, a diferencia de lo que este documento asumía originalmente. `cost_usd` se calcula con `calculateCost` (`src/shared/pricing.ts`, nuevo) — `null` si el modelo no está en el mapa de precios, no bloquea el insert.
 
 ## Queries del panel
+
+`renderAnaliticaPage` corre estas queries dentro de `withTenant(tenantId, ...)`, igual que el resto de `adminPanel.ts` — el `SET LOCAL app.tenant_id` de esa sesión ya scopea las filas vía RLS, así que no llevan un `where tenant_id = $1` explícito (a diferencia de como se había bosquejado originalmente aquí; el patrón real es el mismo que ya usan `renderOverviewPage`/`renderTicketsPage`, no uno nuevo).
 
 **Costo y tokens del mes:**
 ```sql
@@ -42,8 +53,7 @@ select
   sum(output_tokens) as tokens_salida,
   sum(cost_usd) as costo_usd
 from llm_usage
-where tenant_id = $1
-  and created_at >= date_trunc('month', now())
+where created_at >= date_trunc('month', now())
 group by 1;
 ```
 
@@ -51,7 +61,7 @@ group by 1;
 ```sql
 select date_trunc('day', created_at)::date as dia, sum(cost_usd) as costo_usd, sum(input_tokens + output_tokens) as tokens
 from llm_usage
-where tenant_id = $1 and created_at >= now() - interval '30 days'
+where created_at >= now() - interval '30 days'
 group by 1 order by 1;
 ```
 
@@ -70,9 +80,11 @@ left join orders o on o.conversation_id = c.id
 join lateral (
   select sum(cost_usd) as total_costo from llm_usage where conversation_id = c.id
 ) u on true
-where c.tenant_id = $1 and c.status = 'closed'
+where c.status = 'closed'
 group by 1;
 ```
+
+(igual que las anteriores, corre dentro de `withTenant` — sin `where c.tenant_id = $1` explícito.)
 
 ## Insights por IA (stretch goal, no comprometido)
 

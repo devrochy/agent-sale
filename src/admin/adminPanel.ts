@@ -130,6 +130,9 @@ const ICON_LEADS =
 const ICON_TICKETS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6.4V4.7c0-.4.3-.7.7-.7h10.6c.4 0 .7.3.7.7v1.7a1.2 1.2 0 0 0 0 2.4v1.7c0 .4-.3.7-.7.7H2.7a.7.7 0 0 1-.7-.7V8.8a1.2 1.2 0 0 0 0-2.4Z"/><path d="M6.2 4v8" stroke-dasharray="1.3 1.3"/></svg>';
 
+const ICON_ANALITICA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M4.5 13.5V9"/><path d="M8 13.5V6"/><path d="M11.5 13.5V3"/></svg>';
+
 const ICON_FLUJO =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="2.8" cy="2.8" r="1.5"/><circle cx="2.8" cy="13.2" r="1.5"/><circle cx="12.6" cy="8" r="1.7"/><path d="M4.2 3.5 11 7.2M4.2 12.5 11 8.8"/></svg>';
 
@@ -144,6 +147,7 @@ type ActiveSection =
   | "conversaciones"
   | "leads"
   | "tickets"
+  | "analitica"
   | "flujo"
   | "conexiones"
   | "configuracion"
@@ -185,6 +189,7 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
           ${item(`/admin/${tenant.id}/conversaciones`, "Conversaciones", "conversaciones", ICON_CONVERSACIONES)}
           ${item(`/admin/${tenant.id}/leads`, "Leads", "leads", ICON_LEADS)}
           ${item(`/admin/${tenant.id}/tickets`, "Tickets", "tickets", ICON_TICKETS)}
+          ${item(`/admin/${tenant.id}/analitica`, "Analítica", "analitica", ICON_ANALITICA)}
         </ul>
       </div>
       <div class="laneline"></div>
@@ -1569,6 +1574,149 @@ const AGENT_TOOLS: { name: string; label: string }[] = [
 interface ToolCountRow {
   tool: string;
   llamadas_30d: string;
+}
+
+interface CostoMesRow {
+  tokens_entrada: string;
+  tokens_salida: string;
+  costo_usd: string;
+}
+
+interface TendenciaDiaRow {
+  dia: string;
+  costo_usd: string;
+}
+
+interface CostoPorResultadoRow {
+  resultado: "con_pedido" | "sin_pedido";
+  costo_promedio_usd: string | null;
+}
+
+// El volumen del piloto es bajo (unos pocos turnos por día, ver
+// analitica-costos.md) — el costo por turno individual queda en fracciones
+// de centavo. Redondear siempre a 2 decimales mostraría "$0.00" para un
+// gasto real pero chico, dando la impresión falsa de que no costó nada.
+// Con 4 decimales para valores menores a $1, ese detalle no se pierde.
+function formatUSD(value: string | number): string {
+  const amount = Number(value);
+  return amount > 0 && amount < 1 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(2)}`;
+}
+
+/**
+ * Analítica de costos (Fase 11.5, ver docs/fase-11-panel-admin-dashboard/
+ * analitica-costos.md): fuente Postgres nativa (`llm_usage`, ADR-017), no
+ * Grafana embebido ni Loki en vivo — evita acoplar la carga del panel a
+ * una query de logs externa. `provider`/`model` de cada fila ya vienen
+ * resueltos por `resolveLlmProviderForTenant` (ver src/orchestrator/loop.ts,
+ * insert best-effort junto al log `orchestrator.llm_completado`).
+ */
+export async function renderAnaliticaPage(tenantId: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+
+  const { costoMes, tendencia, costoPorResultado } = await withTenant(tenantId, async (client) => {
+    const costoMesResult = await client.query<CostoMesRow>(
+      `SELECT
+        coalesce(sum(input_tokens), 0) AS tokens_entrada,
+        coalesce(sum(output_tokens), 0) AS tokens_salida,
+        coalesce(sum(cost_usd), 0) AS costo_usd
+       FROM llm_usage
+       WHERE created_at >= date_trunc('month', now())`,
+    );
+
+    const tendenciaResult = await client.query<TendenciaDiaRow>(
+      `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS dia,
+              coalesce(sum(cost_usd), 0) AS costo_usd
+       FROM llm_usage
+       WHERE created_at >= now() - interval '30 days'
+       GROUP BY 1
+       ORDER BY 1`,
+    );
+
+    // No reimplementa el funnel de metricas-cierre-ventas.md — solo agrega
+    // el costo cruzado con su resultado (con/sin pedido), que ese
+    // documento dejaba explícitamente pendiente por no existir el dato de
+    // costo en Postgres todavía.
+    const costoPorResultadoResult = await client.query<CostoPorResultadoRow>(
+      `SELECT
+        CASE WHEN o.id IS NOT NULL THEN 'con_pedido' ELSE 'sin_pedido' END AS resultado,
+        round(avg(u.total_costo), 4) AS costo_promedio_usd
+       FROM conversations c
+       LEFT JOIN orders o ON o.conversation_id = c.id
+       JOIN LATERAL (
+         SELECT sum(cost_usd) AS total_costo FROM llm_usage WHERE conversation_id = c.id
+       ) u ON true
+       WHERE c.status = 'closed'
+       GROUP BY 1`,
+    );
+
+    return {
+      costoMes: costoMesResult.rows[0]!,
+      tendencia: tendenciaResult.rows,
+      costoPorResultado: costoPorResultadoResult.rows,
+    };
+  });
+
+  const tendenciaPorDia = new Map(tendencia.map((row) => [row.dia, Number(row.costo_usd)]));
+  const dias = Array.from({ length: 30 }, (_, i) => {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - (29 - i));
+    const iso = date.toISOString().slice(0, 10);
+    const label = `${String(date.getUTCDate()).padStart(2, "0")}/${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+    return { label, valor: Math.round((tendenciaPorDia.get(iso) ?? 0) * 100) / 100 };
+  });
+
+  const costoConPedido = costoPorResultado.find((row) => row.resultado === "con_pedido")?.costo_promedio_usd;
+  const costoSinPedido = costoPorResultado.find((row) => row.resultado === "sin_pedido")?.costo_promedio_usd;
+  const totalTokensMes = Number(costoMes.tokens_entrada) + Number(costoMes.tokens_salida);
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Panel</p>
+      <h1>Analítica</h1>
+      <p>Costo y consumo de IA de ${escapeHtml(brandName(tenant))}, calculado desde el uso real por turno.</p>
+    </div>
+
+    <section class="kpirow" aria-label="Indicadores de costo">
+      <article class="kpi">
+        <p class="kpi__label">Costo · este mes</p>
+        <div class="kpi__figure"><span class="kpi__number tabular">${escapeHtml(formatUSD(costoMes.costo_usd))}</span></div>
+        <div class="kpi__foot"><span>USD, desde el día 1</span></div>
+      </article>
+      <article class="kpi">
+        <p class="kpi__label">Tokens · este mes</p>
+        <div class="kpi__figure"><span class="kpi__number tabular" data-count-to="${totalTokensMes}">0</span></div>
+        <div class="kpi__foot"><span>${Number(costoMes.tokens_entrada).toLocaleString("es-CO")} entrada · ${Number(costoMes.tokens_salida).toLocaleString("es-CO")} salida</span></div>
+      </article>
+      <article class="kpi">
+        <p class="kpi__label">Costo promedio · conversación con pedido</p>
+        <div class="kpi__figure"><span class="kpi__number tabular">${costoConPedido ? escapeHtml(formatUSD(costoConPedido)) : "—"}</span></div>
+        <div class="kpi__foot"><span>Últimas conversaciones cerradas</span></div>
+      </article>
+    </section>
+
+    <section class="block" aria-label="Tendencia de costo">
+      <div class="blockhead"><h2>Costo — últimos 30 días</h2><span class="hint">USD / día</span></div>
+      <div class="panel chartpanel">
+        <div class="chart-wrap" id="chartWrap"></div>
+        <script type="application/json" id="actividad-data">${JSON.stringify(dias)}</script>
+      </div>
+    </section>
+
+    <section class="block" aria-label="Costo por resultado">
+      <div class="blockhead"><h2>Costo promedio por resultado</h2><span class="hint">conversaciones cerradas</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">
+          <div class="toolpill"><span>Con pedido</span><span class="toolpill__count tabular">${costoConPedido ? escapeHtml(formatUSD(costoConPedido)) : "—"}</span></div>
+          <div class="toolpill"><span>Sin pedido</span><span class="toolpill__count tabular">${costoSinPedido ? escapeHtml(formatUSD(costoSinPedido)) : "—"}</span></div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  return layout("Analítica", tenant, body, "analitica");
 }
 
 /**

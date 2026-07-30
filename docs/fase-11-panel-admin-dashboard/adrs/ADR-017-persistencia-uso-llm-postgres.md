@@ -1,7 +1,9 @@
 # ADR-017: Fuente de datos para Costos/Estadísticas del panel
 
 ## Estado
-Aceptado.
+Aceptado. Implementado en la Fase 11.5 (ver [analitica-costos.md](../analitica-costos.md)).
+
+**Nota post-implementación:** el hueco de "`model` no viene en el log actual" (línea 39 más abajo) se cerró gratis, sin necesidad de tocar esta ADR — no por el trabajo de esta fase, sino por la serie ADR-020/021/023 (ruteo de modelo por tenant), que ya hizo que `resolveLlmProviderForTenant` devolviera `model`/`providerKey`/`dificultad` por turno antes de que esta fase empezara. El insert a `llm_usage` simplemente destructura esos campos en el mismo scope donde ya loguea `orchestrator.llm_completado` — la decisión de esta ADR (persistir en Postgres, no Loki en vivo) no cambió.
 
 ## Contexto
 Hoy los tokens y la latencia de cada llamada al LLM se loguean pero no se persisten transaccionalmente: `src/orchestrator/loop.ts:184-200` emite el evento `orchestrator.llm_completado` con `latency_ms`, `stop_reason` y `usage` (`inputTokens`, `outputTokens`, y opcionalmente `cacheReadTokens`/`cacheCreationTokens`, ver `src/orchestrator/llm/types.ts:27-32`) — pero **ese log solo vive en Loki** (Grafana Cloud, vía Alloy). Ninguna tabla de Postgres guarda este dato. Además, **ese log no incluye qué modelo se usó** — no hay campo `model` en `Usage` ni en `TurnResponse`.

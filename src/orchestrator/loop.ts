@@ -2,6 +2,7 @@ import type { EscalationReason } from "../domains/escalation/escalarHumano.js";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
 import { getBehaviorConfig, getEscalationConfig } from "../shared/db/index.js";
+import { withTenant } from "../shared/db/withTenant.js";
 import { logger } from "../shared/observability/logger.js";
 import {
   extractMonetaryValues,
@@ -9,6 +10,7 @@ import {
   verifyPriceGuardrail,
   verifyStockGuardrail,
 } from "../shared/observability/priceGuardrail.js";
+import { calculateCost } from "../shared/pricing.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import type { DifficultySignal } from "./llm/difficultyRouting.js";
@@ -236,10 +238,12 @@ export async function processConversation(
   // desde un `incomingBody` puntual (bajo debounce, ver ADR-022, puede
   // haber más de un mensaje de cliente en este turno).
   const difficultySignal = buildDifficultySignal(messages, state);
-  const { provider: llmProvider, model: resolvedModel, dificultad } = await resolveLlmProviderForTenant(
-    tenantId,
-    difficultySignal,
-  );
+  const {
+    provider: llmProvider,
+    model: resolvedModel,
+    providerKey,
+    dificultad,
+  } = await resolveLlmProviderForTenant(tenantId, difficultySignal);
 
   let hadAnyToolCall = false;
   // Montos reales devueltos por tools — de toda la conversación, no solo
@@ -290,13 +294,14 @@ export async function processConversation(
       tools: TOOL_DEFINITIONS,
       messages,
     });
+    const llmLatencyMs = Date.now() - llmStartedAt;
     turnLogger.info(
       {
         event: "orchestrator.llm_completado",
         iteration,
         model: resolvedModel,
         dificultad,
-        latency_ms: Date.now() - llmStartedAt,
+        latency_ms: llmLatencyMs,
         stop_reason: response.stopReason,
         usage: response.usage,
       },
@@ -307,6 +312,33 @@ export async function processConversation(
       stop_reason: response.stopReason,
       usage: response.usage,
     });
+
+    // Espejo de negocio en Postgres (Fase 11.5, ver ADR-017 y
+    // analitica-costos.md) — best-effort: un fallo acá no debe interrumpir
+    // la respuesta al cliente, el log a Loki sigue siendo la fuente de
+    // verdad operacional.
+    try {
+      const cost = calculateCost(resolvedModel, response.usage.inputTokens, response.usage.outputTokens);
+      await withTenant(tenantId, (client) =>
+        client.query(
+          `INSERT INTO llm_usage
+             (tenant_id, conversation_id, provider, model, input_tokens, output_tokens, latency_ms, cost_usd)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            tenantId,
+            conversationId,
+            providerKey,
+            resolvedModel,
+            response.usage.inputTokens,
+            response.usage.outputTokens,
+            llmLatencyMs,
+            cost,
+          ],
+        ),
+      );
+    } catch (error) {
+      turnLogger.warn({ error, event: "orchestrator.llm_usage_insert_fallido" }, "No se pudo registrar el uso de LLM en llm_usage");
+    }
 
     if (response.stopReason === "refusal") {
       await recordAudit(tenantId, conversationId, "orchestrator", "refusal", null, {
