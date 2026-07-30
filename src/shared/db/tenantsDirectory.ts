@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret } from "../crypto/secretBox.js";
+import type { LlmRoutingMode } from "../../orchestrator/llm/catalog.js";
 import { pool } from "./pool.js";
 
 /**
@@ -79,6 +80,8 @@ export interface TenantLlmConfig {
   model: string | null;
   /** Ya desencriptada — `null` si el tenant no trajo su propia key (usar la del sistema). */
   apiKey: string | null;
+  /** "Cerebro del bot" (ADR-023) — 'manual' = usa `model` tal cual; 'auto_dificultad' = lo ignora y elige por turno. */
+  routingMode: LlmRoutingMode;
 }
 
 export async function getLlmConfig(tenantId: string): Promise<TenantLlmConfig> {
@@ -86,31 +89,42 @@ export async function getLlmConfig(tenantId: string): Promise<TenantLlmConfig> {
     llm_provider: string | null;
     llm_model: string | null;
     llm_api_key_encrypted: string | null;
-  }>("SELECT llm_provider, llm_model, llm_api_key_encrypted FROM tenants WHERE id = $1", [
-    tenantId,
-  ]);
+    llm_routing_mode: string;
+  }>(
+    "SELECT llm_provider, llm_model, llm_api_key_encrypted, llm_routing_mode FROM tenants WHERE id = $1",
+    [tenantId],
+  );
   const row = result.rows[0];
   return {
     provider: row?.llm_provider ?? null,
     model: row?.llm_model ?? null,
     apiKey: row?.llm_api_key_encrypted ? decryptSecret(row.llm_api_key_encrypted) : null,
+    routingMode: row?.llm_routing_mode === "auto_dificultad" ? "auto_dificultad" : "manual",
   };
 }
 
 /**
- * Guarda la elección de proveedor/modelo/API key del tenant — llamar solo
- * después de validar la combinación con una llamada de prueba real (ver
- * "Probar y guardar" en adminPanel.ts), nunca antes. `apiKey` en texto
- * plano se cifra acá adentro; `null`/`undefined` limpia el campo (volver a
- * usar la key del sistema).
+ * Guarda la elección de proveedor/modelo/API key/modo de ruteo del tenant
+ * — llamar solo después de validar la combinación con una llamada de
+ * prueba real (ver "Probar y guardar" en adminPanel.ts), nunca antes.
+ * `apiKey` en texto plano se cifra acá adentro; `null`/`undefined` limpia
+ * el campo (volver a usar la key del sistema). Con `routingMode:
+ * "auto_dificultad"`, `model` igual se guarda (el valor que traía el
+ * form) pero el resolver lo ignora en tiempo de turno — ver ADR-023.
  */
 export async function saveLlmConfig(
   tenantId: string,
-  config: { provider: string; model: string; apiKey?: string | null },
+  config: { provider: string; model: string; apiKey?: string | null; routingMode: LlmRoutingMode },
 ): Promise<void> {
   await pool.query(
-    "UPDATE tenants SET llm_provider = $1, llm_model = $2, llm_api_key_encrypted = $3 WHERE id = $4",
-    [config.provider, config.model, config.apiKey ? encryptSecret(config.apiKey) : null, tenantId],
+    "UPDATE tenants SET llm_provider = $1, llm_model = $2, llm_api_key_encrypted = $3, llm_routing_mode = $4 WHERE id = $5",
+    [
+      config.provider,
+      config.model,
+      config.apiKey ? encryptSecret(config.apiKey) : null,
+      config.routingMode,
+      tenantId,
+    ],
   );
 }
 
@@ -118,11 +132,12 @@ export async function saveLlmConfig(
  * Vuelve al "Automático" del panel (ver adminPanel.ts) — limpia el override
  * del tenant para que resolveLlmProviderForTenant vuelva a usar el default
  * de plataforma (env.LLM_PROVIDER/LLM_MODEL), el mismo comportamiento de
- * antes de la Fase 11.4.
+ * antes de la Fase 11.4. También resetea el modo de ruteo a 'manual' —
+ * "auto_dificultad" no tiene sentido sin un proveedor explícito elegido.
  */
 export async function clearLlmConfig(tenantId: string): Promise<void> {
   await pool.query(
-    "UPDATE tenants SET llm_provider = NULL, llm_model = NULL, llm_api_key_encrypted = NULL WHERE id = $1",
+    "UPDATE tenants SET llm_provider = NULL, llm_model = NULL, llm_api_key_encrypted = NULL, llm_routing_mode = 'manual' WHERE id = $1",
     [tenantId],
   );
 }
