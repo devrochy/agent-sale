@@ -141,7 +141,8 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/analitica", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderAnaliticaPage(tenantId);
+    const { moneda } = request.query as { moneda?: string };
+    const html = await renderAnaliticaPage(tenantId, moneda);
     if (!html) {
       return reply.status(404).send();
     }

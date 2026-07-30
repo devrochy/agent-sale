@@ -86,6 +86,14 @@ group by 1;
 
 (igual que las anteriores, corre dentro de `withTenant` — sin `where c.tenant_id = $1` explícito.)
 
+## Selector de moneda
+
+Agregado tras QA con el usuario: `cost_usd` en Postgres siempre queda en USD (es lo que factura cada proveedor de LLM), pero el panel permite elegir la moneda de visualización vía `?moneda=` (USD/COP/MXN/ARS/CLP/PEN/BRL) — no persistida por tenant, puramente de lectura.
+
+`src/shared/exchangeRates.ts` (nuevo) resuelve la tasa contra [open.er-api.com](https://open.er-api.com) (sin API key, actualiza diario), con caché en memoria del proceso de 12h — evita depender de la red externa en cada carga de página. Si el fetch falla y no hay caché previo, `renderAnaliticaPage` degrada a USD y muestra un aviso ("No se pudo obtener la tasa de cambio en vivo"), en vez de inventar un número.
+
+La conversión se hace en el server antes de renderizar (KPIs, gráfico de tendencia y costo por resultado) — el gráfico SVG compartido con Resumen (`CLIENT_SCRIPT`, `#chartWrap`) recibe la moneda vía `data-format="money"`/`data-symbol`/`data-decimals`/`data-money-suffix` en vez del `data-format="usd"` hardcodeado de la primera versión.
+
 ## Insights por IA (stretch goal, no comprometido)
 
 Resumen de conversación por LLM (qué quería el cliente, objeciones, oportunidad de venta) — factible con los datos ya disponibles (`messages` completo por conversación), pero implica una llamada nueva al LLM por conversación cerrada, con costo recurrente que esta misma fase ahora puede medir con precisión (`llm_usage`) antes de comprometerse a pagarlo. Se documenta como candidato a implementar después de tener al menos una semana de datos reales de costo — no se agenda dentro del alcance comprometido de la Fase 11.

@@ -21,6 +21,15 @@ import {
   type TenantSummary,
 } from "../shared/db/tenantsDirectory.js";
 import { withTenant } from "../shared/db/withTenant.js";
+import {
+  convertFromUsd,
+  CURRENCY_META,
+  formatMoney,
+  getUsdExchangeRates,
+  isCurrency,
+  SUPPORTED_CURRENCIES,
+  type Currency,
+} from "../shared/exchangeRates.js";
 
 /**
  * Panel interno de solo lectura (ver docs de Fase 8/9/11): no hay sistema
@@ -502,6 +511,16 @@ table.resizing { cursor: col-resize; user-select: none; }
 }
 .field select:hover, .field input[type="password"]:hover { border-color: var(--border-strong); }
 .field select:focus-visible, .field input[type="password"]:focus-visible { border-color: var(--chrome); background: var(--panel); }
+.currency-form { display: flex; align-items: center; gap: 8px; }
+.currency-form label { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+.currency-form select {
+  appearance: none; -webkit-appearance: none; font: inherit; font-size: 13px; background: var(--panel-inset);
+  border: 1px solid var(--border); border-radius: 9px; padding: 8px 32px 8px 12px; color: var(--ink); cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%23889198' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 12px;
+}
+.currency-form select:hover { border-color: var(--border-strong); }
+.currency-form select:focus-visible { border-color: var(--chrome); background: var(--panel); }
 .field select:disabled { opacity: 0.5; cursor: default; }
 .field input[type="password"]::placeholder { color: var(--ink-faint); }
 .field .hint { margin: 8px 0 0; font-size: 12px; color: var(--ink-faint); max-width: 440px; }
@@ -597,15 +616,22 @@ const CLIENT_SCRIPT = `
   if (wrap && chartData && chartData.length) {
     var data = chartData;
     var chartFormat = wrap.getAttribute("data-format") || "int";
+    var moneySymbol = wrap.getAttribute("data-symbol") || "$";
+    var moneyDecimals = parseInt(wrap.getAttribute("data-decimals") || "2", 10);
+    var moneySuffix = wrap.getAttribute("data-money-suffix") || "";
     function formatValor(v) {
-      if (chartFormat === "usd") {
-        return "$" + (v > 0 && v < 1 ? v.toFixed(4) : v.toFixed(2));
+      if (chartFormat === "money") {
+        // Mismo criterio que formatMoney en el servidor: un monto real
+        // menor a 1 unidad de la moneda no debe verse como si fuera cero.
+        var decimals = (v > 0 && v < 1) ? Math.max(moneyDecimals, 4) : moneyDecimals;
+        var num = moneySuffix ? v.toLocaleString("es-CO", { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) : v.toFixed(decimals);
+        return moneySymbol + num + moneySuffix;
       }
       return String(v);
     }
     var W = 900, H = 220, padL = 8, padR = 8, padT = 26, padB = 28;
     var plotW = W - padL - padR, plotH = H - padT - padB;
-    var maxV = Math.max(chartFormat === "usd" ? 0.0001 : 1, Math.max.apply(null, data.map(function (d) { return d.valor; })));
+    var maxV = Math.max(chartFormat === "money" ? 0.0001 : 1, Math.max.apply(null, data.map(function (d) { return d.valor; })));
 
     function x(i) { return padL + (i / (data.length - 1)) * plotW; }
     function y(v) { return padT + plotH - (v / maxV) * plotH; }
@@ -656,7 +682,7 @@ const CLIENT_SCRIPT = `
       crosshair.classList.add("visible");
       tooltip.style.left = (px * (rect.width / W)) + "px";
       tooltip.style.top = (py * (rect.height / H) - 10) + "px";
-      tooltip.innerHTML = d.label + " &nbsp; <b>" + formatValor(d.valor) + "</b>" + (chartFormat === "usd" ? "" : " msj");
+      tooltip.innerHTML = d.label + " &nbsp; <b>" + formatValor(d.valor) + "</b>" + (chartFormat === "money" ? "" : " msj");
       tooltip.classList.add("visible");
     });
     wrap.addEventListener("mouseleave", function () {
@@ -1600,16 +1626,6 @@ interface CostoPorResultadoRow {
   costo_promedio_usd: string | null;
 }
 
-// El volumen del piloto es bajo (unos pocos turnos por día, ver
-// analitica-costos.md) — el costo por turno individual queda en fracciones
-// de centavo. Redondear siempre a 2 decimales mostraría "$0.00" para un
-// gasto real pero chico, dando la impresión falsa de que no costó nada.
-// Con 4 decimales para valores menores a $1, ese detalle no se pierde.
-function formatUSD(value: string | number): string {
-  const amount = Number(value);
-  return amount > 0 && amount < 1 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(2)}`;
-}
-
 /**
  * Analítica de costos (Fase 11.5, ver docs/fase-11-panel-admin-dashboard/
  * analitica-costos.md): fuente Postgres nativa (`llm_usage`, ADR-017), no
@@ -1617,12 +1633,24 @@ function formatUSD(value: string | number): string {
  * una query de logs externa. `provider`/`model` de cada fila ya vienen
  * resueltos por `resolveLlmProviderForTenant` (ver src/orchestrator/loop.ts,
  * insert best-effort junto al log `orchestrator.llm_completado`).
+ *
+ * `cost_usd` en Postgres siempre queda en USD (es lo que factura cada
+ * proveedor de LLM) — la moneda elegida es puramente de visualización, vía
+ * `?moneda=`, no persistida por tenant. Si la tasa de cambio en vivo no está
+ * disponible (ver src/shared/exchangeRates.ts), se degrada a USD en vez de
+ * mostrar un número inventado.
  */
-export async function renderAnaliticaPage(tenantId: string): Promise<string | null> {
+export async function renderAnaliticaPage(tenantId: string, monedaParam?: string): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
   }
+
+  const monedaPedida: Currency = monedaParam && isCurrency(monedaParam) ? monedaParam : "USD";
+  const rates = monedaPedida === "USD" ? null : await getUsdExchangeRates();
+  const tasaNoDisponible = monedaPedida !== "USD" && rates === null;
+  const moneda: Currency = tasaNoDisponible ? "USD" : monedaPedida;
+  const toDisplay = (usd: number): number => convertFromUsd(usd, moneda, rates) ?? usd;
 
   const { costoMes, tendencia, costoPorResultado } = await withTenant(tenantId, async (client) => {
     const costoMesResult = await client.query<CostoMesRow>(
@@ -1673,28 +1701,50 @@ export async function renderAnaliticaPage(tenantId: string): Promise<string | nu
     date.setUTCDate(date.getUTCDate() - (29 - i));
     const iso = date.toISOString().slice(0, 10);
     const label = `${String(date.getUTCDate()).padStart(2, "0")}/${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
-    // Sin redondear a 2 decimales: a escala piloto el costo diario real es
-    // fracciones de centavo (ver el mismo bug ya corregido en formatUSD) —
-    // redondear acá antes de graficar colapsaba días con costo real a 0.
-    return { label, valor: Math.round((tendenciaPorDia.get(iso) ?? 0) * 1e6) / 1e6 };
+    // Convertir antes de redondear — redondear en USD y luego convertir
+    // arrastraría el error de redondeo original a la moneda de destino.
+    // Sin redondear a más de 6 decimales: a escala piloto el costo diario
+    // real es fracciones de centavo (ver el mismo bug ya corregido acá
+    // mismo) — redondear de más antes de graficar colapsaba días con costo
+    // real a 0.
+    return { label, valor: Math.round(toDisplay(tendenciaPorDia.get(iso) ?? 0) * 1e6) / 1e6 };
   });
 
   const costoConPedido = costoPorResultado.find((row) => row.resultado === "con_pedido")?.costo_promedio_usd;
   const costoSinPedido = costoPorResultado.find((row) => row.resultado === "sin_pedido")?.costo_promedio_usd;
   const totalTokensMes = Number(costoMes.tokens_entrada) + Number(costoMes.tokens_salida);
+  const costoMesDisplay = toDisplay(Number(costoMes.costo_usd));
+  // != null cubre null (fila existe, avg vacío) y undefined (sin fila) — en
+  // ambos casos la UI debe mostrar "—", no "$0.00".
+  const costoConPedidoDisplay = costoConPedido != null ? toDisplay(Number(costoConPedido)) : null;
+  const costoSinPedidoDisplay = costoSinPedido != null ? toDisplay(Number(costoSinPedido)) : null;
+  const currencyMeta = CURRENCY_META[moneda];
+
+  const currencyOptionsHtml = SUPPORTED_CURRENCIES.map(
+    (c) => `<option value="${c}"${c === moneda ? " selected" : ""}>${c}</option>`,
+  ).join("");
 
   const body = `
     <div class="pagehead">
-      <p class="eyebrow">Panel</p>
-      <h1>Analítica</h1>
-      <p>Costo y consumo de IA de ${escapeHtml(brandName(tenant))}, calculado desde el uso real por turno.</p>
+      <div class="pagehead__row">
+        <div>
+          <p class="eyebrow">Panel</p>
+          <h1>Analítica</h1>
+          <p>Costo y consumo de IA de ${escapeHtml(brandName(tenant))}, calculado desde el uso real por turno.</p>
+        </div>
+        <form method="get" class="currency-form" aria-label="Moneda para mostrar costos">
+          <label for="moneda">Moneda</label>
+          <select id="moneda" name="moneda" onchange="this.form.submit()">${currencyOptionsHtml}</select>
+        </form>
+      </div>
+      ${tasaNoDisponible ? `<p>No se pudo obtener la tasa de cambio en vivo para ${escapeHtml(monedaPedida)} — mostrando USD.</p>` : ""}
     </div>
 
     <section class="kpirow" aria-label="Indicadores de costo">
       <article class="kpi">
         <p class="kpi__label">Costo · este mes</p>
-        <div class="kpi__figure"><span class="kpi__number tabular">${escapeHtml(formatUSD(costoMes.costo_usd))}</span></div>
-        <div class="kpi__foot"><span>USD, desde el día 1</span></div>
+        <div class="kpi__figure"><span class="kpi__number tabular">${escapeHtml(formatMoney(costoMesDisplay, moneda))}</span></div>
+        <div class="kpi__foot"><span>${moneda}, desde el día 1</span></div>
       </article>
       <article class="kpi">
         <p class="kpi__label">Tokens · este mes</p>
@@ -1703,15 +1753,15 @@ export async function renderAnaliticaPage(tenantId: string): Promise<string | nu
       </article>
       <article class="kpi">
         <p class="kpi__label">Costo promedio · conversación con pedido</p>
-        <div class="kpi__figure"><span class="kpi__number tabular">${costoConPedido ? escapeHtml(formatUSD(costoConPedido)) : "—"}</span></div>
+        <div class="kpi__figure"><span class="kpi__number tabular">${costoConPedidoDisplay !== null ? escapeHtml(formatMoney(costoConPedidoDisplay, moneda)) : "—"}</span></div>
         <div class="kpi__foot"><span>Últimas conversaciones cerradas</span></div>
       </article>
     </section>
 
     <section class="block" aria-label="Tendencia de costo">
-      <div class="blockhead"><h2>Costo — últimos 30 días</h2><span class="hint">USD / día</span></div>
+      <div class="blockhead"><h2>Costo — últimos 30 días</h2><span class="hint">${moneda} / día</span></div>
       <div class="panel chartpanel">
-        <div class="chart-wrap" id="chartWrap" data-format="usd" data-aria-label="Costo por dia, ultimos 30 dias"></div>
+        <div class="chart-wrap" id="chartWrap" data-format="money" data-symbol="${currencyMeta.symbol}" data-decimals="${currencyMeta.decimals}" data-money-suffix="${moneda === "USD" ? "" : ` ${moneda}`}" data-aria-label="Costo por dia, ultimos 30 dias, en ${moneda}"></div>
         <script type="application/json" id="actividad-data">${JSON.stringify(dias)}</script>
       </div>
     </section>
@@ -1720,8 +1770,8 @@ export async function renderAnaliticaPage(tenantId: string): Promise<string | nu
       <div class="blockhead"><h2>Costo promedio por resultado</h2><span class="hint">conversaciones cerradas</span></div>
       <div class="panel connection">
         <div class="toolgrid">
-          <div class="toolpill"><span>Con pedido</span><span class="toolpill__count tabular">${costoConPedido ? escapeHtml(formatUSD(costoConPedido)) : "—"}</span></div>
-          <div class="toolpill"><span>Sin pedido</span><span class="toolpill__count tabular">${costoSinPedido ? escapeHtml(formatUSD(costoSinPedido)) : "—"}</span></div>
+          <div class="toolpill"><span>Con pedido</span><span class="toolpill__count tabular">${costoConPedidoDisplay !== null ? escapeHtml(formatMoney(costoConPedidoDisplay, moneda)) : "—"}</span></div>
+          <div class="toolpill"><span>Sin pedido</span><span class="toolpill__count tabular">${costoSinPedidoDisplay !== null ? escapeHtml(formatMoney(costoSinPedidoDisplay, moneda)) : "—"}</span></div>
         </div>
       </div>
     </section>
