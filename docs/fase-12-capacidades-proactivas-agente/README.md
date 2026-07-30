@@ -17,7 +17,7 @@ En agent-sale ninguna de estas capacidades se adopta como "función de pago" —
 ## Priorización recomendada (detalle en `analisis-superpoderes.md`)
 
 1. **12.1 — Quick wins**: multi-idioma, extender el guardrail de invención a stock, superficie de "Vigilante" (mayormente ya construido en la Fase 7).
-2. **12.2 — Jobs programados + mensajería dentro de 24h**: reporte diario, cazador de ventas, encuestas de satisfacción, solicitud de reseñas.
+2. **12.2 — Jobs programados + mensajería dentro de 24h**: reporte diario (implementado, ver [analisis-superpoderes.md](./analisis-superpoderes.md#7)), cazador de ventas, encuestas de satisfacción, solicitud de reseñas.
 3. **12.3 — Bloqueada por Meta**: reactivación de leads fríos (fuera de la ventana de 24h, requiere plantillas aprobadas).
 4. **Fuera de esta fase, candidatas a fase propia**: multimodalidad (voz/imágenes entrantes) y cobros por WhatsApp — ambas de alto esfuerzo, con integraciones externas (STT/visión, pasarela de pago) que ameritan su propio diseño detallado.
 

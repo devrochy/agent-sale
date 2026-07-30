@@ -1,5 +1,6 @@
 import { env } from "./config/env.js";
 import { buildServer } from "./gateway/server.js";
+import { startJobScheduler } from "./jobs/scheduler.js";
 import { startConsumer } from "./orchestrator/consumer.js";
 import { startDebounceScheduler } from "./orchestrator/debounceScheduler.js";
 
@@ -9,13 +10,18 @@ import { startDebounceScheduler } from "./orchestrator/debounceScheduler.js";
  * ADR de Fase 2 — monolito, no microservicios). El debounce scheduler
  * (Velocidad de respuesta, ver ADR-022) corre en paralelo con el
  * consumer, no encadenado — ambos son loops `while(true)` infinitos, si
- * quedara encadenado el segundo nunca arrancaría.
+ * quedara encadenado el segundo nunca arrancaría. `startJobScheduler`
+ * (Fase 12.2, ADR-018) es distinto: solo *registra* los cron jobs
+ * (llamada síncrona, no un loop), así que no entra al `Promise.all`.
  */
 const app = await buildServer();
 
 app
   .listen({ port: env.port, host: "0.0.0.0" })
-  .then(() => Promise.all([startConsumer(), startDebounceScheduler()]))
+  .then(() => {
+    startJobScheduler();
+    return Promise.all([startConsumer(), startDebounceScheduler()]);
+  })
   .catch((error) => {
     app.log.error(error);
     process.exit(1);

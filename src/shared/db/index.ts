@@ -5,6 +5,8 @@ export {
   getBehaviorConfig,
   getEscalationConfig,
   getLlmConfig,
+  getReportRecipient,
+  getTenant,
   listTenants,
 } from "./tenantsDirectory.js";
 export type { TenantLlmConfig, TenantSummary } from "./tenantsDirectory.js";

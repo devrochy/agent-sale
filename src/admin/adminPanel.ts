@@ -13,10 +13,12 @@ import {
   clearLlmConfig,
   getBehaviorConfig,
   getLlmConfig,
+  getReportRecipient,
   getTenant,
   listTenants,
   saveBehaviorConfig,
   saveLlmConfig,
+  saveReportRecipient,
   setBotPaused,
   type TenantSummary,
 } from "../shared/db/tenantsDirectory.js";
@@ -2110,6 +2112,7 @@ export async function renderConfiguracionPage(
   }
   const llmConfig = await getLlmConfig(tenantId);
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+  const reportRecipient = await getReportRecipient(tenantId);
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
   const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
@@ -2221,6 +2224,19 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
+    <section class="block block--narrow" aria-label="Reporte diario">
+      <div class="blockhead"><h2>Reporte diario</h2></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/configuracion/reporte-diario">
+          <div class="field">
+            <label for="reporte-telefono">WhatsApp que recibe el resumen</label>
+            <input type="text" id="reporte-telefono" name="telefono" value="${escapeHtml(reportRecipient ?? "")}" placeholder="whatsapp:+573001234567">
+            <p class="hint">Todos los días a las 8:00 a. m. (hora Colombia) se manda un resumen de mensajes, clientes, conversaciones cerradas y pedidos del día anterior. Dejar vacío para no recibirlo.</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+        </form>
+      </div>
+    </section>
   `;
 
   return layout("Configuración", tenant, body, "configuracion");
@@ -2257,6 +2273,32 @@ export async function guardarComportamiento(
     estiloMensajes: input.estiloMensajes,
     velocidadRespuesta: input.velocidadRespuesta,
   });
+  return { ok: true };
+}
+
+// whatsapp:+<código de país><número>, sin espacios — mismo formato que
+// exige la API de Twilio para from/to (ver src/gateway/sendMessage.ts).
+const WHATSAPP_PHONE_RE = /^whatsapp:\+\d{6,15}$/;
+
+/**
+ * Reporte diario (Fase 12.2, ver ADR-018) — a diferencia de "Probar y
+ * guardar" del modelo de IA, acá no hay nada que validar contra una API
+ * externa, solo el formato del teléfono. Vacío limpia el campo (deja de
+ * recibir reporte, ver src/jobs/dailyReport.ts).
+ */
+export async function guardarReporteDiario(
+  tenantId: string,
+  input: { telefono: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const trimmed = input.telefono.trim();
+  if (trimmed === "") {
+    await saveReportRecipient(tenantId, null);
+    return { ok: true };
+  }
+  if (!WHATSAPP_PHONE_RE.test(trimmed)) {
+    return { ok: false, error: 'Formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.' };
+  }
+  await saveReportRecipient(tenantId, trimmed);
   return { ok: true };
 }
 
