@@ -94,6 +94,12 @@ Agregado tras QA con el usuario: `cost_usd` en Postgres siempre queda en USD (es
 
 La conversión se hace en el server antes de renderizar (KPIs, gráfico de tendencia y costo por resultado) — el gráfico SVG compartido con Resumen (`CLIENT_SCRIPT`, `#chartWrap`) recibe la moneda vía `data-format="money"`/`data-symbol`/`data-decimals`/`data-money-suffix` en vez del `data-format="usd"` hardcodeado de la primera versión.
 
+### "Costo promedio por resultado": conteo, no frase suelta
+
+Tras QA visual el hint del bloque decía literalmente "conversaciones cerradas" — no encajaba con el resto de la página, donde los hints son fragmentos cortos tipo unidad ("USD / día", "últimas 10", "BYOK"), no oraciones. Se cambió a un conteo (`"N cerradas"`), igual que ya hacía el hint de "Conversaciones recientes" en Resumen. La query de `costoPorResultado` ahora también trae `count(u.total_costo)` (no `count(*)`: la LATERAL siempre devuelve una fila por conversación cerrada aunque no tenga uso de LLM, y contar esas inflaría el número real de conversaciones detrás del promedio).
+
+De paso se corrigió la tarjeta KPI "Costo promedio · conversación con pedido", que decía "Últimas conversaciones cerradas" — la query nunca tuvo `LIMIT`, promedia *todas* las conversaciones cerradas con pedido, así que "Últimas" era información falsa. Ahora muestra el conteo real (ej. "1 conversación cerrada").
+
 ## Insights por IA (stretch goal, no comprometido)
 
 Resumen de conversación por LLM (qué quería el cliente, objeciones, oportunidad de venta) — factible con los datos ya disponibles (`messages` completo por conversación), pero implica una llamada nueva al LLM por conversación cerrada, con costo recurrente que esta misma fase ahora puede medir con precisión (`llm_usage`) antes de comprometerse a pagarlo. Se documenta como candidato a implementar después de tener al menos una semana de datos reales de costo — no se agenda dentro del alcance comprometido de la Fase 11.

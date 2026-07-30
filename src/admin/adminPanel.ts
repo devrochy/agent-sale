@@ -1624,6 +1624,7 @@ interface TendenciaDiaRow {
 interface CostoPorResultadoRow {
   resultado: "con_pedido" | "sin_pedido";
   costo_promedio_usd: string | null;
+  conversaciones: string;
 }
 
 /**
@@ -1675,10 +1676,16 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
     // el costo cruzado con su resultado (con/sin pedido), que ese
     // documento dejaba explícitamente pendiente por no existir el dato de
     // costo en Postgres todavía.
+    // count(u.total_costo), no count(*): la LATERAL siempre devuelve una
+    // fila por conversación cerrada aunque no tenga uso de LLM (sum da
+    // NULL) — contar esas inflaría el número de conversaciones detrás del
+    // promedio. count() ignora NULLs, igual que avg(), así que ambos
+    // números describen exactamente el mismo conjunto de filas.
     const costoPorResultadoResult = await client.query<CostoPorResultadoRow>(
       `SELECT
         CASE WHEN o.id IS NOT NULL THEN 'con_pedido' ELSE 'sin_pedido' END AS resultado,
-        round(avg(u.total_costo), 4) AS costo_promedio_usd
+        round(avg(u.total_costo), 4) AS costo_promedio_usd,
+        count(u.total_costo) AS conversaciones
        FROM conversations c
        LEFT JOIN orders o ON o.conversation_id = c.id
        JOIN LATERAL (
@@ -1710,14 +1717,26 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
     return { label, valor: Math.round(toDisplay(tendenciaPorDia.get(iso) ?? 0) * 1e6) / 1e6 };
   });
 
-  const costoConPedido = costoPorResultado.find((row) => row.resultado === "con_pedido")?.costo_promedio_usd;
-  const costoSinPedido = costoPorResultado.find((row) => row.resultado === "sin_pedido")?.costo_promedio_usd;
+  const filaConPedido = costoPorResultado.find((row) => row.resultado === "con_pedido");
+  const filaSinPedido = costoPorResultado.find((row) => row.resultado === "sin_pedido");
+  const costoConPedido = filaConPedido?.costo_promedio_usd;
+  const costoSinPedido = filaSinPedido?.costo_promedio_usd;
   const totalTokensMes = Number(costoMes.tokens_entrada) + Number(costoMes.tokens_salida);
   const costoMesDisplay = toDisplay(Number(costoMes.costo_usd));
   // != null cubre null (fila existe, avg vacío) y undefined (sin fila) — en
   // ambos casos la UI debe mostrar "—", no "$0.00".
   const costoConPedidoDisplay = costoConPedido != null ? toDisplay(Number(costoConPedido)) : null;
   const costoSinPedidoDisplay = costoSinPedido != null ? toDisplay(Number(costoSinPedido)) : null;
+
+  // "N conversaciones" en vez de una frase suelta ("conversaciones
+  // cerradas") — mismo criterio que el hint "últimas N" de "Conversaciones
+  // recientes" más arriba en el archivo: un hint corto tipo unidad, no una
+  // oración a medias. Cuenta solo las conversaciones que aportaron al
+  // promedio (con_pedido + sin_pedido), no el total de conversaciones
+  // cerradas del tenant (esas dos cosas pueden diferir si alguna cerrada no
+  // tiene ningún uso de LLM registrado).
+  const totalConversacionesPromediadas = Number(filaConPedido?.conversaciones ?? 0) + Number(filaSinPedido?.conversaciones ?? 0);
+  const pluralConversaciones = (n: number): string => (n === 1 ? "1 conversación cerrada" : `${n} conversaciones cerradas`);
   const currencyMeta = CURRENCY_META[moneda];
 
   const currencyOptionsHtml = SUPPORTED_CURRENCIES.map(
@@ -1754,7 +1773,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
       <article class="kpi">
         <p class="kpi__label">Costo promedio · conversación con pedido</p>
         <div class="kpi__figure"><span class="kpi__number tabular">${costoConPedidoDisplay !== null ? escapeHtml(formatMoney(costoConPedidoDisplay, moneda)) : "—"}</span></div>
-        <div class="kpi__foot"><span>Últimas conversaciones cerradas</span></div>
+        <div class="kpi__foot"><span>${filaConPedido ? pluralConversaciones(Number(filaConPedido.conversaciones)) : "Sin conversaciones cerradas con pedido"}</span></div>
       </article>
     </section>
 
@@ -1767,7 +1786,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
     </section>
 
     <section class="block" aria-label="Costo por resultado">
-      <div class="blockhead"><h2>Costo promedio por resultado</h2><span class="hint">conversaciones cerradas</span></div>
+      <div class="blockhead"><h2>Costo promedio por resultado</h2><span class="hint">${totalConversacionesPromediadas} cerradas</span></div>
       <div class="panel connection">
         <div class="toolgrid">
           <div class="toolpill"><span>Con pedido</span><span class="toolpill__count tabular">${costoConPedidoDisplay !== null ? escapeHtml(formatMoney(costoConPedidoDisplay, moneda)) : "—"}</span></div>
