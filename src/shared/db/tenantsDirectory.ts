@@ -184,3 +184,26 @@ export async function saveBehaviorConfig(
     tenantId,
   ]);
 }
+
+/**
+ * Número de WhatsApp que recibe el Reporte diario (Fase 12.2, ver
+ * migrations/0024_tenants_report_recipient.cjs) — `null` si el tenant no lo
+ * configuró, en cuyo caso `src/jobs/dailyReport.ts` no le manda reporte a
+ * ese tenant (no es un error). Deliberadamente separado de `human_agents`
+ * (esa tabla es para notificaciones de escalamiento, un rol distinto).
+ */
+export async function getReportRecipient(tenantId: string): Promise<string | null> {
+  const result = await pool.query<{ report_recipient_phone: string | null }>(
+    "SELECT report_recipient_phone FROM tenants WHERE id = $1",
+    [tenantId],
+  );
+  return result.rows[0]?.report_recipient_phone ?? null;
+}
+
+/** `phone: null` limpia el campo (deja de recibir Reporte diario). */
+export async function saveReportRecipient(tenantId: string, phone: string | null): Promise<void> {
+  await pool.query("UPDATE tenants SET report_recipient_phone = $1 WHERE id = $2", [
+    phone,
+    tenantId,
+  ]);
+}

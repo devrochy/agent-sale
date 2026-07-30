@@ -1,7 +1,7 @@
 # ADR-018: Infraestructura de jobs programados
 
 ## Estado
-Aceptado.
+Aceptado. Implementado (Fase 12.2, PR "Reporte diario"): `src/jobs/scheduler.ts` registra el primer job real (`src/jobs/dailyReport.ts`) vía `startJobScheduler()`, llamado desde `src/index.ts` — confirma la decisión de esta ADR sin cambios (mismo proceso Fastify, sin infraestructura distribuida).
 
 ## Contexto
 Varias de las capacidades analizadas en [analisis-superpoderes.md](../analisis-superpoderes.md) (Reporte diario, Cazador de ventas, Reactivación de leads fríos) requieren que el sistema actúe **sin que llegue un mensaje entrante primero** — ej. "cada mañana enviar un resumen" o "cada N horas revisar cotizaciones sin confirmar". Hoy no existe ningún mecanismo de este tipo: `package.json` no tiene `node-cron`, `bullmq`, `agenda`, ni ningún `setInterval` de negocio en `src/`. El único mecanismo periódico-adyacente es Redis Streams como cola de mensajes **entrantes** (`src/gateway/queue.ts`), que no aplica aquí — no hay ningún evento entrante que dispare estos jobs.

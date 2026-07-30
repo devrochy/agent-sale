@@ -11,6 +11,7 @@ import {
   exportLeadsCsv,
   guardarComportamiento,
   guardarModeloIa,
+  guardarReporteDiario,
   pausarBot,
   reactivarBot,
   renderAnaliticaPage,
@@ -221,6 +222,16 @@ export async function buildServer() {
       estiloMensajes: estiloMensajes ?? "",
       velocidadRespuesta: velocidadRespuesta ?? "",
     });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/configuracion?guardado=1`
+      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/:tenantId/configuracion/reporte-diario", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { telefono } = request.body as { telefono?: string };
+    const result = await guardarReporteDiario(tenantId, { telefono: telefono ?? "" });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/configuracion?guardado=1`
       : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
