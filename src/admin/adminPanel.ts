@@ -1785,7 +1785,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
       </div>
     </section>
 
-    <section class="block" aria-label="Costo por resultado">
+    <section class="block block--narrow" aria-label="Costo por resultado">
       <div class="blockhead"><h2>Costo promedio por resultado</h2><span class="hint">${totalConversacionesPromediadas} cerradas</span></div>
       <div class="panel connection">
         <div class="toolgrid">
