@@ -78,6 +78,7 @@ afterEach(() => {
 
 afterAll(async () => {
   const tenants = [tenantConLink, tenantSinLink];
+  await adminPool.query(`DELETE FROM review_tokens WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM messages WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM conversations WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM customers WHERE tenant_id = ANY($1)`, [tenants]);
@@ -92,7 +93,7 @@ describe("tryCaptureSurveyReply", () => {
     vi.mocked(getWhatsAppMessageStatus).mockResolvedValue({ status: "delivered", errorCode: null });
   });
 
-  it("calificación reconocible: guarda el score, marca procesado y agradece con link (score alto)", async () => {
+  it("calificación reconocible: guarda el score, marca procesado y agradece con link a la reseña propia (score alto)", async () => {
     const conversationId = await seedConversation(tenantConLink, PHONES.conCalificacion, {
       surveyHoursAgo: 2,
     });
@@ -107,10 +108,21 @@ describe("tryCaptureSurveyReply", () => {
     ]);
     expect(row.rows[0]!.satisfaction_score).toBe(5);
     expect(row.rows[0]!.survey_reply_processed_at).not.toBeNull();
+
+    // El link va a nuestra propia página de reseña (/resena/:token), no
+    // directo a la plataforma externa — ver satisfactionSurvey.ts.
     expect(sendWhatsAppMessage).toHaveBeenCalledWith(
       PHONES.conCalificacion,
-      expect.stringContaining("https://ejemplo.com/review"),
+      expect.stringContaining("/resena/"),
     );
+    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0]!;
+    const token = text.match(/\/resena\/(\S+)/)?.[1];
+    expect(token).toBeTruthy();
+    const tokenRow = await adminPool.query<{ conversation_id: string }>(
+      `SELECT conversation_id FROM review_tokens WHERE token = $1`,
+      [token],
+    );
+    expect(tokenRow.rows[0]!.conversation_id).toBe(conversationId);
   });
 
   it("sin calificación reconocible: marca procesado pero no manda nada", async () => {
@@ -164,14 +176,17 @@ describe("tryCaptureSurveyReply", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
-  it("score alto sin review_link configurado: agradece sin link", async () => {
+  it("score alto sin review_link EXTERNO configurado: igual manda el link de reseña propio", async () => {
+    // El link externo (Google) es un paso posterior opcional DENTRO de la
+    // página de reseña, no una condición para ofrecer la reseña interna.
     await seedConversation(tenantSinLink, PHONES.scoreAltoSinLink, { surveyHoursAgo: 2 });
 
     await tryCaptureSurveyReply(tenantSinLink, PHONES.scoreAltoSinLink, "5", logger);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONES.scoreAltoSinLink, expect.any(String));
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0]!;
-    expect(text).not.toContain("http");
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      PHONES.scoreAltoSinLink,
+      expect.stringContaining("/resena/"),
+    );
   });
 
   it("score bajo: agradece sin link aunque el tenant lo tenga configurado", async () => {

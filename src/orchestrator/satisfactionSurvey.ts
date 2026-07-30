@@ -1,7 +1,8 @@
 import type { Logger } from "pino";
+import { env } from "../config/env.js";
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { verifyDelivery } from "../jobs/verifyDelivery.js";
-import { getReviewLink, withTenant } from "../shared/db/index.js";
+import { createReviewToken, withTenant } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { appendMessage } from "./memory.js";
 
@@ -86,11 +87,22 @@ function parseRating(text: string): number | null {
   return match ? Number(match[0]) : null;
 }
 
-function buildThankYouText(score: number, reviewLink: string | null): string {
-  if (score >= 4 && reviewLink) {
-    return `¡Genial, gracias por tu calificación! 🎉 Si tenés un minuto, nos ayudaría muchísimo que dejaras una reseña acá: ${reviewLink}`;
+/**
+ * El link va a nuestra propia página de reseña (src/reviews/reviewView.ts),
+ * nunca directo a una plataforma externa — así el texto que escribe el
+ * cliente queda en agent-sale, disponible para análisis, y no depende de
+ * si el tenant configuró `tenants.review_link` (ese link externo pasa a
+ * ser un paso posterior *dentro* de la página, opcional).
+ */
+function buildThankYouText(score: number, reviewFormLink: string | null): string {
+  if (score >= 4 && reviewFormLink) {
+    return `¡Genial, gracias por tu calificación! 🎉 ¿Nos contás un poco más de tu experiencia? Nos ayuda muchísimo: ${reviewFormLink}`;
   }
   return "¡Gracias por tu calificación! 🙏 Vamos a seguir mejorando.";
+}
+
+function buildReviewFormLink(token: string): string {
+  return `${new URL(env.publicWebhookUrl).origin}/resena/${token}`;
 }
 
 /**
@@ -138,8 +150,9 @@ export async function tryCaptureSurveyReply(
   }
 
   try {
-    const reviewLink = score >= 4 ? await getReviewLink(tenantId) : null;
-    const text = buildThankYouText(score, reviewLink);
+    const reviewFormLink =
+      score >= 4 ? buildReviewFormLink(await createReviewToken(tenantId, conversationId)) : null;
+    const text = buildThankYouText(score, reviewFormLink);
     const sid = await sendWhatsAppMessage(customerPhone, text);
     await appendMessage(tenantId, conversationId, "outbound", "agent", text);
     await verifyDelivery(sid, "Agradecimiento de encuesta", surveyLogger);

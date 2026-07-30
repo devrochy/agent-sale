@@ -13,3 +13,5 @@ export {
 export type { TenantLlmConfig, TenantSummary } from "./tenantsDirectory.js";
 export { createHandoffToken, resolveHandoffToken } from "./handoffTokenDirectory.js";
 export type { HandoffTokenLookup } from "./handoffTokenDirectory.js";
+export { createReviewToken, resolveReviewToken } from "./reviewTokenDirectory.js";
+export type { ReviewTokenLookup } from "./reviewTokenDirectory.js";
