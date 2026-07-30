@@ -1,6 +1,15 @@
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import type { Logger } from "pino";
+import { getWhatsAppMessageStatus, sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { getReportRecipient, getTenant, listTenants, withTenant } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
+
+// WhatsApp resuelve entrega/rechazo en segundos, no minutos (confirmado en
+// QA real: date_updated ~2s después de date_created en un mensaje
+// rechazado por estar fuera de la ventana de 24h) — este delay alcanza
+// para detectar el caso más común de fallo silencioso sin frenar el job
+// mucho tiempo. Es un job diario con pocos tenants, no un path sensible a
+// latencia.
+const DELIVERY_CHECK_DELAY_MS = 4000;
 
 interface DailyReportRow {
   mensajes: string;
@@ -109,10 +118,37 @@ export async function sendDailyReports(): Promise<void> {
       if (!text) {
         continue;
       }
-      await sendWhatsAppMessage(recipient, text);
-      jobLogger.info("Reporte diario enviado");
+      const sid = await sendWhatsAppMessage(recipient, text);
+      await verifyDelivery(sid, jobLogger);
     } catch (error) {
       jobLogger.warn({ error }, "No se pudo enviar el reporte diario de este tenant");
     }
+  }
+}
+
+/**
+ * Confirma la entrega real del reporte ya enviado (ver sendWhatsAppMessage
+ * — que no lance solo significa que Twilio lo aceptó, no que llegó). Un
+ * fallo acá (no poder consultar el estado) no es lo mismo que un fallo de
+ * envío: el mensaje sí se mandó, solo no se pudo verificar — se loguea
+ * distinto para no confundir ambos casos en Loki/Grafana.
+ */
+async function verifyDelivery(sid: string, jobLogger: Logger): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, DELIVERY_CHECK_DELAY_MS));
+  try {
+    const { status, errorCode } = await getWhatsAppMessageStatus(sid);
+    if (status === "undelivered" || status === "failed") {
+      jobLogger.warn(
+        { sid, status, errorCode },
+        "Reporte diario rechazado por WhatsApp — probablemente fuera de la ventana de 24h (errorCode 63016) o el destinatario nunca inició conversación con el bot",
+      );
+    } else {
+      jobLogger.info({ sid, status }, "Reporte diario enviado");
+    }
+  } catch (error) {
+    jobLogger.warn(
+      { sid, error },
+      "Reporte diario enviado, pero no se pudo confirmar el estado de entrega",
+    );
   }
 }
