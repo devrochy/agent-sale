@@ -13,6 +13,7 @@ import {
   guardarModeloIa,
   pausarBot,
   reactivarBot,
+  renderAnaliticaPage,
   renderConexionesPage,
   renderConfiguracionPage,
   renderConversacionesPage,
@@ -132,6 +133,16 @@ export async function buildServer() {
   app.get("/admin/:tenantId/tickets", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const html = await renderTicketsPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/analitica", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { moneda } = request.query as { moneda?: string };
+    const html = await renderAnaliticaPage(tenantId, moneda);
     if (!html) {
       return reply.status(404).send();
     }
