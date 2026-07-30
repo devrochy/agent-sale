@@ -57,6 +57,13 @@ jobs:
       # para que la app arranque, no se ejercita ningún login real en CI.
       ADMIN_USER: ci-test-admin
       ADMIN_PASSWORD: ci-test-fake-password
+      # BYOK (Fase 11.4, ver ADR-020/secretBox.ts) — requerida por env.ts
+      # desde que se agregó; secretBox.ts valida que decodifique a
+      # exactamente 32 bytes en base64. Valor de prueba, no la clave real
+      # (esa vive en Fly Secrets, ver ADR-007) — CI nunca cifra/descifra
+      # datos reales, solo necesita que la app arranque y los tests de
+      # round-trip de secretBox.test.ts tengan algo válido para usar.
+      TENANT_SECRETS_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
     steps:
       - uses: actions/checkout@v4
 
