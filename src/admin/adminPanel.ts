@@ -14,11 +14,13 @@ import {
   getBehaviorConfig,
   getLlmConfig,
   getReportRecipient,
+  getReviewLink,
   getTenant,
   listTenants,
   saveBehaviorConfig,
   saveLlmConfig,
   saveReportRecipient,
+  saveReviewLink,
   setBotPaused,
   type TenantSummary,
 } from "../shared/db/tenantsDirectory.js";
@@ -2113,6 +2115,7 @@ export async function renderConfiguracionPage(
   const llmConfig = await getLlmConfig(tenantId);
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
   const reportRecipient = await getReportRecipient(tenantId);
+  const reviewLink = await getReviewLink(tenantId);
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
   const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
@@ -2237,6 +2240,19 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
+    <section class="block block--narrow" aria-label="Encuestas y reseñas">
+      <div class="blockhead"><h2>Encuestas y reseñas</h2></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/configuracion/resenas">
+          <div class="field">
+            <label for="review-link">Link para dejar una reseña</label>
+            <input type="text" id="review-link" name="link" value="${escapeHtml(reviewLink ?? "")}" placeholder="https://g.page/r/.../review">
+            <p class="hint">Al cerrar una conversación se le pregunta al cliente cómo calificaría su experiencia (1 al 5). Si responde con 4 o 5 y este link está configurado, se lo mandamos junto con el agradecimiento. Dejar vacío para no pedir reseña.</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+        </form>
+      </div>
+    </section>
   `;
 
   return layout("Configuración", tenant, body, "configuracion");
@@ -2299,6 +2315,21 @@ export async function guardarReporteDiario(
     return { ok: false, error: 'Formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.' };
   }
   await saveReportRecipient(tenantId, trimmed);
+  return { ok: true };
+}
+
+/**
+ * Link de reseña (Fase 12.2, ver satisfactionSurvey.ts) — sin validación
+ * de formato más allá de "no vacío": puede ser cualquier URL corta que el
+ * dueño del negocio use (Google Business, Facebook, etc.), no vale la
+ * pena una lista cerrada de dominios permitidos.
+ */
+export async function guardarReviewLink(
+  tenantId: string,
+  input: { link: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const trimmed = input.link.trim();
+  await saveReviewLink(tenantId, trimmed === "" ? null : trimmed);
   return { ok: true };
 }
 

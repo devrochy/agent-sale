@@ -6,6 +6,7 @@ export {
   getEscalationConfig,
   getLlmConfig,
   getReportRecipient,
+  getReviewLink,
   getTenant,
   listTenants,
 } from "./tenantsDirectory.js";

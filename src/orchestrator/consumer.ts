@@ -6,6 +6,7 @@ import { resolveBehaviorConfig, DEBOUNCE_DELAY_MS } from "./behaviorConfig.js";
 import { scheduleDebounce } from "./debounceScheduler.js";
 import { appendInbound, processConversation } from "./loop.js";
 import { appendMessage, resolveConversation } from "./memory.js";
+import { tryCaptureSurveyReply } from "./satisfactionSurvey.js";
 import { sendTurnBubbles } from "./sendTurnResult.js";
 
 const CONSUMER_GROUP = "orchestrator-group";
@@ -68,6 +69,13 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   );
 
   try {
+    // Encuesta de satisfacción (Fase 12.2, ver satisfactionSurvey.ts):
+    // efecto secundario NO bloqueante, primero de todo así cubre bot
+    // pausado / inmediato / debounce con un único call-site — el mensaje
+    // sigue su curso normal después, se haya capturado una calificación
+    // pendiente o no.
+    await tryCaptureSurveyReply(tenantId, customerPhone, message.body ?? "", entryLogger);
+
     // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md): se
     // chequea ACÁ, antes de invocar el orquestador — así se evita
     // resolver el proveedor de LLM (y su costo) para un tenant pausado.

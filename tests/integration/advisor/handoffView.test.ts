@@ -1,5 +1,12 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../src/gateway/sendMessage.js", () => ({
+  sendWhatsAppMessage: vi.fn(),
+  getWhatsAppMessageStatus: vi.fn(),
+}));
+
+import { getWhatsAppMessageStatus, sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import {
   renderHandoffView,
@@ -17,6 +24,11 @@ let tenantId: string;
 let customerId: string;
 let conversationId: string;
 let agentId: string;
+
+afterEach(() => {
+  vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(getWhatsAppMessageStatus).mockReset();
+});
 
 beforeAll(async () => {
   await app.ready();
@@ -119,7 +131,10 @@ describe("tomarConversacion / resolverConversacion", () => {
     expect(result.status).toBe(409);
   });
 
-  it("resolver pasa el caso a resuelto, completa resolved_at y cierra la conversación", async () => {
+  it("resolver pasa el caso a resuelto, completa resolved_at, cierra la conversación y manda la encuesta", async () => {
+    vi.mocked(sendWhatsAppMessage).mockResolvedValue("SM_TEST_SID");
+    vi.mocked(getWhatsAppMessageStatus).mockResolvedValue({ status: "delivered", errorCode: null });
+
     const { handoffId, token } = await seedHandoff();
     await tomarConversacion(token);
 
@@ -137,11 +152,19 @@ describe("tomarConversacion / resolverConversacion", () => {
     // cierre") para que el próximo mensaje del cliente abra una nueva en
     // vez de quedar muda en step: "escalado" para siempre.
     const conversation = await adminPool.query(
-      `SELECT status, closed_at FROM conversations WHERE id = $1`,
+      `SELECT status, closed_at, survey_sent_at FROM conversations WHERE id = $1`,
       [conversationId],
     );
     expect(conversation.rows[0]!.status).toBe("closed");
     expect(conversation.rows[0]!.closed_at).not.toBeNull();
+
+    // Encuesta de satisfacción (Fase 12.2, ver satisfactionSurvey.ts): se
+    // manda automáticamente al cerrar, best-effort.
+    expect(conversation.rows[0]!.survey_sent_at).not.toBeNull();
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      "3050000001",
+      expect.stringContaining("1 al 5"),
+    );
 
     // Reabre la conversación para no afectar el resto de los tests de
     // este archivo, que reutilizan la misma conversación semilla.
