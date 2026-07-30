@@ -86,6 +86,7 @@ export async function loadHistory(tenantId: string, conversationId: string): Pro
   }));
 }
 
+/** Devuelve el `id` de la fila insertada — ver updateMessageContent, que lo usa para corregir el texto mostrado sin tocar `tool_calls`. */
 export async function appendMessage(
   tenantId: string,
   conversationId: string,
@@ -93,11 +94,12 @@ export async function appendMessage(
   senderType: "customer" | "agent" | "human",
   content: string,
   toolCalls?: unknown,
-): Promise<void> {
-  await withTenant(tenantId, (client) =>
-    client.query(
+): Promise<string> {
+  const result = await withTenant(tenantId, (client) =>
+    client.query<{ id: string }>(
       `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, tool_calls)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
       [
         tenantId,
         conversationId,
@@ -107,6 +109,28 @@ export async function appendMessage(
         toolCalls ? JSON.stringify(toolCalls) : null,
       ],
     ),
+  );
+  return result.rows[0]!.id;
+}
+
+/**
+ * Corrige el `content` (columna de texto mostrado en el panel/vista del
+ * asesor, ver renderMessageBody en handoffView.ts) de un mensaje ya
+ * persistido, sin tocar `tool_calls` (los content blocks crudos que
+ * loadHistory usa para reconstruir el contexto real que vio/generó el
+ * LLM). Caso de uso: el link de pago de Wompi (ver loop.ts,
+ * extractPaymentLinkUrl) se agrega al texto que realmente se manda por
+ * WhatsApp *después* de que la respuesta del LLM ya quedó persistida —
+ * sin esto, la transcripción del panel no coincidiría con lo que el
+ * cliente recibió de verdad.
+ */
+export async function updateMessageContent(
+  tenantId: string,
+  messageId: string,
+  content: string,
+): Promise<void> {
+  await withTenant(tenantId, (client) =>
+    client.query(`UPDATE messages SET content = $1 WHERE id = $2`, [content, messageId]),
   );
 }
 

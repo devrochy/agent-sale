@@ -15,7 +15,7 @@ import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import type { DifficultySignal } from "./llm/difficultyRouting.js";
 import { resolveLlmProviderForTenant, type ContentBlock, type LLMMessage } from "./llm/index.js";
-import { appendMessage, loadHistory, resolveConversation, updateState } from "./memory.js";
+import { appendMessage, loadHistory, resolveConversation, updateMessageContent, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
 import { executeTool } from "./toolExecutor.js";
@@ -118,6 +118,25 @@ function extractSingleMatchImageUrl(toolName: string, toolResult: ContentBlock):
       return parsed.matches[0]!.image_url;
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Link de pago de Wompi a anexar a la respuesta (Fase 12.4, ver ADR-024):
+ * mismo criterio determinístico que extractSingleMatchImageUrl —
+ * "crear_pedido" puede devolver "payment_link_url" cuando el método es
+ * 'pago_en_linea' y el pedido quedó pendiente de pago; nunca se confía en
+ * que el modelo copie el link correctamente en su texto.
+ */
+function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): string | null {
+  if (toolName !== "crear_pedido" || toolResult.type !== "tool_result" || toolResult.is_error) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(toolResult.content) as { payment_link_url?: string };
+    return parsed.payment_link_url ?? null;
   } catch {
     return null;
   }
@@ -282,6 +301,13 @@ export async function processConversation(
   // runTurn (ver extractSingleMatchImageUrl) — gana la última llamada,
   // igual que montoAltoAmount.
   let mediaUrl: string | null = null;
+  // Link de pago de Wompi de este runTurn (ver extractPaymentLinkUrl) —
+  // mismo criterio que mediaUrl, gana la última llamada.
+  let paymentLinkUrl: string | null = null;
+  // Id del último mensaje de agente persistido (ver appendMessage más
+  // abajo) — necesario para corregir su `content` con el link de pago
+  // ya al final del turno, ver updateMessageContent.
+  let lastAssistantMessageId: string | null = null;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     turnLogger.info(
@@ -353,7 +379,7 @@ export async function processConversation(
     }
 
     messages.push({ role: "assistant", content: response.content });
-    await appendMessage(
+    lastAssistantMessageId = await appendMessage(
       tenantId,
       conversationId,
       "outbound",
@@ -391,6 +417,10 @@ export async function processConversation(
         const singleMatchImageUrl = extractSingleMatchImageUrl(toolUse.name, toolResult);
         if (singleMatchImageUrl !== null) {
           mediaUrl = singleMatchImageUrl;
+        }
+        const linkPago = extractPaymentLinkUrl(toolUse.name, toolResult);
+        if (linkPago !== null) {
+          paymentLinkUrl = linkPago;
         }
       }
       messages.push({ role: "user", content: toolResults });
@@ -487,7 +517,21 @@ export async function processConversation(
       step: "resuelto",
       turnos_sin_resolver: turnosSinResolver,
     });
-    return { responseText, mediaUrl };
+    // El link de pago se anexa acá, después de los guardrails de
+    // precio/stock (para no dispararlos con la URL) y antes del split de
+    // burbujas de messageSplitter.ts — así queda como su propio mensaje de
+    // WhatsApp, nunca dependiendo de que el modelo lo haya copiado bien.
+    const finalResponseText = paymentLinkUrl
+      ? `${responseText}\n\n${paymentLinkUrl}`
+      : responseText;
+    if (paymentLinkUrl && lastAssistantMessageId) {
+      // El appendMessage original (más arriba) persistió el texto crudo
+      // del LLM, sin el link — se corrige acá para que la transcripción
+      // del panel/vista del asesor coincida con lo que el cliente recibió
+      // de verdad por WhatsApp.
+      await updateMessageContent(tenantId, lastAssistantMessageId, finalResponseText);
+    }
+    return { responseText: finalResponseText, mediaUrl };
   }
 
   return escalateAndReply(

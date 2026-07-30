@@ -275,13 +275,14 @@ Este documento **no incluye código ni pasos de implementación** — es la plan
 - Instrucción de multi-idioma en el system prompt (sin romper prompt caching).
 - Reporte diario, seguimiento de cotizaciones frías ("cazador de ventas"), encuestas de satisfacción y solicitud de reseñas — todos operando dentro de la ventana de 24h de mensajería de WhatsApp (ADR-019).
 - Reactivación de leads fríos (fuera de la ventana de 24h) documentada como bloqueada hasta obtener aprobación de plantillas de Meta — no implementada hasta entonces.
-- Análisis de factibilidad (sin implementación comprometida) de multimodalidad (voz/imágenes entrantes) y cobros por WhatsApp, marcadas como candidatas a fase propia futura.
+- Cobros por WhatsApp con Wompi (12.4): link de pago único (tarjeta/PSE/Nequi/Bancolombia Transfer) con confirmación automática vía webhook — decisión explícita del usuario de priorizarlo dentro de esta fase, ver ADR-024.
+- Análisis de factibilidad (sin implementación comprometida) de multimodalidad (voz/imágenes entrantes), marcada como candidata a fase propia futura.
 
 **Dependencias:** Fase 7 (handoff/notificación WhatsApp ya construida, reutilizada aquí), Fase 11 (panel donde se muestran los resultados de varias de estas capacidades). Sin dependencia de la Fase 10.
 
-**Riesgos:** Tiempo de aprobación de plantillas de Meta no controlable (bloquea 12.3, mismo riesgo que ya vivió la Fase 3 con la verificación de cuenta BSP); subestimar el esfuerzo de multimodalidad/cobros si se intentan meter en esta fase en vez de tratarlas como candidatas a fase propia.
+**Riesgos:** Tiempo de aprobación de plantillas de Meta no controlable (bloquea 12.3, mismo riesgo que ya vivió la Fase 3 con la verificación de cuenta BSP); subestimar el esfuerzo de multimodalidad si se intenta meter en esta fase en vez de tratarla como candidata a fase propia; cuenta comercial de Wompi en producción (12.4) es un prerrequisito de negocio pendiente, no técnico.
 
-**Estimación:** 3-4 semanas para 12.1 y 12.2; 12.3 sin estimar hasta iniciar el trámite de plantillas con Meta.
+**Estimación:** 3-4 semanas para 12.1, 12.2 y 12.4; 12.3 sin estimar hasta iniciar el trámite de plantillas con Meta.
 
 **Definición de terminado:** Ver checklist detallado en `docs/fase-12-capacidades-proactivas-agente/README.md#definición-de-terminado`.
 

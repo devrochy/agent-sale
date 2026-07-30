@@ -9,6 +9,7 @@ import {
 } from "../advisor/handoffView.js";
 import {
   exportLeadsCsv,
+  guardarCobros,
   guardarComportamiento,
   guardarModeloIa,
   guardarReporteDiario,
@@ -31,6 +32,7 @@ import { env } from "../config/env.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
+import { handleWompiWebhook } from "./wompiWebhookHandler.js";
 
 /**
  * Compara dos strings con largo variable en tiempo constante cuando
@@ -250,6 +252,22 @@ export async function buildServer() {
     return reply.status(303).redirect(redirectUrl);
   });
 
+  app.post("/admin/:tenantId/configuracion/cobros", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { privateKey, eventsSecret } = request.body as {
+      privateKey?: string;
+      eventsSecret?: string;
+    };
+    const result = await guardarCobros(tenantId, {
+      privateKey: privateKey ?? "",
+      eventsSecret: eventsSecret ?? "",
+    });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/configuracion?guardado=1`
+      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
   app.get("/admin/:tenantId/productos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const html = await renderProductosPage(tenantId);
@@ -278,6 +296,14 @@ export async function buildServer() {
       return reply.status(result.status).send();
     },
   );
+
+  // Público (sin Basic Auth, igual que /webhooks/whatsapp): Wompi no puede
+  // autenticarse contra el panel — la autenticidad la da el checksum de la
+  // firma (ver wompiWebhookHandler.ts), no esta capa de transporte.
+  app.post("/webhooks/wompi", async (request, reply) => {
+    const result = await handleWompiWebhook(request.body);
+    return reply.status(result.status).send();
+  });
 
   app.get("/asesor/:token", async (request, reply) => {
     const { token } = request.params as { token: string };
