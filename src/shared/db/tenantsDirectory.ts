@@ -143,6 +143,52 @@ export async function clearLlmConfig(tenantId: string): Promise<void> {
 }
 
 /**
+ * Config BYOK de Wompi por tenant (Fase 12.4, ver
+ * ADR-024-cobros-wompi-confirmacion-automatica.md) — mismo criterio que
+ * getLlmConfig: única función que lee y desencripta las llaves de Wompi,
+ * para que no viajen "de paso" en cargas de página que no las necesitan.
+ * `privateKey` se usa para crear links de pago (wompiClient.ts);
+ * `eventsSecret` solo para verificar la firma de los webhooks entrantes
+ * (wompiSignature.ts) — nunca se usa para llamar a la API de Wompi.
+ */
+export interface TenantWompiConfig {
+  privateKey: string | null;
+  eventsSecret: string | null;
+}
+
+export async function getWompiConfig(tenantId: string): Promise<TenantWompiConfig> {
+  const result = await pool.query<{
+    wompi_private_key_encrypted: string | null;
+    wompi_events_secret_encrypted: string | null;
+  }>(
+    "SELECT wompi_private_key_encrypted, wompi_events_secret_encrypted FROM tenants WHERE id = $1",
+    [tenantId],
+  );
+  const row = result.rows[0];
+  return {
+    privateKey: row?.wompi_private_key_encrypted ? decryptSecret(row.wompi_private_key_encrypted) : null,
+    eventsSecret: row?.wompi_events_secret_encrypted
+      ? decryptSecret(row.wompi_events_secret_encrypted)
+      : null,
+  };
+}
+
+/**
+ * Guarda la llave privada y el secreto de eventos de Wompi del tenant —
+ * llamar solo después de validar la llave privada con una llamada de
+ * prueba real (ver "Probar y guardar" en adminPanel.ts), nunca antes.
+ */
+export async function saveWompiConfig(
+  tenantId: string,
+  config: { privateKey: string; eventsSecret: string },
+): Promise<void> {
+  await pool.query(
+    "UPDATE tenants SET wompi_private_key_encrypted = $1, wompi_events_secret_encrypted = $2 WHERE id = $3",
+    [encryptSecret(config.privateKey), encryptSecret(config.eventsSecret), tenantId],
+  );
+}
+
+/**
  * Overrides de escalamiento del tenant (ver
  * migrations/0014_tenants_escalation_config.cjs) — `null` si el tenant no
  * configuró nada, en cuyo caso src/orchestrator/escalationRules.ts aplica

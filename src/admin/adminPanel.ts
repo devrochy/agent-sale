@@ -9,6 +9,7 @@ import {
   type ProviderKey,
 } from "../orchestrator/llm/index.js";
 import { isTono } from "../orchestrator/toneBlocks.js";
+import { createPaymentLink, MIN_AMOUNT_COP } from "../payments/wompiClient.js";
 import {
   clearLlmConfig,
   getBehaviorConfig,
@@ -16,11 +17,13 @@ import {
   getReportRecipient,
   getReviewLink,
   getTenant,
+  getWompiConfig,
   listTenants,
   saveBehaviorConfig,
   saveLlmConfig,
   saveReportRecipient,
   saveReviewLink,
+  saveWompiConfig,
   setBotPaused,
   type TenantSummary,
 } from "../shared/db/tenantsDirectory.js";
@@ -1648,6 +1651,12 @@ interface ReviewRow {
   shared_publicly: boolean;
 }
 
+interface PagosEnLineaRow {
+  pagados: string;
+  monto_pagado_cop: string;
+  pendientes: string;
+}
+
 /**
  * Analítica de costos (Fase 11.5, ver docs/fase-11-panel-admin-dashboard/
  * analitica-costos.md): fuente Postgres nativa (`llm_usage`, ADR-017), no
@@ -1674,7 +1683,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
   const moneda: Currency = tasaNoDisponible ? "USD" : monedaPedida;
   const toDisplay = (usd: number): number => convertFromUsd(usd, moneda, rates) ?? usd;
 
-  const { costoMes, tendencia, costoPorResultado, satisfaccion, distribucion, reviews } = await withTenant(tenantId, async (client) => {
+  const { costoMes, tendencia, costoPorResultado, satisfaccion, distribucion, reviews, pagosEnLinea } = await withTenant(tenantId, async (client) => {
     const costoMesResult = await client.query<CostoMesRow>(
       `SELECT
         coalesce(sum(input_tokens), 0) AS tokens_entrada,
@@ -1733,6 +1742,18 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
        FROM reviews ORDER BY created_at DESC LIMIT 10`,
     );
 
+    // Pagos en línea (Fase 12.4, ver ADR-024) — solo pedidos con
+    // payment_method 'pago_en_linea': los otros 3 métodos nacen
+    // 'pagado' por default (sin verificación digital, ver
+    // migrations/0030_orders_payment_status.cjs) y no aportan nada útil acá.
+    const pagosEnLineaResult = await client.query<PagosEnLineaRow>(
+      `SELECT
+        count(*) FILTER (WHERE payment_status = 'pagado') AS pagados,
+        coalesce(sum(total) FILTER (WHERE payment_status = 'pagado'), 0) AS monto_pagado_cop,
+        count(*) FILTER (WHERE payment_status = 'pendiente') AS pendientes
+       FROM orders WHERE payment_method = 'pago_en_linea'`,
+    );
+
     return {
       costoMes: costoMesResult.rows[0]!,
       tendencia: tendenciaResult.rows,
@@ -1740,6 +1761,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
       satisfaccion: satisfaccionResult.rows[0]!,
       distribucion: distribucionResult.rows,
       reviews: reviewsResult.rows,
+      pagosEnLinea: pagosEnLineaResult.rows[0]!,
     };
   });
 
@@ -1871,6 +1893,17 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
       <div class="blockhead"><h2>Reseñas recientes</h2></div>
       <div class="panel connection">
         ${reviewsHtml}
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Pagos en línea">
+      <div class="blockhead"><h2>Pagos en línea</h2><span class="hint">Wompi</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">
+          <div class="toolpill"><span>Confirmados</span><span class="toolpill__count tabular">${pagosEnLinea.pagados}</span></div>
+          <div class="toolpill"><span>Monto confirmado</span><span class="toolpill__count tabular">$${Number(pagosEnLinea.monto_pagado_cop).toLocaleString("es-CO")}</span></div>
+          <div class="toolpill"><span>Pendientes de pago</span><span class="toolpill__count tabular">${pagosEnLinea.pendientes}</span></div>
+        </div>
       </div>
     </section>
   `;
@@ -2191,6 +2224,9 @@ export async function renderConfiguracionPage(
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
   const reportRecipient = await getReportRecipient(tenantId);
   const reviewLink = await getReviewLink(tenantId);
+  const wompiConfig = await getWompiConfig(tenantId);
+  const maskedWompiKey = wompiConfig.privateKey ? `••••${wompiConfig.privateKey.slice(-4)}` : null;
+  const maskedEventsSecret = wompiConfig.eventsSecret ? `••••${wompiConfig.eventsSecret.slice(-4)}` : null;
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
   const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
@@ -2328,6 +2364,32 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
+    <section class="block block--narrow" aria-label="Cobros en línea">
+      <div class="blockhead"><h2>Cobros en línea</h2><span class="hint">BYOK — Wompi</span></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/configuracion/cobros">
+          <div class="field">
+            <label for="wompi-private-key">Llave privada</label>
+            <input type="password" id="wompi-private-key" name="privateKey" autocomplete="off" placeholder="prv_test_... o prv_prod_...">
+            <p class="hint">${
+              maskedWompiKey
+                ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedWompiKey)}</span>. Dejar el campo vacío para conservarla.`
+                : "Sin configurar — el método de pago en línea no aparece como opción para los clientes."
+            }</p>
+          </div>
+          <div class="field">
+            <label for="wompi-events-secret">Secreto de eventos</label>
+            <input type="password" id="wompi-events-secret" name="eventsSecret" autocomplete="off" placeholder="test_events_... o prod_events_...">
+            <p class="hint">${
+              maskedEventsSecret
+                ? `Ya hay uno guardado: <span class="mono">${escapeHtml(maskedEventsSecret)}</span>. Dejar el campo vacío para conservarlo.`
+                : "Necesario para confirmar los pagos automáticamente — está en el dashboard de Wompi, en Secretos de integración."
+            }</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
+        </form>
+      </div>
+    </section>
   `;
 
   return layout("Configuración", tenant, body, "configuracion");
@@ -2457,5 +2519,42 @@ export async function guardarModeloIa(
   }
 
   await saveLlmConfig(tenantId, { provider: input.provider, model, apiKey, routingMode });
+  return { ok: true };
+}
+
+/**
+ * Cobros en línea (Fase 12.4, ver ADR-024) — mismo criterio de "Probar y
+ * guardar" que el Modelo de IA: se crea un link de pago real por
+ * MIN_AMOUNT_COP (el mínimo real de Wompi para la base de una transacción,
+ * descubierto en QA contra el sandbox — un monto menor a ese siempre
+ * devuelve 422) para validar que la llave privada funciona ANTES de
+ * persistirla. El secreto de eventos no se puede probar así (solo sirve
+ * para verificar webhooks entrantes, ver wompiSignature.ts) — se guarda
+ * sin test, igual que otros secretos de solo-verificación de este panel.
+ * Campo vacío conserva el valor ya guardado (mismo patrón que la API key
+ * de LLM: el <input type="password"> nunca se re-popula con el valor
+ * desencriptado).
+ */
+export async function guardarCobros(
+  tenantId: string,
+  input: { privateKey: string; eventsSecret: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const existing = await getWompiConfig(tenantId);
+  const privateKey = input.privateKey.trim() || existing.privateKey;
+  const eventsSecret = input.eventsSecret.trim() || existing.eventsSecret;
+
+  if (!privateKey || !eventsSecret) {
+    return { ok: false, error: "Hace falta la llave privada y el secreto de eventos de Wompi." };
+  }
+
+  try {
+    await createPaymentLink(privateKey, "Prueba de conexión ForMotos", MIN_AMOUNT_COP);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Error desconocido probando la conexión con Wompi.";
+    return { ok: false, error: message };
+  }
+
+  await saveWompiConfig(tenantId, { privateKey, eventsSecret });
   return { ok: true };
 }

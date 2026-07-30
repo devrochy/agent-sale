@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
-import { withTenant } from "../../shared/db/index.js";
+import { createWompiPaymentLink, getWompiConfig, withTenant } from "../../shared/db/index.js";
+import { createPaymentLink, MIN_AMOUNT_COP } from "../../payments/wompiClient.js";
 
-export type PaymentMethod = "transferencia" | "efectivo_contraentrega" | "tarjeta";
+export type PaymentMethod =
+  | "transferencia"
+  | "efectivo_contraentrega"
+  | "tarjeta"
+  | "pago_en_linea";
 export type DeliveryMethod = "domicilio" | "recoger_en_tienda";
 
 export interface CrearPedidoInput {
@@ -12,8 +17,15 @@ export interface CrearPedidoInput {
 
 export interface CrearPedidoOutput {
   order_id: string | null;
-  status: "confirmed" | "duplicate" | "monto_alto";
+  status:
+    | "confirmed"
+    | "duplicate"
+    | "monto_alto"
+    | "wompi_no_configurado"
+    | "wompi_monto_minimo";
   total: number;
+  /** Solo presente cuando payment_method es 'pago_en_linea' y status 'confirmed' (ver ADR-024). */
+  payment_link_url?: string;
 }
 
 /**
@@ -50,6 +62,20 @@ function buildIdempotencyKey(quoteId: string, messageSid: string): string {
  * tool, es decir después de que el pedido ya existía en la base — el
  * cliente recibía el mensaje de escalamiento, pero el pedido real ya
  * estaba confirmado (ver docs/fase-7-escalamiento-humano/reglas-escalamiento.md).
+ *
+ * `pago_en_linea` (Fase 12.4, ver ADR-024) agrega un paso de solo-lectura
+ * antes del insert: la creación del link de pago es una llamada de red
+ * externa a Wompi, y el patrón ya establecido en escalarHumano.ts (con
+ * sendWhatsAppMessage) es no mantener una transacción de Postgres abierta
+ * mientras se espera una llamada así. Por eso esta función queda en dos
+ * fases — (1) chequeo de duplicado/cotización/monto alto en una
+ * transacción de solo lectura, (2) la llamada a Wompi si aplica, (3) el
+ * insert real en una segunda transacción — en vez de la única transacción
+ * que bastaba cuando ningún método de pago hacía I/O externo. La
+ * protección real contra duplicados sigue siendo el UNIQUE de
+ * `idempotency_key` (ON CONFLICT + SELECT de la carrera, más abajo), no el
+ * límite de la transacción — separarla en dos fases no debilita esa
+ * garantía.
  */
 export async function crearPedido(
   tenantId: string,
@@ -59,15 +85,15 @@ export async function crearPedido(
 ): Promise<CrearPedidoOutput> {
   const idempotencyKey = buildIdempotencyKey(input.quote_id, messageSid);
 
-  return withTenant(tenantId, async (client) => {
+  const checked = await withTenant(tenantId, async (client) => {
     const existing = await client.query<{ id: string; total: string }>(
       `SELECT id, total FROM orders WHERE tenant_id = $1 AND quote_id = $2`,
       [tenantId, input.quote_id],
     );
     if (existing.rows[0]) {
       return {
+        kind: "duplicate" as const,
         order_id: existing.rows[0].id,
-        status: "duplicate",
         total: Number(existing.rows[0].total),
       };
     }
@@ -87,12 +113,46 @@ export async function crearPedido(
 
     const total = Number(quote.total);
     if (total > montoAltoThreshold) {
-      return { order_id: null, status: "monto_alto", total };
+      return { kind: "monto_alto" as const, total };
     }
 
+    return { kind: "ok" as const, quote, total };
+  });
+
+  if (checked.kind === "duplicate") {
+    return { order_id: checked.order_id, status: "duplicate", total: checked.total };
+  }
+  if (checked.kind === "monto_alto") {
+    return { order_id: null, status: "monto_alto", total: checked.total };
+  }
+
+  const { quote, total } = checked;
+
+  let paymentLink: { paymentLinkId: string; url: string } | null = null;
+  if (input.payment_method === "pago_en_linea") {
+    const wompiConfig = await getWompiConfig(tenantId);
+    if (!wompiConfig.privateKey) {
+      return { order_id: null, status: "wompi_no_configurado", total };
+    }
+    // Mínimo real de Wompi para la base de una transacción (ver
+    // MIN_AMOUNT_COP en wompiClient.ts) — descubierto en QA contra el
+    // sandbox real, no documentado en la guía de Links de pago. Se chequea
+    // ANTES de llamar a la API: evita una llamada de red que sabemos que
+    // va a fallar, y evita mostrarle al cliente un error crudo de Wompi.
+    if (total < MIN_AMOUNT_COP) {
+      return { order_id: null, status: "wompi_monto_minimo", total };
+    }
+    paymentLink = await createPaymentLink(
+      wompiConfig.privateKey,
+      `Pedido ForMotos — cotización ${input.quote_id}`,
+      total,
+    );
+  }
+
+  const created = await withTenant(tenantId, async (client) => {
     const order = await client.query<{ id: string }>(
-      `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, status, payment_method, delivery_method, idempotency_key, total)
-       VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7, $8)
+      `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
+       VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7, $8, $9, $10)
        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
        RETURNING id`,
       [
@@ -101,9 +161,11 @@ export async function crearPedido(
         quote.conversation_id,
         quote.customer_id,
         input.payment_method,
+        paymentLink ? "pendiente" : "pagado",
         input.delivery_method,
         idempotencyKey,
         quote.total,
+        paymentLink?.paymentLinkId ?? null,
       ],
     );
 
@@ -116,7 +178,7 @@ export async function crearPedido(
       );
       return {
         order_id: raced.rows[0]!.id,
-        status: "duplicate",
+        status: "duplicate" as const,
         total: Number(raced.rows[0]!.total),
       };
     }
@@ -146,6 +208,19 @@ export async function crearPedido(
       [orderId, tenantId],
     );
 
-    return { order_id: orderId, status: "confirmed", total };
+    return { order_id: orderId, status: "confirmed" as const, total };
   });
+
+  // createWompiPaymentLink corre en una conexión propia (fuera de la
+  // transacción de arriba) — igual que createHandoffToken en
+  // escalarHumano.ts, se llama después de que `withTenant` ya resolvió
+  // (el pedido quedó comprometido/commiteado). Insertarlo *dentro* de la
+  // transacción del pedido violaría el FK a `orders`: esa fila todavía no
+  // sería visible desde otra conexión hasta el COMMIT.
+  if (paymentLink && created.status === "confirmed") {
+    await createWompiPaymentLink(tenantId, created.order_id, paymentLink.paymentLinkId);
+    return { ...created, payment_link_url: paymentLink.url };
+  }
+
+  return created;
 }

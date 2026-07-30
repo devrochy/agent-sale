@@ -89,8 +89,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         quote_id: { type: "string", description: "UUID de la cotización a confirmar." },
         payment_method: {
           type: "string",
-          enum: ["transferencia", "efectivo_contraentrega", "tarjeta"],
-          description: "Método de pago acordado con el cliente.",
+          enum: ["transferencia", "efectivo_contraentrega", "tarjeta", "pago_en_linea"],
+          description:
+            "Método de pago acordado con el cliente. 'pago_en_linea' genera un link de pago seguro (tarjeta, PSE, Nequi o transferencia Bancolombia) que se confirma automáticamente al pagarse — úsalo cuando el cliente prefiera pagar antes del envío sin mandar comprobante manual.",
         },
         delivery_method: {
           type: "string",

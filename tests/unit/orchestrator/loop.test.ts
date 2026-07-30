@@ -13,6 +13,7 @@ vi.mock("../../../src/orchestrator/memory.js", () => ({
   resolveConversation: vi.fn(),
   loadHistory: vi.fn(),
   appendMessage: vi.fn(),
+  updateMessageContent: vi.fn(),
   updateState: vi.fn(),
 }));
 vi.mock("../../../src/shared/db/index.js", () => ({
@@ -27,7 +28,13 @@ import { escalarHumano } from "../../../src/domains/escalation/escalarHumano.js"
 import { resolveLlmProviderForTenant } from "../../../src/orchestrator/llm/index.js";
 import type { TurnResponse } from "../../../src/orchestrator/llm/types.js";
 import { runTurn } from "../../../src/orchestrator/loop.js";
-import { appendMessage, loadHistory, resolveConversation, updateState } from "../../../src/orchestrator/memory.js";
+import {
+  appendMessage,
+  loadHistory,
+  resolveConversation,
+  updateMessageContent,
+  updateState,
+} from "../../../src/orchestrator/memory.js";
 import { executeTool } from "../../../src/orchestrator/toolExecutor.js";
 import { getBehaviorConfig, getEscalationConfig } from "../../../src/shared/db/index.js";
 import { recordAudit } from "../../../src/shared/audit/auditLog.js";
@@ -314,5 +321,91 @@ describe("runTurn — regla de monto alto", () => {
       reason: "monto_alto",
       summary: expect.any(String),
     });
+  });
+});
+
+describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
+  beforeEach(() => {
+    mockConverse.mockReset();
+    vi.mocked(resolveLlmProviderForTenant).mockReset();
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(escalarHumano).mockReset();
+    vi.mocked(resolveConversation).mockReset();
+    vi.mocked(loadHistory).mockReset();
+    vi.mocked(appendMessage).mockReset();
+    vi.mocked(updateMessageContent).mockReset();
+    vi.mocked(updateState).mockReset();
+    vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(recordAudit).mockReset();
+
+    vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
+      provider: { converse: mockConverse },
+      model: "test-model",
+      providerKey: "env-default",
+    });
+    vi.mocked(resolveConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      customerId: "customer-1",
+      state: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValue([]);
+    vi.mocked(getEscalationConfig).mockResolvedValue(null);
+    vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    // El id que appendMessage devuelve para el mensaje del agente — usado
+    // para corregir `content` con el link ya al final del turno (ver
+    // updateMessageContent en memory.ts).
+    vi.mocked(appendMessage).mockResolvedValue("msg-agent-1");
+  });
+
+  it("anexa el payment_link_url de crear_pedido al final de la respuesta, de forma determinística", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({
+        order_id: "order-1",
+        status: "confirmed",
+        total: 100000,
+        payment_link_url: "https://checkout.wompi.co/l/abc123",
+      }),
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "crear_pedido", input: {} }],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(
+        endTurn("Perfecto, tu pedido queda pendiente hasta que pagues el link."),
+      );
+
+    const result = await runTurn("tenant-1", "+573000000000", "pago en línea por favor", "sid-5");
+
+    const expectedText =
+      "Perfecto, tu pedido queda pendiente hasta que pagues el link.\n\nhttps://checkout.wompi.co/l/abc123";
+    expect(result.responseText).toBe(expectedText);
+    // La transcripción persistida se corrige para coincidir con lo que
+    // realmente se manda por WhatsApp — ver updateMessageContent.
+    expect(updateMessageContent).toHaveBeenCalledWith("tenant-1", "msg-agent-1", expectedText);
+  });
+
+  it("no agrega nada al texto si crear_pedido no devuelve payment_link_url (métodos de pago existentes)", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({ order_id: "order-2", status: "confirmed", total: 50000 }),
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "crear_pedido", input: {} }],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Tu pedido quedó confirmado."));
+
+    const result = await runTurn("tenant-1", "+573000000000", "pago con transferencia", "sid-6");
+
+    expect(result.responseText).toBe("Tu pedido quedó confirmado.");
+    expect(updateMessageContent).not.toHaveBeenCalled();
   });
 });
