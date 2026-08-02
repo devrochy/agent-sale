@@ -2,7 +2,7 @@
 
 Estado: **en diseño** (v2)
 
-Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-22--reseñas-redes-sociales-y-cierre-responsive-transversal) · [PROPUESTA_V2.md §3.12, §3.13](../../PROPUESTA_V2.md) · [Fase 11 — pendiente de rediseño responsive](../fase-11-panel-admin-dashboard/README.md#pendiente-rediseño-responsive-del-contenido) · [src/reviews/reviewView.ts]
+Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-22--reseñas-redes-sociales-y-cierre-responsive-transversal) · [PROPUESTA_V2.md §3.12, §3.13](../../PROPUESTA_V2.md) · [Fase 11 — pendiente de rediseño responsive](../fase-11-panel-admin-dashboard/README.md#pendiente-rediseño-responsive-del-contenido) · `src/reviews/reviewView.ts`
 
 Última fase de v2: unifica visualmente `reviewView.ts` con el resto del panel, evalúa (sin comprometer implementación) integración con Google My Business, y cierra definitivamente el rediseño responsive de contenido que quedó pendiente desde el cierre de la Fase 11 — ahora extendido a todas las pantallas nuevas de v2 (Fases 13, 14, 17, 18).
 
