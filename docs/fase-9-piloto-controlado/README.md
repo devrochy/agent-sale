@@ -13,6 +13,7 @@ Documentación de diseño, mismo criterio que las fases anteriores. A diferencia
 - [eval-suite.md](./eval-suite.md) — el golden set concreto (11 escenarios: flujos de venta de la Fase 0 + los riesgos de esta fase — ambigüedad, groserías, manipulación/prompt injection) y su integración a CI/CD antes de cada deploy.
 - [adrs/ADR-013-mecanismo-catalogo-piloto.md](./adrs/ADR-013-mecanismo-catalogo-piloto.md) — usa el panel admin ya construido (no el sync con Google Sheets diseñado en la Fase 5, que nunca se implementó) para cargar el catálogo real de ForMotos.
 - [criterios-y-reporte.md](./criterios-y-reporte.md) — cómo se mide cada criterio de éxito de la Fase 0 con los mecanismos que ya existen (panel de negocio de ADR-011, dashboard operacional de ADR-009), y qué debe incluir el reporte final del piloto.
+- [plan-maestro-pruebas.md](./plan-maestro-pruebas.md) — checklist manual (no automatizada, a diferencia del golden set) de todo el sistema contra sandbox: escenarios de punta a punta y verificación página por página del panel admin, jobs programados y Cobros con Wompi — la entrada práctica para validar antes de producción.
 
 ## Riesgos (de `MASTER_PLAN.md`)
 
