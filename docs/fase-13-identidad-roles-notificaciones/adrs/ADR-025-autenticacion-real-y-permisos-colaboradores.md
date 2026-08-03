@@ -1,7 +1,7 @@
 # ADR-025: Autenticación real por administrador y modelo de permisos de colaboradores
 
 ## Estado
-Propuesta (pendiente de aceptación antes de iniciar implementación de la Fase 13).
+Aceptada (2026-08-02) — Rob confirmó arrancar la implementación de la Fase 13 siguiendo el orden recomendado de `MASTER_PLAN_V2.md`.
 
 ## Contexto
 
@@ -52,9 +52,21 @@ Tabla `admin_sessions` (`id`, `admin_id`, `created_at`, `expires_at`) — cookie
 
 No existe hoy ningún canal de email en el proyecto, y WhatsApp no es un canal apropiado para enviar un enlace de reseteo de contraseña (mismo tipo de dato sensible que ya evita el proyecto en otros puntos). Para el alcance inicial de la Fase 13, un administrador *master* puede resetear la contraseña de un colaborador manualmente desde la sección de Colaboradores (genera una contraseña temporal, se la comunica por el canal que el equipo ya use fuera del sistema) — self-service de recuperación queda como iteración futura si el volumen de administradores lo justifica.
 
+## Adenda (implementación): `GET /admin` sin tenantId
+
+Esta ADR, tal como fue aceptada, solo cubría `/admin/:tenantId/*` — dejaba sin resolver `GET /admin` (sin tenantId), que hoy lista todos los tenants de la plataforma para que el equipo de agencia salte entre paneles de distintos clientes. Ese es un actor distinto (operador de plataforma) del que diseña esta ADR (colaborador de un tenant puntual), y Fase 13 no introduce ningún rol de plataforma.
+
+**Decisión (confirmada por Rob al iniciar la implementación):** `GET /admin` deja de listar tenants — pasa a ser una página neutra sin datos, sin necesidad de sesión (no hay nada que proteger). Cada colaborador entra directo por `/admin/:tenantId/login`. Si en el futuro se necesita un picker multi-tenant para el equipo de agencia, es una decisión de producto aparte (un rol de plataforma no diseñado acá), no una reversión de esta.
+
+## Adenda (implementación): `admins.phone`
+
+El diseño original de esta ADR no incluía un teléfono en `admins` — pero las notificaciones que los permisos (`recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`) controlan son por WhatsApp, igual que el resto de la mensajería proactiva del proyecto (`dailyReport.ts`, ADR-024). Sin un teléfono, esos permisos no tenían a dónde mandar nada.
+
+**Decisión:** columna `admins.phone text` nullable (migración `0034_admins_phone.cjs`), mismo formato `whatsapp:+<número>` que ya usa `tenants.report_recipient_phone`. Un admin sin teléfono cargado simplemente no recibe WhatsApp aunque tenga el permiso marcado — no es un error, mismo criterio que el resto de los campos de contacto opcionales del proyecto.
+
 ## Consecuencias
 
-- Todas las rutas `/admin/:tenantId/*` requieren sesión válida; ninguna queda bajo Basic Auth tras el despliegue de esta fase.
+- Todas las rutas `/admin/:tenantId/*` requieren sesión válida; ninguna queda bajo Basic Auth tras el despliegue de esta fase. `GET /admin` (bare) tampoco usa Basic Auth — ver adenda arriba.
 - El aislamiento de datos entre tenants lo sigue garantizando RLS (ya existente, ADR-004) — esta ADR resuelve identidad *dentro* de un tenant, no reemplaza RLS.
 - Esta ADR **no** se ejecuta como parte de la Fase 10 de `MASTER_PLAN.md` (prueba de carga, runbook de onboarding, escalado de infraestructura) — ver la nota de alcance en `MASTER_PLAN_V2.md#fase-13`. La Fase 10 original sigue intacta y pendiente de iniciar cuando el negocio la priorice.
 - `dailyReport.ts` y la notificación de pago aprobado de ADR-024 pasan de un destinatario fijo (`tenants.report_recipient_phone`) a resolver la lista de administradores con el permiso correspondiente activo — `report_recipient_phone` puede mantenerse como fallback si ningún administrador tiene el permiso marcado (evita perder la notificación por un olvido de configuración).

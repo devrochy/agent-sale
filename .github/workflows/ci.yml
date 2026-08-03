@@ -53,10 +53,6 @@ jobs:
       TWILIO_ACCOUNT_SID: ci-test-fake-sid
       TWILIO_WHATSAPP_NUMBER: "whatsapp:+10000000000"
       ANTHROPIC_API_KEY: ci-test-fake-key
-      # Panel admin (ver src/admin/adminPanel.ts) — solo necesitan existir
-      # para que la app arranque, no se ejercita ningún login real en CI.
-      ADMIN_USER: ci-test-admin
-      ADMIN_PASSWORD: ci-test-fake-password
       # BYOK (Fase 11.4, ver ADR-020/secretBox.ts) — requerida por env.ts
       # desde que se agregó; secretBox.ts valida que decodifique a
       # exactamente 32 bytes en base64. Valor de prueba, no la clave real

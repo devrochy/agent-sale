@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+import fastifyCookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
@@ -8,43 +8,53 @@ import {
   tomarConversacion,
 } from "../advisor/handoffView.js";
 import {
+  activarColaborador,
+  crearColaborador,
+  desactivarColaborador,
   exportLeadsCsv,
   guardarCobros,
   guardarComportamiento,
   guardarModeloIa,
+  guardarPermisosColaborador,
   guardarReporteDiario,
   guardarReviewLink,
   pausarBot,
   reactivarBot,
+  renderAdminRootPage,
   renderAnaliticaPage,
+  renderColaboradoresPage,
   renderConexionesPage,
   renderConfiguracionPage,
   renderConversacionesPage,
   renderFlujoPage,
   renderLeadsPage,
+  renderLoginPage,
   renderOverviewPage,
   renderPedidosPage,
   renderProductosPage,
-  renderTenantsPage,
   renderTicketsPage,
 } from "../admin/adminPanel.js";
-import { env } from "../config/env.js";
+import type { AdminRecord } from "../admin/auth/adminsDirectory.js";
+import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
+import { login, logout } from "../admin/auth/session.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
 
-/**
- * Compara dos strings con largo variable en tiempo constante cuando
- * coinciden en longitud (timingSafeEqual lanza si no coinciden, y un
- * largo distinto ya es suficiente para saber que no son iguales — no
- * hace falta timing-safe para esa rama).
- */
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+declare module "fastify" {
+  interface FastifyRequest {
+    // Seteado por el hook de auth de /admin/:tenantId/* (ver más abajo) —
+    // null en cualquier ruta pública (webhooks, /asesor, /resena, /admin
+    // bare, /admin/:tenantId/login).
+    admin: AdminRecord | null;
+  }
 }
+
+// UUID con guiones — mismo patrón que UUID_PATTERN de withTenant.ts, acá
+// solo para reconocer el segmento :tenantId de la URL en el hook global
+// de auth (que corre antes de que Fastify resuelva request.params).
+const ADMIN_TENANT_PATH = /^\/admin\/([0-9a-f-]{36})(\/[^?]*)?/i;
 
 /**
  * Fastify se expone vía buildServer() (en vez de arrancar directamente)
@@ -75,29 +85,101 @@ export async function buildServer() {
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
-  // Panel admin de solo lectura (catálogo/pedidos, ver src/admin/adminPanel.ts):
-  // no hay sistema de login en el proyecto, Basic Auth con ADMIN_USER/ADMIN_PASSWORD
-  // es la única protección de este prefijo.
+  // Cookies sin firmar (ver src/admin/auth/currentAdmin.ts) — el token de
+  // sesión ya es el secreto, validado contra `admin_sessions` en Postgres.
+  await app.register(fastifyCookie);
+  app.decorateRequest("admin", null);
+
+  // Panel admin (Fase 13, ver src/admin/auth/session.ts y ADR-025):
+  // Basic Auth global quedó retirado. Todo `/admin/:tenantId/*` requiere
+  // sesión válida, excepto el propio login. `/admin` sin tenantId no
+  // expone datos (ver renderAdminRootPage), así que no requiere sesión.
   app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/admin")) {
       return;
     }
-    const expected = `Basic ${Buffer.from(`${env.adminUser}:${env.adminPassword}`).toString("base64")}`;
-    const header = request.headers.authorization;
-    if (!header || !safeEqual(header, expected)) {
-      reply.header("WWW-Authenticate", 'Basic realm="admin"');
-      return reply.status(401).send();
+
+    const match = request.url.match(ADMIN_TENANT_PATH);
+    if (!match) {
+      return; // GET /admin (bare) — sin datos de tenant.
+    }
+
+    const tenantId = match[1]!;
+    const path = match[2] ?? "";
+    if (path === "/login") {
+      return; // formulario/acción de login, públicos por definición.
+    }
+
+    const admin = await currentAdmin(request, tenantId);
+    if (!admin) {
+      return reply.status(303).redirect(`/admin/${tenantId}/login`);
+    }
+    request.admin = admin;
+  });
+
+  // Colaboradores (Fase 13, ver ADR-025) — el hook de arriba solo exige
+  // sesión válida, no `role='master'`; esa restricción es específica de
+  // esta sección, así que se chequea acá, no en el hook global.
+  app.addHook("preHandler", async (request, reply) => {
+    if (!request.url.match(/^\/admin\/[0-9a-f-]{36}\/colaboradores/i)) {
+      return;
+    }
+    if (request.admin?.role !== "master") {
+      return reply.status(403).send("Solo un administrador master puede gestionar colaboradores.");
     }
   });
 
   app.get("/admin", async (_request, reply) => {
-    const html = await renderTenantsPage();
+    const html = await renderAdminRootPage();
     return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/login", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderLoginPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/:tenantId/login", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { email, password } = request.body as { email?: string; password?: string };
+    const token =
+      email && password ? await login(tenantId, email, password) : null;
+
+    if (!token) {
+      const html = await renderLoginPage(tenantId, "Correo o contraseña incorrectos.");
+      if (!html) {
+        return reply.status(404).send();
+      }
+      return reply.status(401).type("text/html").send(html);
+    }
+
+    reply.setCookie(SESSION_COOKIE_NAME, token, {
+      path: `/admin/${tenantId}`,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: request.protocol === "https",
+      maxAge: 7 * 24 * 60 * 60,
+    });
+    return reply.status(303).redirect(`/admin/${tenantId}`);
+  });
+
+  app.post("/admin/:tenantId/logout", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    if (token) {
+      await logout(token);
+    }
+    reply.clearCookie(SESSION_COOKIE_NAME, { path: `/admin/${tenantId}` });
+    return reply.status(303).redirect(`/admin/${tenantId}/login`);
   });
 
   app.get("/admin/:tenantId", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderOverviewPage(tenantId);
+    const html = await renderOverviewPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -107,7 +189,12 @@ export async function buildServer() {
   app.get("/admin/:tenantId/conversaciones", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const { estado, c } = request.query as { estado?: string; c?: string };
-    const html = await renderConversacionesPage(tenantId, estado, c);
+    const html = await renderConversacionesPage(
+      tenantId,
+      estado,
+      c,
+      request.admin?.role === "master",
+    );
     if (!html) {
       return reply.status(404).send();
     }
@@ -116,7 +203,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/leads", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderLeadsPage(tenantId);
+    const html = await renderLeadsPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -137,7 +224,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/tickets", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderTicketsPage(tenantId);
+    const html = await renderTicketsPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -147,7 +234,7 @@ export async function buildServer() {
   app.get("/admin/:tenantId/analitica", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const { moneda } = request.query as { moneda?: string };
-    const html = await renderAnaliticaPage(tenantId, moneda);
+    const html = await renderAnaliticaPage(tenantId, moneda, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -156,7 +243,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/flujo", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderFlujoPage(tenantId);
+    const html = await renderFlujoPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -165,17 +252,74 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/conexiones", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderConexionesPage(tenantId);
+    const html = await renderConexionesPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
+  app.get("/admin/:tenantId/colaboradores", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderColaboradoresPage(tenantId, request.admin!.id, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/:tenantId/colaboradores", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { email, password, role, phone } = request.body as {
+      email?: string;
+      password?: string;
+      role?: string;
+      phone?: string;
+    };
+    const result = await crearColaborador(tenantId, {
+      email: email ?? "",
+      password: password ?? "",
+      role: role ?? "",
+      phone: phone ?? "",
+    });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/colaboradores?guardado=1`
+      : `/admin/${tenantId}/colaboradores?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/:tenantId/colaboradores/:adminId/activar", async (request, reply) => {
+    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+    await activarColaborador(tenantId, adminId);
+    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  });
+
+  app.post("/admin/:tenantId/colaboradores/:adminId/desactivar", async (request, reply) => {
+    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+    await desactivarColaborador(tenantId, adminId);
+    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  });
+
+  app.post("/admin/:tenantId/colaboradores/:adminId/permisos", async (request, reply) => {
+    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+    const body = request.body as Record<string, string | undefined>;
+    await guardarPermisosColaborador(tenantId, adminId, {
+      recibeReporteDiario: body.recibeReporteDiario === "on",
+      recibeTickets: body.recibeTickets === "on",
+      recibeNotificacionPagos: body.recibeNotificacionPagos === "on",
+    });
+    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  });
+
   app.get("/admin/:tenantId/configuracion", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const { error, guardado } = request.query as { error?: string; guardado?: string };
-    const html = await renderConfiguracionPage(tenantId, { error, guardado });
+    const html = await renderConfiguracionPage(
+      tenantId,
+      { error, guardado },
+      request.admin?.role === "master",
+    );
     if (!html) {
       return reply.status(404).send();
     }
@@ -270,7 +414,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/productos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderProductosPage(tenantId);
+    const html = await renderProductosPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -279,7 +423,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/pedidos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderPedidosPage(tenantId);
+    const html = await renderPedidosPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }

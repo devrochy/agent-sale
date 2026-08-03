@@ -1,6 +1,6 @@
 # Fase 13 — Autenticación Real, Roles de Colaborador y Notificaciones Administrativas
 
-Estado: **en diseño** (v2)
+Estado: **en implementación** (v2) — ADR-025 aceptada 2026-08-02, primer incremento en `feature/impl-fase13-auth-colaboradores`.
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-13--autenticación-real-roles-de-colaborador-y-notificaciones-administrativas) · [PROPUESTA_V2.md §3.1, §3.4](../../PROPUESTA_V2.md) · [Fase 11 — Panel de Administración](../fase-11-panel-admin-dashboard/README.md) · [ADR-015](../fase-11-panel-admin-dashboard/adrs/ADR-015-alcance-autenticacion-panel.md)
 
@@ -17,9 +17,9 @@ Reemplaza el Basic Auth global de todo `/admin/*` (una sola credencial `ADMIN_US
 
 ## Definición de terminado
 
-- [ ] Ningún acceso a `/admin/*` funciona ya con la credencial Basic Auth global; login individual obligatorio, hook de `src/gateway/server.ts:59-69` reemplazado.
-- [ ] Tabla `admins` con roles (`master`/`colaborador`) y permisos granulares (`recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`) funcionando end-to-end.
-- [ ] Un administrador *master* puede desactivar a un colaborador y esa cuenta pierde acceso de inmediato (sesión invalidada).
-- [ ] Reporte diario (Fase 12.2) y notificación de pago aprobado (ADR-024) llegan solo a administradores con el permiso correspondiente, verificado con al menos 2 administradores de prueba con permisos distintos.
+- [x] Ningún acceso a `/admin/*` funciona ya con la credencial Basic Auth global; login individual obligatorio, hook de `src/gateway/server.ts` reemplazado (`GET /admin` sin tenantId pasó a página neutra sin datos, ver adenda de ADR-025).
+- [x] Tabla `admins` con roles (`master`/`colaborador`) y permisos granulares (`recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`) funcionando end-to-end, con sección "Colaboradores" en el panel (solo visible/accionable para `master`).
+- [x] Un administrador *master* puede desactivar a un colaborador y esa cuenta pierde acceso de inmediato (sesión invalidada) — verificado con test de integración y manualmente en el navegador.
+- [x] Reporte diario (Fase 12.2) y notificación de pago aprobado (ADR-024) llegan solo a administradores con el permiso correspondiente (con `report_recipient_phone` como fallback si ninguno lo tiene marcado, ver adenda de ADR-025), verificado con tests de integración.
 
 Siguiente paso: [Fase 14 — Esquema de Catálogo Extendido](../fase-14-catalogo-extendido/README.md) (sin dependencia técnica de esta fase, pero primera en la secuencia recomendada de `MASTER_PLAN_V2.md`).
