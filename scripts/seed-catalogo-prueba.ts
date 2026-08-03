@@ -2,14 +2,22 @@
  * Herramienta manual (no forma parte de la app ni de los tests
  * automatizados): siembra un catálogo de prueba de 100 productos de una
  * tienda de repuestos/accesorios de moto (ForMotos), repartidos en varias
- * categorías con varios productos cada una — para poder probar en local
- * el panel admin (src/admin/adminPanel.ts), la tool consultar_inventario
- * con description/image_url, y el envío de imagen por WhatsApp, antes de
- * pasar a la Fase 9.
+ * categorías (algunas con jerarquía real de hasta 4 niveles, ver Fase 14)
+ * con varios productos cada una — para poder probar en local el panel
+ * admin (src/admin/adminPanel.ts), la tool consultar_inventario con
+ * description/image_url/variantes, y el envío de imagen por WhatsApp.
  *
- * Reutiliza el mismo tenant de prueba que seed-manual-test.ts
- * (whatsapp_number = 'whatsapp:+573000000000') para no duplicar tenants
- * de prueba en el flujo local.
+ * Reescrito para la Fase 14 (ver docs/fase-14-catalogo-extendido/adrs/
+ * ADR-026-*.md): agent-sale es mono-tenant desde ADR-032 (ya no siembra un
+ * tenant de prueba, la versión anterior de este script insertaba
+ * `tenant_id`, columna eliminada en la migración 0036 — este script
+ * llevaba roto desde ese merge, nadie lo había corrido después). Cada
+ * producto se asigna al aliado genérico sembrado por la migración 0039
+ * ("Catálogo propio") y a un nodo real del árbol de `product_categories`;
+ * la mayoría tiene una sola variante (sin talla/color), un par de
+ * productos representativos (un casco, unos guantes) tienen variantes de
+ * talla reales para poder probar en local el comportamiento de "preguntar
+ * variante antes de cotizar".
  *
  * Uso:
  *   npm run seed:catalogo-prueba
@@ -19,209 +27,348 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-const TEST_TENANT_WHATSAPP_NUMBER = "whatsapp:+573000000000";
-
-interface ProductoPrueba {
+interface VarianteProducto {
   sku: string;
-  name: string;
-  category: string;
+  attributes: Record<string, string>;
   price: number;
-  description: string;
   stock: number;
 }
 
-// 100 productos en 16 categorías, varios por categoría a propósito (para
-// poder probar filtros/búsquedas por categoría y por nombre en local).
-const PRODUCTOS: ProductoPrueba[] = [
-  // Cascos
-  { sku: "CAS-001", name: "Casco Integral Thunder Road", category: "cascos", price: 380000, description: "Casco integral con visor antirayas y ventilación regulable, ideal para carretera.", stock: 12 },
-  { sku: "CAS-002", name: "Casco Integral Storm GT", category: "cascos", price: 420000, description: "Casco integral de fibra de vidrio, doble densidad de espuma para mayor absorción de impacto.", stock: 8 },
-  { sku: "CAS-003", name: "Casco Abierto Urban Rider", category: "cascos", price: 210000, description: "Casco abierto liviano para uso urbano, con visor solar interno.", stock: 15 },
-  { sku: "CAS-004", name: "Casco Modular Cross Tech", category: "cascos", price: 450000, description: "Casco modular con mentonera abatible, permite usarlo integral o abierto.", stock: 0 },
-  { sku: "CAS-005", name: "Casco Infantil SafeKid", category: "cascos", price: 150000, description: "Casco integral talla infantil, colores llamativos y correa de seguridad reforzada.", stock: 10 },
-  { sku: "CAS-006", name: "Casco Integral Racing Pro", category: "cascos", price: 480000, description: "Casco de competición homologado, aerodinámica optimizada para alta velocidad.", stock: 5 },
-  { sku: "CAS-007", name: "Casco Abierto Vintage Cafe", category: "cascos", price: 230000, description: "Casco estilo retro para motos café racer, visor incluido.", stock: 9 },
-  { sku: "CAS-008", name: "Casco Cross Enduro X", category: "cascos", price: 260000, description: "Casco para motocross con visera larga y ventilación frontal amplia.", stock: 7 },
+interface ProductoPrueba {
+  name: string;
+  categoryPath: string[];
+  description: string;
+  variants: VarianteProducto[];
+}
 
-  // Guantes
-  { sku: "GUA-001", name: "Guantes de Cuero Touring", category: "guantes", price: 95000, description: "Guantes de cuero genuino con protección en nudillos, para viajes largos.", stock: 20 },
-  { sku: "GUA-002", name: "Guantes Racing con Protección", category: "guantes", price: 120000, description: "Guantes con protección rígida en nudillos y palma antideslizante para uso deportivo.", stock: 14 },
-  { sku: "GUA-003", name: "Guantes Urbanos Táctiles", category: "guantes", price: 55000, description: "Guantes livianos compatibles con pantalla táctil, uso diario en ciudad.", stock: 25 },
-  { sku: "GUA-004", name: "Guantes Impermeables Invierno", category: "guantes", price: 85000, description: "Guantes forrados e impermeables para clima frío y lluvia.", stock: 0 },
-  { sku: "GUA-005", name: "Guantes Cross con Nudillera", category: "guantes", price: 70000, description: "Guantes de motocross con nudillera de protección y agarre reforzado.", stock: 11 },
-  { sku: "GUA-006", name: "Guantes de Malla Verano", category: "guantes", price: 45000, description: "Guantes transpirables de malla para clima cálido.", stock: 18 },
-  { sku: "GUA-007", name: "Guantes Mujer Comfort Fit", category: "guantes", price: 60000, description: "Guantes diseñados para mano femenina, ajuste ergonómico y protección básica.", stock: 13 },
+function unicaVariante(sku: string, price: number, stock: number): VarianteProducto[] {
+  return [{ sku, attributes: {}, price, stock }];
+}
+
+// 100 productos en 16 categorías (agrupadas en 4 familias + el caso real de
+// 4 niveles de "Para motos › Otros para motos › Iluminación › Exploradoras"
+// para las luces auxiliares), varios por categoría a propósito (para poder
+// probar filtros/búsquedas por categoría y por nombre en local).
+const PROTECCION = ["Protección personal"];
+const REPUESTOS = ["Repuestos y mantenimiento"];
+const ACCESORIOS_EQUIPO = ["Accesorios y equipamiento"];
+
+const PRODUCTOS: ProductoPrueba[] = [
+  // Cascos — el primero con variantes de talla real (S/M/L), para probar
+  // "preguntar variante antes de cotizar".
+  {
+    name: "Casco Integral Thunder Road",
+    categoryPath: [...PROTECCION, "Cascos"],
+    description: "Casco integral con visor antirayas y ventilación regulable, ideal para carretera.",
+    variants: [
+      { sku: "CAS-001-S", attributes: { talla: "S" }, price: 380000, stock: 4 },
+      { sku: "CAS-001-M", attributes: { talla: "M" }, price: 380000, stock: 5 },
+      { sku: "CAS-001-L", attributes: { talla: "L" }, price: 380000, stock: 3 },
+    ],
+  },
+  { name: "Casco Integral Storm GT", categoryPath: [...PROTECCION, "Cascos"], description: "Casco integral de fibra de vidrio, doble densidad de espuma para mayor absorción de impacto.", variants: unicaVariante("CAS-002", 420000, 8) },
+  { name: "Casco Abierto Urban Rider", categoryPath: [...PROTECCION, "Cascos"], description: "Casco abierto liviano para uso urbano, con visor solar interno.", variants: unicaVariante("CAS-003", 210000, 15) },
+  { name: "Casco Modular Cross Tech", categoryPath: [...PROTECCION, "Cascos"], description: "Casco modular con mentonera abatible, permite usarlo integral o abierto.", variants: unicaVariante("CAS-004", 450000, 0) },
+  { name: "Casco Infantil SafeKid", categoryPath: [...PROTECCION, "Cascos"], description: "Casco integral talla infantil, colores llamativos y correa de seguridad reforzada.", variants: unicaVariante("CAS-005", 150000, 10) },
+  { name: "Casco Integral Racing Pro", categoryPath: [...PROTECCION, "Cascos"], description: "Casco de competición homologado, aerodinámica optimizada para alta velocidad.", variants: unicaVariante("CAS-006", 480000, 5) },
+  { name: "Casco Abierto Vintage Cafe", categoryPath: [...PROTECCION, "Cascos"], description: "Casco estilo retro para motos café racer, visor incluido.", variants: unicaVariante("CAS-007", 230000, 9) },
+  { name: "Casco Cross Enduro X", categoryPath: [...PROTECCION, "Cascos"], description: "Casco para motocross con visera larga y ventilación frontal amplia.", variants: unicaVariante("CAS-008", 260000, 7) },
+
+  // Guantes — el primero también con variantes de talla real.
+  {
+    name: "Guantes de Cuero Touring",
+    categoryPath: [...PROTECCION, "Guantes"],
+    description: "Guantes de cuero genuino con protección en nudillos, para viajes largos.",
+    variants: [
+      { sku: "GUA-001-S", attributes: { talla: "S" }, price: 95000, stock: 6 },
+      { sku: "GUA-001-M", attributes: { talla: "M" }, price: 95000, stock: 9 },
+      { sku: "GUA-001-L", attributes: { talla: "L" }, price: 95000, stock: 5 },
+    ],
+  },
+  { name: "Guantes Racing con Protección", categoryPath: [...PROTECCION, "Guantes"], description: "Guantes con protección rígida en nudillos y palma antideslizante para uso deportivo.", variants: unicaVariante("GUA-002", 120000, 14) },
+  { name: "Guantes Urbanos Táctiles", categoryPath: [...PROTECCION, "Guantes"], description: "Guantes livianos compatibles con pantalla táctil, uso diario en ciudad.", variants: unicaVariante("GUA-003", 55000, 25) },
+  { name: "Guantes Impermeables Invierno", categoryPath: [...PROTECCION, "Guantes"], description: "Guantes forrados e impermeables para clima frío y lluvia.", variants: unicaVariante("GUA-004", 85000, 0) },
+  { name: "Guantes Cross con Nudillera", categoryPath: [...PROTECCION, "Guantes"], description: "Guantes de motocross con nudillera de protección y agarre reforzado.", variants: unicaVariante("GUA-005", 70000, 11) },
+  { name: "Guantes de Malla Verano", categoryPath: [...PROTECCION, "Guantes"], description: "Guantes transpirables de malla para clima cálido.", variants: unicaVariante("GUA-006", 45000, 18) },
+  { name: "Guantes Mujer Comfort Fit", categoryPath: [...PROTECCION, "Guantes"], description: "Guantes diseñados para mano femenina, ajuste ergonómico y protección básica.", variants: unicaVariante("GUA-007", 60000, 13) },
 
   // Chaquetas
-  { sku: "CHA-001", name: "Chaqueta Textil Touring", category: "chaquetas", price: 320000, description: "Chaqueta textil impermeable con protecciones removibles en hombros y codos.", stock: 9 },
-  { sku: "CHA-002", name: "Chaqueta de Cuero Classic", category: "chaquetas", price: 480000, description: "Chaqueta de cuero genuino estilo clásico, forro térmico desmontable.", stock: 6 },
-  { sku: "CHA-003", name: "Chaqueta Racing con Protecciones", category: "chaquetas", price: 550000, description: "Chaqueta deportiva con protecciones CE en espalda, hombros y codos.", stock: 4 },
-  { sku: "CHA-004", name: "Chaqueta Impermeable All Weather", category: "chaquetas", price: 280000, description: "Chaqueta todo clima con membrana impermeable y forro térmico.", stock: 0 },
-  { sku: "CHA-005", name: "Chaqueta Mesh Verano", category: "chaquetas", price: 190000, description: "Chaqueta de malla transpirable con protecciones básicas, ideal para calor.", stock: 12 },
-  { sku: "CHA-006", name: "Chaleco Reflectivo Seguridad", category: "chaquetas", price: 35000, description: "Chaleco reflectivo de alta visibilidad para conducción nocturna.", stock: 30 },
-  { sku: "CHA-007", name: "Chaqueta Térmica Invierno", category: "chaquetas", price: 260000, description: "Chaqueta térmica acolchada para bajas temperaturas.", stock: 8 },
+  { name: "Chaqueta Textil Touring", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaqueta textil impermeable con protecciones removibles en hombros y codos.", variants: unicaVariante("CHA-001", 320000, 9) },
+  { name: "Chaqueta de Cuero Classic", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaqueta de cuero genuino estilo clásico, forro térmico desmontable.", variants: unicaVariante("CHA-002", 480000, 6) },
+  { name: "Chaqueta Racing con Protecciones", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaqueta deportiva con protecciones CE en espalda, hombros y codos.", variants: unicaVariante("CHA-003", 550000, 4) },
+  { name: "Chaqueta Impermeable All Weather", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaqueta todo clima con membrana impermeable y forro térmico.", variants: unicaVariante("CHA-004", 280000, 0) },
+  { name: "Chaqueta Mesh Verano", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaqueta de malla transpirable con protecciones básicas, ideal para calor.", variants: unicaVariante("CHA-005", 190000, 12) },
+  { name: "Chaleco Reflectivo Seguridad", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaleco reflectivo de alta visibilidad para conducción nocturna.", variants: unicaVariante("CHA-006", 35000, 30) },
+  { name: "Chaqueta Térmica Invierno", categoryPath: [...PROTECCION, "Chaquetas"], description: "Chaqueta térmica acolchada para bajas temperaturas.", variants: unicaVariante("CHA-007", 260000, 8) },
 
   // Llantas y neumáticos
-  { sku: "LLA-001", name: "Llanta Delantera Sport 110/70-17", category: "llantas", price: 280000, description: "Llanta deportiva delantera, buen agarre en seco y mojado.", stock: 10 },
-  { sku: "LLA-002", name: "Llanta Trasera Sport 140/70-17", category: "llantas", price: 320000, description: "Llanta deportiva trasera de alto rendimiento.", stock: 10 },
-  { sku: "LLA-003", name: "Llanta Todo Terreno 90/90-19", category: "llantas", price: 260000, description: "Llanta mixta para asfalto y trocha, taco resistente.", stock: 7 },
-  { sku: "LLA-004", name: "Llanta Urbana 80/100-18", category: "llantas", price: 190000, description: "Llanta económica para uso urbano diario.", stock: 15 },
-  { sku: "LLA-005", name: "Llanta Touring 120/70-17", category: "llantas", price: 300000, description: "Llanta de larga duración pensada para viajes de carretera.", stock: 0 },
-  { sku: "LLA-006", name: "Cámara de Aire Reforzada", category: "llantas", price: 35000, description: "Cámara de aire de caucho reforzado, varias medidas disponibles.", stock: 40 },
-  { sku: "LLA-007", name: "Llanta Scooter 120/70-12", category: "llantas", price: 175000, description: "Llanta para scooter con buen agarre urbano.", stock: 9 },
+  { name: "Llanta Delantera Sport 110/70-17", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Llanta deportiva delantera, buen agarre en seco y mojado.", variants: unicaVariante("LLA-001", 280000, 10) },
+  { name: "Llanta Trasera Sport 140/70-17", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Llanta deportiva trasera de alto rendimiento.", variants: unicaVariante("LLA-002", 320000, 10) },
+  { name: "Llanta Todo Terreno 90/90-19", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Llanta mixta para asfalto y trocha, taco resistente.", variants: unicaVariante("LLA-003", 260000, 7) },
+  { name: "Llanta Urbana 80/100-18", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Llanta económica para uso urbano diario.", variants: unicaVariante("LLA-004", 190000, 15) },
+  { name: "Llanta Touring 120/70-17", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Llanta de larga duración pensada para viajes de carretera.", variants: unicaVariante("LLA-005", 300000, 0) },
+  { name: "Cámara de Aire Reforzada", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Cámara de aire de caucho reforzado, varias medidas disponibles.", variants: unicaVariante("LLA-006", 35000, 40) },
+  { name: "Llanta Scooter 120/70-12", categoryPath: [...REPUESTOS, "Llantas y neumáticos"], description: "Llanta para scooter con buen agarre urbano.", variants: unicaVariante("LLA-007", 175000, 9) },
 
   // Aceites y lubricantes
-  { sku: "ACE-001", name: "Aceite Sintético 10W-40 1L", category: "aceites", price: 58000, description: "Aceite 100% sintético para motor 4 tiempos, alta protección térmica.", stock: 35 },
-  { sku: "ACE-002", name: "Aceite Semisintético 20W-50 1L", category: "aceites", price: 42000, description: "Aceite semisintético de uso general para motos de trabajo diario.", stock: 40 },
-  { sku: "ACE-003", name: "Aceite Mineral 20W-50 1L", category: "aceites", price: 28000, description: "Aceite mineral económico para motores de baja exigencia.", stock: 50 },
-  { sku: "ACE-004", name: "Lubricante de Cadena Spray", category: "aceites", price: 25000, description: "Lubricante en spray para cadena, resistente al agua.", stock: 45 },
-  { sku: "ACE-005", name: "Aceite de Horquilla 10W", category: "aceites", price: 32000, description: "Aceite específico para suspensión delantera.", stock: 0 },
-  { sku: "ACE-006", name: "Grasa para Rodamientos", category: "aceites", price: 18000, description: "Grasa multipropósito para rodamientos y bujes.", stock: 22 },
-  { sku: "ACE-007", name: "Aditivo Limpiador de Inyectores", category: "aceites", price: 30000, description: "Aditivo para limpiar inyectores y mejorar el rendimiento del motor.", stock: 17 },
+  { name: "Aceite Sintético 10W-40 1L", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Aceite 100% sintético para motor 4 tiempos, alta protección térmica.", variants: unicaVariante("ACE-001", 58000, 35) },
+  { name: "Aceite Semisintético 20W-50 1L", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Aceite semisintético de uso general para motos de trabajo diario.", variants: unicaVariante("ACE-002", 42000, 40) },
+  { name: "Aceite Mineral 20W-50 1L", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Aceite mineral económico para motores de baja exigencia.", variants: unicaVariante("ACE-003", 28000, 50) },
+  { name: "Lubricante de Cadena Spray", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Lubricante en spray para cadena, resistente al agua.", variants: unicaVariante("ACE-004", 25000, 45) },
+  { name: "Aceite de Horquilla 10W", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Aceite específico para suspensión delantera.", variants: unicaVariante("ACE-005", 32000, 0) },
+  { name: "Grasa para Rodamientos", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Grasa multipropósito para rodamientos y bujes.", variants: unicaVariante("ACE-006", 18000, 22) },
+  { name: "Aditivo Limpiador de Inyectores", categoryPath: [...REPUESTOS, "Aceites y lubricantes"], description: "Aditivo para limpiar inyectores y mejorar el rendimiento del motor.", variants: unicaVariante("ACE-007", 30000, 17) },
 
   // Filtros
-  { sku: "FIL-001", name: "Filtro de Aceite Universal", category: "filtros", price: 22000, description: "Filtro de aceite compatible con la mayoría de motores 150-250cc.", stock: 30 },
-  { sku: "FIL-002", name: "Filtro de Aire Deportivo", category: "filtros", price: 38000, description: "Filtro de aire de alto flujo lavable y reutilizable.", stock: 20 },
-  { sku: "FIL-003", name: "Filtro de Aire Original", category: "filtros", price: 25000, description: "Filtro de aire de repuesto según especificación de fábrica.", stock: 25 },
-  { sku: "FIL-004", name: "Filtro de Combustible", category: "filtros", price: 15000, description: "Filtro de combustible en línea, evita impurezas en el sistema de inyección.", stock: 0 },
-  { sku: "FIL-005", name: "Filtro de Aire de Alto Flujo", category: "filtros", price: 45000, description: "Filtro deportivo de alto flujo para mayor potencia.", stock: 12 },
-  { sku: "FIL-006", name: "Filtro de Aceite Racing", category: "filtros", price: 28000, description: "Filtro de aceite de alto rendimiento para uso deportivo.", stock: 14 },
+  { name: "Filtro de Aceite Universal", categoryPath: [...REPUESTOS, "Filtros"], description: "Filtro de aceite compatible con la mayoría de motores 150-250cc.", variants: unicaVariante("FIL-001", 22000, 30) },
+  { name: "Filtro de Aire Deportivo", categoryPath: [...REPUESTOS, "Filtros"], description: "Filtro de aire de alto flujo lavable y reutilizable.", variants: unicaVariante("FIL-002", 38000, 20) },
+  { name: "Filtro de Aire Original", categoryPath: [...REPUESTOS, "Filtros"], description: "Filtro de aire de repuesto según especificación de fábrica.", variants: unicaVariante("FIL-003", 25000, 25) },
+  { name: "Filtro de Combustible", categoryPath: [...REPUESTOS, "Filtros"], description: "Filtro de combustible en línea, evita impurezas en el sistema de inyección.", variants: unicaVariante("FIL-004", 15000, 0) },
+  { name: "Filtro de Aire de Alto Flujo", categoryPath: [...REPUESTOS, "Filtros"], description: "Filtro deportivo de alto flujo para mayor potencia.", variants: unicaVariante("FIL-005", 45000, 12) },
+  { name: "Filtro de Aceite Racing", categoryPath: [...REPUESTOS, "Filtros"], description: "Filtro de aceite de alto rendimiento para uso deportivo.", variants: unicaVariante("FIL-006", 28000, 14) },
 
   // Frenos
-  { sku: "FRE-001", name: "Pastillas de Freno Delanteras Cerámicas", category: "frenos", price: 65000, description: "Pastillas cerámicas de alto rendimiento y baja generación de polvo.", stock: 18 },
-  { sku: "FRE-002", name: "Pastillas de Freno Traseras Orgánicas", category: "frenos", price: 45000, description: "Pastillas orgánicas de frenado suave para uso diario.", stock: 20 },
-  { sku: "FRE-003", name: "Disco de Freno Delantero Flotante", category: "frenos", price: 180000, description: "Disco flotante de alto rendimiento, mejor disipación de calor.", stock: 6 },
-  { sku: "FRE-004", name: "Disco de Freno Trasero", category: "frenos", price: 150000, description: "Disco de freno trasero de repuesto original.", stock: 0 },
-  { sku: "FRE-005", name: "Líquido de Frenos DOT 4", category: "frenos", price: 22000, description: "Líquido de frenos DOT 4 para sistemas hidráulicos.", stock: 35 },
-  { sku: "FRE-006", name: "Kit de Mangueras de Freno Trenzadas", category: "frenos", price: 130000, description: "Mangueras trenzadas de acero para mejor tacto de frenado.", stock: 8 },
-  { sku: "FRE-007", name: "Bomba de Freno Trasera", category: "frenos", price: 95000, description: "Bomba de freno trasera de repuesto.", stock: 5 },
+  { name: "Pastillas de Freno Delanteras Cerámicas", categoryPath: [...REPUESTOS, "Frenos"], description: "Pastillas cerámicas de alto rendimiento y baja generación de polvo.", variants: unicaVariante("FRE-001", 65000, 18) },
+  { name: "Pastillas de Freno Traseras Orgánicas", categoryPath: [...REPUESTOS, "Frenos"], description: "Pastillas orgánicas de frenado suave para uso diario.", variants: unicaVariante("FRE-002", 45000, 20) },
+  { name: "Disco de Freno Delantero Flotante", categoryPath: [...REPUESTOS, "Frenos"], description: "Disco flotante de alto rendimiento, mejor disipación de calor.", variants: unicaVariante("FRE-003", 180000, 6) },
+  { name: "Disco de Freno Trasero", categoryPath: [...REPUESTOS, "Frenos"], description: "Disco de freno trasero de repuesto original.", variants: unicaVariante("FRE-004", 150000, 0) },
+  { name: "Líquido de Frenos DOT 4", categoryPath: [...REPUESTOS, "Frenos"], description: "Líquido de frenos DOT 4 para sistemas hidráulicos.", variants: unicaVariante("FRE-005", 22000, 35) },
+  { name: "Kit de Mangueras de Freno Trenzadas", categoryPath: [...REPUESTOS, "Frenos"], description: "Mangueras trenzadas de acero para mejor tacto de frenado.", variants: unicaVariante("FRE-006", 130000, 8) },
+  { name: "Bomba de Freno Trasera", categoryPath: [...REPUESTOS, "Frenos"], description: "Bomba de freno trasera de repuesto.", variants: unicaVariante("FRE-007", 95000, 5) },
 
   // Cadenas y kits de arrastre
-  { sku: "CAD-001", name: "Kit de Arrastre Completo 428H", category: "cadenas", price: 220000, description: "Kit completo (cadena, piñón, corona) para motos de 150-200cc.", stock: 10 },
-  { sku: "CAD-002", name: "Cadena de Transmisión 520", category: "cadenas", price: 130000, description: "Cadena reforzada 520 para motos deportivas.", stock: 12 },
-  { sku: "CAD-003", name: "Piñón Delantero", category: "cadenas", price: 40000, description: "Piñón delantero de acero de alta resistencia.", stock: 0 },
-  { sku: "CAD-004", name: "Corona Trasera", category: "cadenas", price: 90000, description: "Corona trasera de aluminio liviano.", stock: 9 },
-  { sku: "CAD-005", name: "Kit de Arrastre Reforzado Racing", category: "cadenas", price: 320000, description: "Kit de arrastre reforzado para uso deportivo o de competición.", stock: 4 },
-  { sku: "CAD-006", name: "Tensor de Cadena Ajustable", category: "cadenas", price: 55000, description: "Tensor de cadena ajustable para mantener la tensión correcta.", stock: 15 },
+  { name: "Kit de Arrastre Completo 428H", categoryPath: [...REPUESTOS, "Cadenas y kits de arrastre"], description: "Kit completo (cadena, piñón, corona) para motos de 150-200cc.", variants: unicaVariante("CAD-001", 220000, 10) },
+  { name: "Cadena de Transmisión 520", categoryPath: [...REPUESTOS, "Cadenas y kits de arrastre"], description: "Cadena reforzada 520 para motos deportivas.", variants: unicaVariante("CAD-002", 130000, 12) },
+  { name: "Piñón Delantero", categoryPath: [...REPUESTOS, "Cadenas y kits de arrastre"], description: "Piñón delantero de acero de alta resistencia.", variants: unicaVariante("CAD-003", 40000, 0) },
+  { name: "Corona Trasera", categoryPath: [...REPUESTOS, "Cadenas y kits de arrastre"], description: "Corona trasera de aluminio liviano.", variants: unicaVariante("CAD-004", 90000, 9) },
+  { name: "Kit de Arrastre Reforzado Racing", categoryPath: [...REPUESTOS, "Cadenas y kits de arrastre"], description: "Kit de arrastre reforzado para uso deportivo o de competición.", variants: unicaVariante("CAD-005", 320000, 4) },
+  { name: "Tensor de Cadena Ajustable", categoryPath: [...REPUESTOS, "Cadenas y kits de arrastre"], description: "Tensor de cadena ajustable para mantener la tensión correcta.", variants: unicaVariante("CAD-006", 55000, 15) },
 
   // Baterías
-  { sku: "BAT-001", name: "Batería Gel 12V 9Ah", category: "baterias", price: 220000, description: "Batería de gel libre de mantenimiento, mayor vida útil.", stock: 14 },
-  { sku: "BAT-002", name: "Batería de Litio Ultraligera", category: "baterias", price: 380000, description: "Batería de litio de bajo peso y arranque instantáneo.", stock: 5 },
-  { sku: "BAT-003", name: "Batería Convencional 12V 5Ah", category: "baterias", price: 120000, description: "Batería de plomo-ácido convencional, requiere mantenimiento.", stock: 0 },
-  { sku: "BAT-004", name: "Cargador de Batería Inteligente", category: "baterias", price: 85000, description: "Cargador inteligente con corte automático de carga.", stock: 18 },
-  { sku: "BAT-005", name: "Batería AGM 12V 12Ah", category: "baterias", price: 260000, description: "Batería AGM sellada de alta durabilidad.", stock: 7 },
+  { name: "Batería Gel 12V 9Ah", categoryPath: [...REPUESTOS, "Baterías"], description: "Batería de gel libre de mantenimiento, mayor vida útil.", variants: unicaVariante("BAT-001", 220000, 14) },
+  { name: "Batería de Litio Ultraligera", categoryPath: [...REPUESTOS, "Baterías"], description: "Batería de litio de bajo peso y arranque instantáneo.", variants: unicaVariante("BAT-002", 380000, 5) },
+  { name: "Batería Convencional 12V 5Ah", categoryPath: [...REPUESTOS, "Baterías"], description: "Batería de plomo-ácido convencional, requiere mantenimiento.", variants: unicaVariante("BAT-003", 120000, 0) },
+  { name: "Cargador de Batería Inteligente", categoryPath: [...REPUESTOS, "Baterías"], description: "Cargador inteligente con corte automático de carga.", variants: unicaVariante("BAT-004", 85000, 18) },
+  { name: "Batería AGM 12V 12Ah", categoryPath: [...REPUESTOS, "Baterías"], description: "Batería AGM sellada de alta durabilidad.", variants: unicaVariante("BAT-005", 260000, 7) },
 
-  // Luces y faros
-  { sku: "LUZ-001", name: "Faro Delantero LED", category: "luces", price: 150000, description: "Faro delantero LED de alta luminosidad y bajo consumo.", stock: 10 },
-  { sku: "LUZ-002", name: "Kit de Luces LED H4", category: "luces", price: 90000, description: "Kit de bombillas LED H4 plug and play.", stock: 20 },
-  { sku: "LUZ-003", name: "Direccionales LED Ahumadas", category: "luces", price: 45000, description: "Par de direccionales LED con lente ahumado.", stock: 25 },
-  { sku: "LUZ-004", name: "Luz Trasera LED con Freno", category: "luces", price: 55000, description: "Luz trasera LED integrada con función de freno.", stock: 0 },
-  { sku: "LUZ-005", name: "Luces Auxiliares Neblineras", category: "luces", price: 110000, description: "Par de luces auxiliares para neblina y baja visibilidad.", stock: 8 },
-  { sku: "LUZ-006", name: "Luz LED para Placa", category: "luces", price: 20000, description: "Luz LED pequeña para iluminación de placa.", stock: 30 },
+  // Luces y faros — caso real de 4 niveles: "Para motos › Otros para
+  // motos › Iluminación › Exploradoras" para las luces auxiliares.
+  { name: "Faro Delantero LED", categoryPath: ["Para motos", "Otros para motos", "Iluminación"], description: "Faro delantero LED de alta luminosidad y bajo consumo.", variants: unicaVariante("LUZ-001", 150000, 10) },
+  { name: "Kit de Luces LED H4", categoryPath: ["Para motos", "Otros para motos", "Iluminación"], description: "Kit de bombillas LED H4 plug and play.", variants: unicaVariante("LUZ-002", 90000, 20) },
+  { name: "Direccionales LED Ahumadas", categoryPath: ["Para motos", "Otros para motos", "Iluminación"], description: "Par de direccionales LED con lente ahumado.", variants: unicaVariante("LUZ-003", 45000, 25) },
+  { name: "Luz Trasera LED con Freno", categoryPath: ["Para motos", "Otros para motos", "Iluminación"], description: "Luz trasera LED integrada con función de freno.", variants: unicaVariante("LUZ-004", 55000, 0) },
+  { name: "Luces Auxiliares Neblineras", categoryPath: ["Para motos", "Otros para motos", "Iluminación", "Exploradoras"], description: "Par de luces auxiliares para neblina y baja visibilidad.", variants: unicaVariante("LUZ-005", 110000, 8) },
+  { name: "Luz LED para Placa", categoryPath: ["Para motos", "Otros para motos", "Iluminación"], description: "Luz LED pequeña para iluminación de placa.", variants: unicaVariante("LUZ-006", 20000, 30) },
 
   // Espejos
-  { sku: "ESP-001", name: "Espejos Retrovisores Deportivos", category: "espejos", price: 65000, description: "Par de espejos deportivos de perfil aerodinámico.", stock: 16 },
-  { sku: "ESP-002", name: "Espejos Retrovisores Clásicos", category: "espejos", price: 55000, description: "Par de espejos redondos estilo clásico.", stock: 14 },
-  { sku: "ESP-003", name: "Espejos Convexos Antivibración", category: "espejos", price: 70000, description: "Espejos convexos que reducen el punto ciego y la vibración.", stock: 0 },
-  { sku: "ESP-004", name: "Espejo Retrovisor Universal Cromado", category: "espejos", price: 35000, description: "Espejo universal cromado, encaja en la mayoría de modelos.", stock: 22 },
-  { sku: "ESP-005", name: "Espejos Plegables Racing", category: "espejos", price: 90000, description: "Espejos plegables de bajo perfil para uso deportivo.", stock: 9 },
+  { name: "Espejos Retrovisores Deportivos", categoryPath: [...ACCESORIOS_EQUIPO, "Espejos"], description: "Par de espejos deportivos de perfil aerodinámico.", variants: unicaVariante("ESP-001", 65000, 16) },
+  { name: "Espejos Retrovisores Clásicos", categoryPath: [...ACCESORIOS_EQUIPO, "Espejos"], description: "Par de espejos redondos estilo clásico.", variants: unicaVariante("ESP-002", 55000, 14) },
+  { name: "Espejos Convexos Antivibración", categoryPath: [...ACCESORIOS_EQUIPO, "Espejos"], description: "Espejos convexos que reducen el punto ciego y la vibración.", variants: unicaVariante("ESP-003", 70000, 0) },
+  { name: "Espejo Retrovisor Universal Cromado", categoryPath: [...ACCESORIOS_EQUIPO, "Espejos"], description: "Espejo universal cromado, encaja en la mayoría de modelos.", variants: unicaVariante("ESP-004", 35000, 22) },
+  { name: "Espejos Plegables Racing", categoryPath: [...ACCESORIOS_EQUIPO, "Espejos"], description: "Espejos plegables de bajo perfil para uso deportivo.", variants: unicaVariante("ESP-005", 90000, 9) },
 
   // Escapes
-  { sku: "ESC-001", name: "Escape Deportivo Slip-On", category: "escapes", price: 480000, description: "Escape deportivo de instalación simple, mejora sonido y peso.", stock: 6 },
-  { sku: "ESC-002", name: "Escape Completo Racing", category: "escapes", price: 950000, description: "Sistema de escape completo de alto rendimiento para competición.", stock: 2 },
-  { sku: "ESC-003", name: "Silenciador Universal", category: "escapes", price: 280000, description: "Silenciador universal adaptable a varios modelos.", stock: 8 },
-  { sku: "ESC-004", name: "Protector de Escape Carbono", category: "escapes", price: 95000, description: "Protector térmico de fibra de carbono para el escape.", stock: 0 },
-  { sku: "ESC-005", name: "Escape Megáfono Clásico", category: "escapes", price: 320000, description: "Escape estilo megáfono para motos clásicas y café racer.", stock: 5 },
-  { sku: "ESC-006", name: "Empaque de Escape Universal", category: "escapes", price: 12000, description: "Empaque de repuesto para unión del escape al motor.", stock: 40 },
+  { name: "Escape Deportivo Slip-On", categoryPath: [...ACCESORIOS_EQUIPO, "Escapes"], description: "Escape deportivo de instalación simple, mejora sonido y peso.", variants: unicaVariante("ESC-001", 480000, 6) },
+  { name: "Escape Completo Racing", categoryPath: [...ACCESORIOS_EQUIPO, "Escapes"], description: "Sistema de escape completo de alto rendimiento para competición.", variants: unicaVariante("ESC-002", 950000, 2) },
+  { name: "Silenciador Universal", categoryPath: [...ACCESORIOS_EQUIPO, "Escapes"], description: "Silenciador universal adaptable a varios modelos.", variants: unicaVariante("ESC-003", 280000, 8) },
+  { name: "Protector de Escape Carbono", categoryPath: [...ACCESORIOS_EQUIPO, "Escapes"], description: "Protector térmico de fibra de carbono para el escape.", variants: unicaVariante("ESC-004", 95000, 0) },
+  { name: "Escape Megáfono Clásico", categoryPath: [...ACCESORIOS_EQUIPO, "Escapes"], description: "Escape estilo megáfono para motos clásicas y café racer.", variants: unicaVariante("ESC-005", 320000, 5) },
+  { name: "Empaque de Escape Universal", categoryPath: [...ACCESORIOS_EQUIPO, "Escapes"], description: "Empaque de repuesto para unión del escape al motor.", variants: unicaVariante("ESC-006", 12000, 40) },
 
   // Accesorios
-  { sku: "ACC-001", name: "Maleta Lateral Rígida", category: "accesorios", price: 420000, description: "Par de maletas laterales rígidas resistentes al agua.", stock: 5 },
-  { sku: "ACC-002", name: "Baúl Trasero 40L", category: "accesorios", price: 250000, description: "Baúl trasero de 40 litros con respaldo acolchado.", stock: 9 },
-  { sku: "ACC-003", name: "Cubre Asiento Impermeable", category: "accesorios", price: 40000, description: "Cubre asiento impermeable universal.", stock: 25 },
-  { sku: "ACC-004", name: "Soporte para Celular", category: "accesorios", price: 35000, description: "Soporte ajustable para celular con agarre antivibración.", stock: 0 },
-  { sku: "ACC-005", name: "Alarma Antirrobo con Sensor", category: "accesorios", price: 130000, description: "Alarma con sensor de movimiento y control remoto.", stock: 12 },
-  { sku: "ACC-006", name: "Cubierta para Moto Impermeable", category: "accesorios", price: 60000, description: "Cubierta impermeable con protección UV.", stock: 20 },
-  { sku: "ACC-007", name: "Portaequipaje Trasero", category: "accesorios", price: 75000, description: "Portaequipaje trasero de acero para carga adicional.", stock: 10 },
-  { sku: "ACC-008", name: "Candado de Disco con Alarma", category: "accesorios", price: 90000, description: "Candado de disco con alarma sonora antirrobo.", stock: 14 },
+  { name: "Maleta Lateral Rígida", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Par de maletas laterales rígidas resistentes al agua.", variants: unicaVariante("ACC-001", 420000, 5) },
+  { name: "Baúl Trasero 40L", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Baúl trasero de 40 litros con respaldo acolchado.", variants: unicaVariante("ACC-002", 250000, 9) },
+  { name: "Cubre Asiento Impermeable", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Cubre asiento impermeable universal.", variants: unicaVariante("ACC-003", 40000, 25) },
+  { name: "Soporte para Celular", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Soporte ajustable para celular con agarre antivibración.", variants: unicaVariante("ACC-004", 35000, 0) },
+  { name: "Alarma Antirrobo con Sensor", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Alarma con sensor de movimiento y control remoto.", variants: unicaVariante("ACC-005", 130000, 12) },
+  { name: "Cubierta para Moto Impermeable", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Cubierta impermeable con protección UV.", variants: unicaVariante("ACC-006", 60000, 20) },
+  { name: "Portaequipaje Trasero", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Portaequipaje trasero de acero para carga adicional.", variants: unicaVariante("ACC-007", 75000, 10) },
+  { name: "Candado de Disco con Alarma", categoryPath: [...ACCESORIOS_EQUIPO, "Accesorios"], description: "Candado de disco con alarma sonora antirrobo.", variants: unicaVariante("ACC-008", 90000, 14) },
 
   // Herramientas
-  { sku: "HER-001", name: "Kit de Herramientas Básico", category: "herramientas", price: 85000, description: "Kit básico de herramientas para mantenimiento en casa.", stock: 16 },
-  { sku: "HER-002", name: "Llave de Cruz para Moto", category: "herramientas", price: 30000, description: "Llave de cruz multipropósito para tuercas y pernos.", stock: 20 },
-  { sku: "HER-003", name: "Compresor de Aire Portátil", category: "herramientas", price: 180000, description: "Compresor portátil 12V para inflar llantas.", stock: 0 },
-  { sku: "HER-004", name: "Multímetro Digital", category: "herramientas", price: 65000, description: "Multímetro digital para diagnóstico eléctrico básico.", stock: 11 },
-  { sku: "HER-005", name: "Elevador Hidráulico para Moto", category: "herramientas", price: 450000, description: "Elevador hidráulico para mantenimiento y cambio de llantas.", stock: 3 },
+  { name: "Kit de Herramientas Básico", categoryPath: [...ACCESORIOS_EQUIPO, "Herramientas"], description: "Kit básico de herramientas para mantenimiento en casa.", variants: unicaVariante("HER-001", 85000, 16) },
+  { name: "Llave de Cruz para Moto", categoryPath: [...ACCESORIOS_EQUIPO, "Herramientas"], description: "Llave de cruz multipropósito para tuercas y pernos.", variants: unicaVariante("HER-002", 30000, 20) },
+  { name: "Compresor de Aire Portátil", categoryPath: [...ACCESORIOS_EQUIPO, "Herramientas"], description: "Compresor portátil 12V para inflar llantas.", variants: unicaVariante("HER-003", 180000, 0) },
+  { name: "Multímetro Digital", categoryPath: [...ACCESORIOS_EQUIPO, "Herramientas"], description: "Multímetro digital para diagnóstico eléctrico básico.", variants: unicaVariante("HER-004", 65000, 11) },
+  { name: "Elevador Hidráulico para Moto", categoryPath: [...ACCESORIOS_EQUIPO, "Herramientas"], description: "Elevador hidráulico para mantenimiento y cambio de llantas.", variants: unicaVariante("HER-005", 450000, 3) },
 
   // Amortiguadores y suspensión
-  { sku: "AMO-001", name: "Amortiguador Trasero Ajustable", category: "amortiguadores", price: 320000, description: "Amortiguador trasero con ajuste de precarga.", stock: 7 },
-  { sku: "AMO-002", name: "Kit de Amortiguadores Delanteros", category: "amortiguadores", price: 280000, description: "Par de amortiguadores delanteros de repuesto.", stock: 6 },
-  { sku: "AMO-003", name: "Resortes de Suspensión Progresivos", category: "amortiguadores", price: 150000, description: "Resortes progresivos para mejorar la respuesta de la suspensión.", stock: 0 },
-  { sku: "AMO-004", name: "Amortiguador de Dirección", category: "amortiguadores", price: 260000, description: "Amortiguador de dirección para mayor estabilidad en carretera.", stock: 4 },
-  { sku: "AMO-005", name: "Bujes de Suspensión Poliuretano", category: "amortiguadores", price: 60000, description: "Bujes de poliuretano de alta durabilidad.", stock: 15 },
-  { sku: "AMO-006", name: "Kit de Retenes de Horquilla", category: "amortiguadores", price: 45000, description: "Kit de retenes para sellar la horquilla delantera.", stock: 18 },
+  { name: "Amortiguador Trasero Ajustable", categoryPath: [...REPUESTOS, "Amortiguadores y suspensión"], description: "Amortiguador trasero con ajuste de precarga.", variants: unicaVariante("AMO-001", 320000, 7) },
+  { name: "Kit de Amortiguadores Delanteros", categoryPath: [...REPUESTOS, "Amortiguadores y suspensión"], description: "Par de amortiguadores delanteros de repuesto.", variants: unicaVariante("AMO-002", 280000, 6) },
+  { name: "Resortes de Suspensión Progresivos", categoryPath: [...REPUESTOS, "Amortiguadores y suspensión"], description: "Resortes progresivos para mejorar la respuesta de la suspensión.", variants: unicaVariante("AMO-003", 150000, 0) },
+  { name: "Amortiguador de Dirección", categoryPath: [...REPUESTOS, "Amortiguadores y suspensión"], description: "Amortiguador de dirección para mayor estabilidad en carretera.", variants: unicaVariante("AMO-004", 260000, 4) },
+  { name: "Bujes de Suspensión Poliuretano", categoryPath: [...REPUESTOS, "Amortiguadores y suspensión"], description: "Bujes de poliuretano de alta durabilidad.", variants: unicaVariante("AMO-005", 60000, 15) },
+  { name: "Kit de Retenes de Horquilla", categoryPath: [...REPUESTOS, "Amortiguadores y suspensión"], description: "Kit de retenes para sellar la horquilla delantera.", variants: unicaVariante("AMO-006", 45000, 18) },
 
   // Bujías y eléctrico
-  { sku: "BUJ-001", name: "Bujía de Iridio", category: "electrico", price: 45000, description: "Bujía de iridio de larga duración y mejor encendido.", stock: 24 },
-  { sku: "BUJ-002", name: "Bujía Estándar", category: "electrico", price: 12000, description: "Bujía estándar de níquel para uso general.", stock: 40 },
-  { sku: "BUJ-003", name: "Bobina de Encendido", category: "electrico", price: 65000, description: "Bobina de encendido de repuesto para sistema eléctrico.", stock: 0 },
-  { sku: "BUJ-004", name: "Regulador de Voltaje", category: "electrico", price: 55000, description: "Regulador/rectificador de voltaje para el sistema de carga.", stock: 10 },
+  { name: "Bujía de Iridio", categoryPath: [...REPUESTOS, "Bujías y eléctrico"], description: "Bujía de iridio de larga duración y mejor encendido.", variants: unicaVariante("BUJ-001", 45000, 24) },
+  { name: "Bujía Estándar", categoryPath: [...REPUESTOS, "Bujías y eléctrico"], description: "Bujía estándar de níquel para uso general.", variants: unicaVariante("BUJ-002", 12000, 40) },
+  { name: "Bobina de Encendido", categoryPath: [...REPUESTOS, "Bujías y eléctrico"], description: "Bobina de encendido de repuesto para sistema eléctrico.", variants: unicaVariante("BUJ-003", 65000, 0) },
+  { name: "Regulador de Voltaje", categoryPath: [...REPUESTOS, "Bujías y eléctrico"], description: "Regulador/rectificador de voltaje para el sistema de carga.", variants: unicaVariante("BUJ-004", 55000, 10) },
+];
+
+// Categorías que se marcan como complementarias entre sí (ver
+// category_complements, reemplaza el viejo COMPLEMENTARY_CATEGORIES
+// hardcodeado de recomendarProducto.ts) — se siembran ambas direcciones.
+const CATEGORY_COMPLEMENT_PAIRS: [string[], string[]][] = [
+  [[...PROTECCION, "Cascos"], [...PROTECCION, "Guantes"]],
+  [[...PROTECCION, "Cascos"], [...PROTECCION, "Chaquetas"]],
 ];
 
 function imageUrlFor(sku: string): string {
   return `https://picsum.photos/seed/${sku}/600/400`;
 }
 
+async function resolveGenericAllyId(pool: pg.Pool): Promise<string> {
+  const result = await pool.query<{ id: string }>(
+    `SELECT id FROM allies ORDER BY created_at ASC LIMIT 1`,
+  );
+  const ally = result.rows[0];
+  if (!ally) {
+    throw new Error(
+      "No hay ningún aliado sembrado — corré las migraciones (npm run migrate) antes de este script.",
+    );
+  }
+  return ally.id;
+}
+
+const categoryCache = new Map<string, string>();
+
+async function resolveCategoryPath(pool: pg.Pool, path: string[]): Promise<string> {
+  let parentId: string | null = null;
+  let key = "";
+  for (const name of path) {
+    key += `/${name}`;
+    const cached = categoryCache.get(key);
+    if (cached) {
+      parentId = cached;
+      continue;
+    }
+
+    const existingResult = parentId === null
+      ? await pool.query<{ id: string }>(
+          `SELECT id FROM product_categories WHERE name = $1 AND parent_id IS NULL`,
+          [name],
+        )
+      : await pool.query<{ id: string }>(
+          `SELECT id FROM product_categories WHERE name = $1 AND parent_id = $2`,
+          [name, parentId],
+        );
+
+    let resolvedId: string;
+    if (existingResult.rows[0]) {
+      resolvedId = existingResult.rows[0].id;
+    } else {
+      const inserted = await pool.query<{ id: string }>(
+        `INSERT INTO product_categories (parent_id, name) VALUES ($1, $2) RETURNING id`,
+        [parentId, name],
+      );
+      resolvedId = inserted.rows[0]!.id;
+    }
+
+    categoryCache.set(key, resolvedId);
+    parentId = resolvedId;
+  }
+  return parentId!;
+}
+
+async function upsertProducto(pool: pg.Pool, allyId: string, producto: ProductoPrueba): Promise<void> {
+  const categoryId = await resolveCategoryPath(pool, producto.categoryPath);
+  const hasVariants = producto.variants.length > 1;
+  const baseSku = producto.variants[0]!.sku;
+
+  const existingProduct = await pool.query<{ id: string }>(
+    `SELECT p.id FROM products p JOIN product_variants pv ON pv.product_id = p.id WHERE pv.sku = $1`,
+    [baseSku],
+  );
+
+  const productId =
+    existingProduct.rows[0]?.id ??
+    (
+      await pool.query<{ id: string }>(
+        `INSERT INTO products (ally_id, category_id, name, description, image_url, has_variants)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [allyId, categoryId, producto.name, producto.description, imageUrlFor(baseSku), hasVariants],
+      )
+    ).rows[0]!.id;
+
+  if (existingProduct.rows[0]) {
+    await pool.query(
+      `UPDATE products SET ally_id = $1, category_id = $2, name = $3, description = $4, image_url = $5, has_variants = $6
+       WHERE id = $7`,
+      [allyId, categoryId, producto.name, producto.description, imageUrlFor(baseSku), hasVariants, productId],
+    );
+  }
+
+  for (const variante of producto.variants) {
+    const existingVariant = await pool.query<{ id: string }>(
+      `SELECT id FROM product_variants WHERE sku = $1`,
+      [variante.sku],
+    );
+    const variantId =
+      existingVariant.rows[0]?.id ??
+      (
+        await pool.query<{ id: string }>(
+          `INSERT INTO product_variants (product_id, sku, attributes, price) VALUES ($1, $2, $3, $4) RETURNING id`,
+          [productId, variante.sku, JSON.stringify(variante.attributes), variante.price],
+        )
+      ).rows[0]!.id;
+
+    if (existingVariant.rows[0]) {
+      await pool.query(
+        `UPDATE product_variants SET product_id = $1, attributes = $2, price = $3, active = true WHERE id = $4`,
+        [productId, JSON.stringify(variante.attributes), variante.price, variantId],
+      );
+    }
+
+    // inventory no tiene constraint única sobre variant_id — se borra y se
+    // vuelve a insertar para que el script sea idempotente (evita filas
+    // duplicadas si se corre varias veces).
+    await pool.query(`DELETE FROM inventory WHERE variant_id = $1`, [variantId]);
+    await pool.query(`INSERT INTO inventory (variant_id, stock_quantity) VALUES ($1, $2)`, [
+      variantId,
+      variante.stock,
+    ]);
+  }
+}
+
+async function seedCategoryComplements(pool: pg.Pool): Promise<void> {
+  for (const [pathA, pathB] of CATEGORY_COMPLEMENT_PAIRS) {
+    const idA = categoryCache.get(`/${pathA.join("/")}`);
+    const idB = categoryCache.get(`/${pathB.join("/")}`);
+    if (!idA || !idB) {
+      continue;
+    }
+    await pool.query(
+      `INSERT INTO category_complements (category_id, complementary_category_id) VALUES ($1, $2), ($2, $1)
+       ON CONFLICT DO NOTHING`,
+      [idA, idB],
+    );
+  }
+}
+
 async function main() {
   const pool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
   try {
-    const tenant = await pool.query<{ id: string }>(
-      `INSERT INTO tenants (name, whatsapp_number)
-       VALUES ('ForMotos Test', $1)
-       ON CONFLICT (whatsapp_number) DO UPDATE SET whatsapp_number = EXCLUDED.whatsapp_number
-       RETURNING id`,
-      [TEST_TENANT_WHATSAPP_NUMBER],
-    );
-    const tenantId = tenant.rows[0]!.id;
+    const allyId = await resolveGenericAllyId(pool);
 
-    let count = 0;
+    let variantCount = 0;
     for (const producto of PRODUCTOS) {
-      const result = await pool.query<{ id: string }>(
-        `INSERT INTO products (tenant_id, sku, name, category, price, description, image_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (tenant_id, sku) DO UPDATE SET
-           name = EXCLUDED.name,
-           category = EXCLUDED.category,
-           price = EXCLUDED.price,
-           description = EXCLUDED.description,
-           image_url = EXCLUDED.image_url
-         RETURNING id`,
-        [
-          tenantId,
-          producto.sku,
-          producto.name,
-          producto.category,
-          producto.price,
-          producto.description,
-          imageUrlFor(producto.sku),
-        ],
-      );
-      const productId = result.rows[0]!.id;
-
-      // inventory no tiene constraint única sobre (tenant_id, product_id)
-      // — se borra y se vuelve a insertar para que el script sea
-      // idempotente (evita filas duplicadas si se corre varias veces).
-      await pool.query(`DELETE FROM inventory WHERE product_id = $1`, [productId]);
-      await pool.query(
-        `INSERT INTO inventory (tenant_id, product_id, stock_quantity) VALUES ($1, $2, $3)`,
-        [tenantId, productId, producto.stock],
-      );
-      count++;
+      await upsertProducto(pool, allyId, producto);
+      variantCount += producto.variants.length;
     }
+    await seedCategoryComplements(pool);
 
-    const categorias = new Set(PRODUCTOS.map((p) => p.category));
-    console.log(`Tenant de prueba: ${tenantId}`);
-    console.log(`Productos sembrados: ${count} en ${categorias.size} categorías`);
-    console.log(`Sin stock: ${PRODUCTOS.filter((p) => p.stock === 0).length}`);
+    const categorias = new Set(categoryCache.keys());
+    const sinStock = PRODUCTOS.reduce(
+      (count, p) => count + p.variants.filter((v) => v.stock === 0).length,
+      0,
+    );
+    console.log(`Productos sembrados: ${PRODUCTOS.length}`);
+    console.log(`Variantes sembradas: ${variantCount}`);
+    console.log(`Nodos de categoría: ${categorias.size}`);
+    console.log(`Variantes sin stock: ${sinStock}`);
   } finally {
     await pool.end();
   }

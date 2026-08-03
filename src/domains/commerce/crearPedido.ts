@@ -183,8 +183,8 @@ export async function crearPedido(
     const orderId = order.rows[0].id;
 
     await client.query(
-      `INSERT INTO order_items (order_id, product_id, quantity, unit_price)
-       SELECT $1, product_id, quantity, unit_price FROM quote_items WHERE quote_id = $2`,
+      `INSERT INTO order_items (order_id, variant_id, quantity, unit_price)
+       SELECT $1, variant_id, quantity, unit_price FROM quote_items WHERE quote_id = $2`,
       [orderId, input.quote_id],
     );
 
@@ -202,7 +202,7 @@ export async function crearPedido(
       `UPDATE inventory i
        SET stock_quantity = GREATEST(i.stock_quantity - oi.quantity, 0)
        FROM order_items oi
-       WHERE oi.order_id = $1 AND i.product_id = oi.product_id`,
+       WHERE oi.order_id = $1 AND i.variant_id = oi.variant_id`,
       [orderId],
     );
 

@@ -4,6 +4,7 @@ import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { saveWompiConfig } from "../../../src/shared/db/settingsDirectory.js";
+import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) } as Response;
@@ -15,6 +16,7 @@ const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_U
 let conversationA: string;
 let customerA: string;
 let productA: string;
+let variantA: string;
 // La sección "pago_en_linea" necesita una fila de settings para
 // getWompiConfig/saveWompiConfig (settings es singleton — se siembra acá,
 // no en el beforeAll general, porque el resto de los tests de este
@@ -32,13 +34,14 @@ beforeAll(async () => {
   );
   conversationA = conversation.rows[0]!.id;
 
-  const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('CASCO-PEDIDO', 'Casco pedido', 100000) RETURNING id`,
-  );
-  productA = product.rows[0]!.id;
-  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 50)`, [
-    productA,
-  ]);
+  const product = await seedProduct(adminPool, {
+    sku: "CASCO-PEDIDO",
+    name: "Casco pedido",
+    price: 100000,
+    stock: 50,
+  });
+  productA = product.productId;
+  variantA = product.variantId;
 
   const settings = await adminPool.query<{ id: string }>(
     `INSERT INTO settings (name) VALUES ('Crear Pedido Test') RETURNING id`,
@@ -61,8 +64,7 @@ afterAll(async () => {
     [conversationA],
   );
   await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationA]);
-  await adminPool.query(`DELETE FROM inventory WHERE product_id = $1`, [productA]);
-  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productA]);
+  await deleteProduct(adminPool, productA);
   await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationA]);
   await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerA]);
   await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
@@ -73,7 +75,7 @@ afterAll(async () => {
 describe("crearPedido", () => {
   it("crea un pedido confirmado a partir de una cotización, copiando los items", async () => {
     const quote = await generarCotizacion(conversationA, customerA, {
-      items: [{ product_id: productA, quantity: 2 }],
+      items: [{ variant_id: variantA, quantity: 2 }],
     });
 
     const result = await crearPedido(
@@ -90,22 +92,22 @@ describe("crearPedido", () => {
     expect(result.total).toBe(200000);
 
     const items = await adminPool.query(
-      `SELECT product_id, quantity, unit_price FROM order_items WHERE order_id = $1`,
+      `SELECT variant_id, quantity, unit_price FROM order_items WHERE order_id = $1`,
       [result.order_id],
     );
     expect(items.rows).toHaveLength(1);
-    expect(items.rows[0]).toMatchObject({ product_id: productA, quantity: 2 });
+    expect(items.rows[0]).toMatchObject({ variant_id: variantA, quantity: 2 });
 
     const stock = await adminPool.query<{ stock_quantity: number }>(
-      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
-      [productA],
+      `SELECT stock_quantity FROM inventory WHERE variant_id = $1`,
+      [variantA],
     );
     expect(stock.rows[0]!.stock_quantity).toBe(48); // 50 - 2
   });
 
   it("el mismo message_sid reintentado sobre la misma cotización devuelve el mismo pedido (status duplicate)", async () => {
     const quote = await generarCotizacion(conversationA, customerA, {
-      items: [{ product_id: productA, quantity: 1 }],
+      items: [{ variant_id: variantA, quantity: 1 }],
     });
 
     const first = await crearPedido(
@@ -130,15 +132,15 @@ describe("crearPedido", () => {
     // El reintento "duplicate" no debe descontar stock una segunda vez
     // para la misma cotización — solo la creación real del pedido resta.
     const stock = await adminPool.query<{ stock_quantity: number }>(
-      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
-      [productA],
+      `SELECT stock_quantity FROM inventory WHERE variant_id = $1`,
+      [variantA],
     );
     expect(stock.rows[0]!.stock_quantity).toBe(47); // 48 - 1 (de este test), no -2
   });
 
   it("un message_sid distinto sobre una cotización ya convertida en pedido también devuelve 'duplicate' (0..1 quote->order)", async () => {
     const quote = await generarCotizacion(conversationA, customerA, {
-      items: [{ product_id: productA, quantity: 1 }],
+      items: [{ variant_id: variantA, quantity: 1 }],
     });
 
     const first = await crearPedido(
@@ -185,12 +187,12 @@ describe("crearPedido", () => {
 
   it("se niega a confirmar un pedido de monto alto: no crea la orden ni descuenta stock", async () => {
     const quote = await generarCotizacion(conversationA, customerA, {
-      items: [{ product_id: productA, quantity: 5 }], // 5 x 100.000 = 500.000
+      items: [{ variant_id: variantA, quantity: 5 }], // 5 x 100.000 = 500.000
     });
 
     const stockBefore = await adminPool.query<{ stock_quantity: number }>(
-      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
-      [productA],
+      `SELECT stock_quantity FROM inventory WHERE variant_id = $1`,
+      [variantA],
     );
 
     const result = await crearPedido(
@@ -211,8 +213,8 @@ describe("crearPedido", () => {
     expect(Number(count.rows[0].count)).toBe(0);
 
     const stockAfter = await adminPool.query<{ stock_quantity: number }>(
-      `SELECT stock_quantity FROM inventory WHERE product_id = $1`,
-      [productA],
+      `SELECT stock_quantity FROM inventory WHERE variant_id = $1`,
+      [variantA],
     );
     expect(stockAfter.rows[0]!.stock_quantity).toBe(stockBefore.rows[0]!.stock_quantity);
   });
@@ -220,7 +222,7 @@ describe("crearPedido", () => {
   describe("pago_en_linea (Fase 12.4, Wompi)", () => {
     it("sin Wompi configurado, devuelve 'wompi_no_configurado' sin crear pedido", async () => {
       const quote = await generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: productA, quantity: 1 }],
+        items: [{ variant_id: variantA, quantity: 1 }],
       });
 
       const result = await crearPedido(
@@ -242,7 +244,7 @@ describe("crearPedido", () => {
       vi.stubGlobal("fetch", vi.fn());
 
       const quote = await generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: productA, quantity: 1 }], // 1 x 100.000 = 100.000, bajo MIN_AMOUNT_COP (150.000)
+        items: [{ variant_id: variantA, quantity: 1 }], // 1 x 100.000 = 100.000, bajo MIN_AMOUNT_COP (150.000)
       });
 
       const result = await crearPedido(
@@ -289,7 +291,7 @@ describe("crearPedido", () => {
 
         // quantity: 2 (200.000) — por encima de MIN_AMOUNT_COP (150.000).
         const quote = await generarCotizacion(conversationA, customerA, {
-          items: [{ product_id: productA, quantity: 2 }],
+          items: [{ variant_id: variantA, quantity: 2 }],
         });
 
         const result = await crearPedido(
@@ -323,7 +325,7 @@ describe("crearPedido", () => {
         // para que el chequeo de monto mínimo no corte antes de llegar a
         // llamar a Wompi (que es lo que este test quiere ejercitar).
         const quote = await generarCotizacion(conversationA, customerA, {
-          items: [{ product_id: productA, quantity: 2 }],
+          items: [{ variant_id: variantA, quantity: 2 }],
         });
 
         await expect(

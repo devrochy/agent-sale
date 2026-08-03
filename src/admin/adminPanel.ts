@@ -2485,12 +2485,19 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
   }
 
   const rows = await withTransaction(async (client) => {
+    // Fase 14: una fila por variante (SKU/precio reales viven en
+    // product_variants, no en products) — el listado agrupado por producto
+    // genérico con sus variantes anidadas es trabajo de la sección de
+    // administración de catálogo (PR 2 de la fase), no de esta vista.
     const result = await client.query<ProductoRow>(
-      `SELECT p.sku, p.name, p.category, p.price, p.description, p.image_url,
+      `SELECT pv.sku, p.name, pc.name AS category, pv.price, p.description, p.image_url,
               COALESCE(i.stock_quantity, 0) AS stock
-       FROM products p
-       LEFT JOIN inventory i ON i.product_id = p.id
-       ORDER BY p.category, p.name`,
+       FROM product_variants pv
+       JOIN products p ON p.id = pv.product_id
+       LEFT JOIN product_categories pc ON pc.id = p.category_id
+       LEFT JOIN inventory i ON i.variant_id = pv.id
+       WHERE pv.active = true
+       ORDER BY pc.name, p.name`,
     );
     return result.rows;
   });
@@ -2565,7 +2572,8 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        LEFT JOIN order_items oi ON oi.order_id = o.id
-       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN product_variants pv ON pv.id = oi.variant_id
+       LEFT JOIN products p ON p.id = pv.product_id
        GROUP BY o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at, c.phone_number, c.name
        ORDER BY o.created_at DESC`,
     );

@@ -14,12 +14,13 @@ Es, en palabras de la propia propuesta, "la parte de mayor cambio estructural" d
 
 ## Contenido de esta fase
 
-- [adrs/ADR-026-esquema-catalogo-y-migracion-contratos-variant-id.md](./adrs/ADR-026-esquema-catalogo-y-migracion-contratos-variant-id.md) — esquema de `allies`/`product_categories`/`product_variants`, estrategia de backfill sin pérdida de datos, y la migración de los 3 contratos de tools a `variant_id`.
+- [adrs/ADR-026-esquema-catalogo-y-migracion-contratos-variant-id.md](./adrs/ADR-026-esquema-catalogo-y-migracion-contratos-variant-id.md) — esquema de `allies`/`product_categories`/`category_complements`/`product_variants`, estrategia de backfill sin pérdida de datos, y la migración de los contratos de tools a `variant_id`.
+- [contratos-tools-v2.md](./contratos-tools-v2.md) — los contratos de `consultar_inventario`/`generar_cotizacion`/`crear_pedido`/`recomendar_producto`/`aplicar_promocion` ya migrados a `variant_id`.
 
 ## Riesgos
 
-- Es la migración de mayor riesgo de todo v2 — toca `inventory`, `quote_items` y `order_items` con datos reales si el catálogo de ForMotos ya está cargado (ver [`pendientes-pre-piloto.md`](../fase-9-piloto-controlado/pendientes-pre-piloto.md) #5, mapeado en `MASTER_PLAN_V2.md`).
-- El agente debe aprender a preguntar talla/color antes de cotizar sin degradar el "camino feliz" ya validado en la Fase 0 — riesgo de regresión conversacional, no solo de datos.
+- Es la migración de mayor riesgo de todo v2 — toca `inventory`, `quote_items` y `order_items` con datos reales si el catálogo de ForMotos ya está cargado (ver [`pendientes-pre-piloto.md`](../fase-9-piloto-controlado/pendientes-pre-piloto.md) #5, mapeado en `MASTER_PLAN_V2.md`). Confirmado con el negocio al implementar: no había catálogo real cargado todavía, así que se recreó el esquema en vez de un backfill de producción.
+- El agente debe aprender a preguntar talla/color antes de cotizar sin degradar el "camino feliz" ya validado en la Fase 0 — riesgo de regresión conversacional, no solo de datos. El escenario 9 ("variante ambigua") de `docs/fase-9-piloto-controlado/eval-suite.md` ya anticipaba este comportamiento — ese golden set no está implementado todavía (`eval/` no existe en el repo), así que no hay ningún test E2E que romper hoy; cuando se implemente, sus assertions deberían usar `variant_id` (no se edita ese documento v1 en esta etapa, ver instrucción 5 de `PROPUESTA_V2.md`).
 
 ## Definición de terminado
 

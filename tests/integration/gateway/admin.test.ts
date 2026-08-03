@@ -4,6 +4,7 @@ import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
+import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
@@ -48,12 +49,17 @@ beforeAll(async () => {
   );
   settingsId = settings.rows[0]!.id;
 
-  const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price, description, image_url)
-     VALUES ('ADMIN-A', 'Casco Panel A', 250000, 'Casco de prueba del panel A', 'https://picsum.photos/seed/ADMIN-A/600/400')
-     RETURNING id`,
+  const product = await seedProduct(adminPool, {
+    sku: "ADMIN-A",
+    name: "Casco Panel A",
+    price: 250000,
+    stock: 5,
+  });
+  productId = product.productId;
+  await adminPool.query(
+    `UPDATE products SET description = $1, image_url = $2 WHERE id = $3`,
+    ["Casco de prueba del panel A", "https://picsum.photos/seed/ADMIN-A/600/400", productId],
   );
-  productId = product.rows[0]!.id;
 
   const customer = await adminPool.query<{ id: string }>(
     `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000000', 'Cliente Overview') RETURNING id`,
@@ -243,7 +249,7 @@ afterAll(async () => {
   await adminPool.query(`DELETE FROM messages WHERE conversation_id = ANY($1)`, [conversationIds]);
   await adminPool.query(`DELETE FROM conversations WHERE id = ANY($1)`, [conversationIds]);
   await adminPool.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
-  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productId]);
+  await deleteProduct(adminPool, productId);
   await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await app.close();
   await adminPool.end();

@@ -7,53 +7,61 @@ export interface ConsultarInventarioInput {
 
 export interface ProductMatch {
   product_id: string;
+  variant_id: string;
   sku: string;
   name: string;
+  attributes: Record<string, unknown>;
   price: number;
   stock: number;
-  variants: string[];
   description: string | null;
   image_url: string | null;
 }
 
-interface ProductRow {
-  id: string;
+interface MatchRow {
+  product_id: string;
+  variant_id: string;
   sku: string;
   name: string;
+  attributes: Record<string, unknown>;
   price: string;
   stock: string;
   description: string | null;
   image_url: string | null;
 }
 
+const MATCH_COLUMNS = `
+  p.id AS product_id, pv.id AS variant_id, pv.sku, p.name, pv.attributes, pv.price,
+  COALESCE(i.stock_quantity, 0) AS stock, p.description, p.image_url
+`;
+const MATCH_FROM = `
+  FROM product_variants pv
+  JOIN products p ON p.id = pv.product_id
+  LEFT JOIN inventory i ON i.variant_id = pv.id
+`;
+
 /**
- * Tool consultar_inventario (ver docs/fase-1-arquitectura/contratos-tools.md).
- * `variants` queda vacío: agrupar variantes de un mismo producto base es
- * un detalle de la Fase 6 (dominio comercial), no de este incremento.
+ * Tool consultar_inventario (ver docs/fase-14-catalogo-extendido/contratos-tools-v2.md).
+ * `matches[]` sigue siendo plano — una fila por variante (SKU real), no por
+ * producto genérico agrupado: el LLM es quien agrupa variantes del mismo
+ * producto (mismo `product_id`) al responder, ver ADR-026. Solo variantes
+ * activas: una variante desactivada no debe ofrecerse ni cotizarse.
  */
 export async function consultarInventario(
   input: ConsultarInventarioInput,
 ): Promise<{ matches: ProductMatch[] }> {
   const rows = await withTransaction(async (client) => {
     if (input.sku) {
-      const result = await client.query<ProductRow>(
-        `SELECT p.id, p.sku, p.name, p.price, p.description, p.image_url,
-                COALESCE(i.stock_quantity, 0) AS stock
-         FROM products p
-         LEFT JOIN inventory i ON i.product_id = p.id
-         WHERE p.sku = $1`,
+      const result = await client.query<MatchRow>(
+        `SELECT ${MATCH_COLUMNS} ${MATCH_FROM} WHERE pv.sku = $1 AND pv.active = true`,
         [input.sku],
       );
       return result.rows;
     }
 
     const term = `%${input.query ?? ""}%`;
-    const result = await client.query<ProductRow>(
-      `SELECT p.id, p.sku, p.name, p.price, p.description, p.image_url,
-              COALESCE(i.stock_quantity, 0) AS stock
-       FROM products p
-       LEFT JOIN inventory i ON i.product_id = p.id
-       WHERE p.name ILIKE $1 OR p.sku ILIKE $1
+    const result = await client.query<MatchRow>(
+      `SELECT ${MATCH_COLUMNS} ${MATCH_FROM}
+       WHERE pv.active = true AND (p.name ILIKE $1 OR pv.sku ILIKE $1)
        LIMIT 10`,
       [term],
     );
@@ -62,12 +70,13 @@ export async function consultarInventario(
 
   return {
     matches: rows.map((row) => ({
-      product_id: row.id,
+      product_id: row.product_id,
+      variant_id: row.variant_id,
       sku: row.sku,
       name: row.name,
+      attributes: row.attributes,
       price: Number(row.price),
       stock: Number(row.stock),
-      variants: [],
       description: row.description,
       image_url: row.image_url,
     })),

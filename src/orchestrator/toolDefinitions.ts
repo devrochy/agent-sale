@@ -50,13 +50,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           items: {
             type: "object",
             properties: {
-              product_id: {
+              variant_id: {
                 type: "string",
-                description: "UUID del producto (de consultar_inventario).",
+                description:
+                  "UUID de la variante concreta (de consultar_inventario) — si el producto tiene más de una variante activa, preguntar cuál antes de cotizar.",
               },
               quantity: { type: "integer", description: "Cantidad solicitada, mayor que 0." },
             },
-            required: ["product_id", "quantity"],
+            required: ["variant_id", "quantity"],
           },
         },
       },
