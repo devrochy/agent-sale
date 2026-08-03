@@ -1,19 +1,30 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { env } from "../../../src/config/env.js";
+import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
-const AUTH_HEADER = `Basic ${Buffer.from(`${env.adminUser}:${env.adminPassword}`).toString("base64")}`;
+const ADMIN_EMAIL = "colaboradora@formotos-test.com";
+const ADMIN_PASSWORD = "clave-de-prueba-segura";
+
+/** Extrae "nombre=valor" del header Set-Cookie, descartando Path/HttpOnly/etc, para reusar en el header Cookie de los requests siguientes. */
+function cookieValueFrom(setCookieHeader: string | string[] | undefined): string {
+  const raw = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
+  if (!raw) {
+    throw new Error("Respuesta de login sin Set-Cookie");
+  }
+  return raw.split(";")[0]!;
+}
 
 let tenantA: string;
 let tenantB: string;
 let conversacionAbierta: string;
 let conversacionEscalada: string;
 let conversacionCerrada: string;
+let sessionCookie: string;
 const app = await buildServer();
 
 beforeAll(async () => {
@@ -70,7 +81,9 @@ beforeAll(async () => {
     [
       tenantA,
       conversationEscalada.rows[0]!.id,
-      JSON.stringify([{ type: "tool_use", name: "consultar_inventario", input: { query: "cascos" } }]),
+      JSON.stringify([
+        { type: "tool_use", name: "consultar_inventario", input: { query: "cascos" } },
+      ]),
     ],
   );
   const agent = await adminPool.query<{ id: string }>(
@@ -174,10 +187,40 @@ beforeAll(async () => {
     [tenantA, quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
 
+  // Admin real (Fase 13, ver ADR-025) para autenticar el resto de los
+  // tests — role='master' para no depender de permisos granulares acá
+  // (esos se prueban en tests/unit de src/admin/auth/).
+  const passwordHash = await hashPassword(ADMIN_PASSWORD);
+  const adminRow = await adminPool.query<{ id: string }>(
+    `INSERT INTO admins (tenant_id, email, password_hash, role) VALUES ($1, $2, $3, 'master') RETURNING id`,
+    [tenantA, ADMIN_EMAIL, passwordHash],
+  );
+  await adminPool.query(`INSERT INTO admin_permissions (admin_id, tenant_id) VALUES ($1, $2)`, [
+    adminRow.rows[0]!.id,
+    tenantA,
+  ]);
+
   await app.ready();
+
+  const loginResponse = await app.inject({
+    method: "POST",
+    url: `/admin/${tenantA}/login`,
+    payload: new URLSearchParams({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }).toString(),
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  sessionCookie = cookieValueFrom(loginResponse.headers["set-cookie"]);
 });
 
 afterAll(async () => {
+  await adminPool.query(`DELETE FROM admin_sessions WHERE tenant_id IN ($1, $2)`, [
+    tenantA,
+    tenantB,
+  ]);
+  await adminPool.query(`DELETE FROM admin_permissions WHERE tenant_id IN ($1, $2)`, [
+    tenantA,
+    tenantB,
+  ]);
+  await adminPool.query(`DELETE FROM admins WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM order_items WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM orders WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM quote_items WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
@@ -186,10 +229,7 @@ afterAll(async () => {
     tenantA,
     tenantB,
   ]);
-  await adminPool.query(`DELETE FROM human_agents WHERE tenant_id IN ($1, $2)`, [
-    tenantA,
-    tenantB,
-  ]);
+  await adminPool.query(`DELETE FROM human_agents WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM messages WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
   await adminPool.query(`DELETE FROM conversations WHERE tenant_id IN ($1, $2)`, [
     tenantA,
@@ -204,36 +244,91 @@ afterAll(async () => {
 });
 
 describe("panel admin", () => {
-  it("rechaza sin credenciales", async () => {
+  it("GET /admin (sin tenant) no expone ningún dato y no requiere sesión", async () => {
     const response = await app.inject({ method: "GET", url: "/admin" });
-    expect(response.statusCode).toBe(401);
-  });
-
-  it("rechaza con credenciales incorrectas", async () => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/admin",
-      headers: { authorization: "Basic aW5jb3JyZWN0OmNyZWRz" },
-    });
-    expect(response.statusCode).toBe(401);
-  });
-
-  it("lista los tenants con credenciales correctas", async () => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/admin",
-      headers: { authorization: AUTH_HEADER },
-    });
     expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("Admin Panel Test A");
-    expect(response.body).toContain("Admin Panel Test B");
+    expect(response.body).not.toContain("Admin Panel Test A");
+    expect(response.body).not.toContain("Admin Panel Test B");
+  });
+
+  it("redirige a /login sin sesión", async () => {
+    const response = await app.inject({ method: "GET", url: `/admin/${tenantA}` });
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe(`/admin/${tenantA}/login`);
+  });
+
+  it("redirige a /login con una cookie de sesión inválida", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/admin/${tenantA}`,
+      headers: { cookie: "agent_sale_admin_session=token-que-no-existe" },
+    });
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe(`/admin/${tenantA}/login`);
+  });
+
+  it("login con contraseña incorrecta no autentica", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: `/admin/${tenantA}/login`,
+      payload: new URLSearchParams({ email: ADMIN_EMAIL, password: "clave-incorrecta" }).toString(),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.body).toContain("Correo o contraseña incorrectos");
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("login correcto autentica y logout invalida la sesión", async () => {
+    const loginResponse = await app.inject({
+      method: "POST",
+      url: `/admin/${tenantA}/login`,
+      payload: new URLSearchParams({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }).toString(),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(loginResponse.statusCode).toBe(303);
+    expect(loginResponse.headers.location).toBe(`/admin/${tenantA}`);
+    const cookie = cookieValueFrom(loginResponse.headers["set-cookie"]);
+
+    const overview = await app.inject({
+      method: "GET",
+      url: `/admin/${tenantA}`,
+      headers: { cookie },
+    });
+    expect(overview.statusCode).toBe(200);
+
+    const logoutResponse = await app.inject({
+      method: "POST",
+      url: `/admin/${tenantA}/logout`,
+      headers: { cookie },
+    });
+    expect(logoutResponse.statusCode).toBe(303);
+    expect(logoutResponse.headers.location).toBe(`/admin/${tenantA}/login`);
+
+    const afterLogout = await app.inject({
+      method: "GET",
+      url: `/admin/${tenantA}`,
+      headers: { cookie },
+    });
+    expect(afterLogout.statusCode).toBe(303);
+    expect(afterLogout.headers.location).toBe(`/admin/${tenantA}/login`);
+  });
+
+  it("una sesión de un tenant no sirve para la URL de otro tenant", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/admin/${tenantB}`,
+      headers: { cookie: sessionCookie },
+    });
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe(`/admin/${tenantB}/login`);
   });
 
   it("muestra el catálogo de un tenant sin filtrar productos de otro", async () => {
     const response = await app.inject({
       method: "GET",
       url: `/admin/${tenantA}/productos`,
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: sessionCookie },
     });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Casco Panel A");
@@ -245,7 +340,7 @@ describe("panel admin", () => {
     const response = await app.inject({
       method: "GET",
       url: `/admin/${tenantA}/pedidos`,
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: sessionCookie },
     });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Pedidos");
@@ -255,7 +350,7 @@ describe("panel admin", () => {
     const response = await app.inject({
       method: "GET",
       url: `/admin/${tenantA}`,
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: sessionCookie },
     });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Admin Panel Test A");
@@ -283,20 +378,21 @@ describe("panel admin", () => {
     const response = await app.inject({
       method: "GET",
       url: `/admin/${tenantA}`,
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: sessionCookie },
     });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Marca Personalizada");
     await adminPool.query(`UPDATE tenants SET display_name = NULL WHERE id = $1`, [tenantA]);
   });
 
-  it("devuelve 404 para un tenant que no existe", async () => {
+  it("redirige a login para un tenant que no existe (no distingue con un 404)", async () => {
     const response = await app.inject({
       method: "GET",
       url: `/admin/00000000-0000-0000-0000-000000000000`,
-      headers: { authorization: AUTH_HEADER },
+      headers: { cookie: sessionCookie },
     });
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(303);
+    expect(response.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
   });
 
   describe("conversaciones", () => {
@@ -304,7 +400,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conversaciones`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Cliente Overview");
@@ -318,7 +414,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conversaciones?estado=escaladas`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Cliente Escalado");
@@ -329,7 +425,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conversaciones?estado=cerradas`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("whatsapp:+573000000002");
@@ -340,7 +436,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conversaciones?c=${conversacionAbierta}`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Hola, ¿tienen cascos?");
@@ -350,7 +446,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conversaciones?c=${conversacionEscalada}`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("tool: consultar_inventario");
@@ -360,20 +456,21 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conversaciones?estado=cerradas&c=${conversacionCerrada}`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Gracias, ya no necesito nada más");
       expect(response.body).toContain("cerrada");
     });
 
-    it("devuelve 404 para un tenant que no existe", async () => {
+    it("redirige a login para un tenant que no existe (no distingue con un 404)", async () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/conversaciones`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
     });
   });
 
@@ -382,7 +479,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/leads`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Cliente Overview");
@@ -399,7 +496,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/leads`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Quiero cotizar un casco");
@@ -409,7 +506,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/leads.csv`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.headers["content-type"]).toContain("text/csv");
@@ -423,19 +520,21 @@ describe("panel admin", () => {
       expect(response.body).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
 
-    it("devuelve 404 para un tenant que no existe (HTML y CSV)", async () => {
+    it("redirige a login para un tenant que no existe (HTML y CSV)", async () => {
       const html = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/leads`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
-      expect(html.statusCode).toBe(404);
+      expect(html.statusCode).toBe(303);
+      expect(html.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
       const csv = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/leads.csv`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
-      expect(csv.statusCode).toBe(404);
+      expect(csv.statusCode).toBe(303);
+      expect(csv.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
     });
   });
 
@@ -444,7 +543,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/tickets`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("Cliente Escalado");
@@ -457,7 +556,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/tickets`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toMatch(/chip chip--redline"[^>]*>⚠ Queja/);
@@ -469,7 +568,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/tickets`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain(
@@ -477,13 +576,14 @@ describe("panel admin", () => {
       );
     });
 
-    it("devuelve 404 para un tenant que no existe", async () => {
+    it("redirige a login para un tenant que no existe (no distingue con un 404)", async () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/tickets`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
     });
   });
 
@@ -492,7 +592,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/flujo`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("src/orchestrator/loop.ts");
@@ -507,13 +607,14 @@ describe("panel admin", () => {
       );
     });
 
-    it("devuelve 404 para un tenant que no existe", async () => {
+    it("redirige a login para un tenant que no existe (no distingue con un 404)", async () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/flujo`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
     });
   });
 
@@ -522,7 +623,7 @@ describe("panel admin", () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/${tenantA}/conexiones`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("WhatsApp");
@@ -537,13 +638,14 @@ describe("panel admin", () => {
       expect(response.body).not.toContain("/webhooks/whatsapp/webhooks/whatsapp");
     });
 
-    it("devuelve 404 para un tenant que no existe", async () => {
+    it("redirige a login para un tenant que no existe (no distingue con un 404)", async () => {
       const response = await app.inject({
         method: "GET",
         url: `/admin/00000000-0000-0000-0000-000000000000/conexiones`,
-        headers: { authorization: AUTH_HEADER },
+        headers: { cookie: sessionCookie },
       });
-      expect(response.statusCode).toBe(404);
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
     });
   });
 });

@@ -18,7 +18,6 @@ import {
   getReviewLink,
   getTenant,
   getWompiConfig,
-  listTenants,
   saveBehaviorConfig,
   saveLlmConfig,
   saveReportRecipient,
@@ -39,9 +38,9 @@ import {
 } from "../shared/exchangeRates.js";
 
 /**
- * Panel interno de solo lectura (ver docs de Fase 8/9/11): no hay sistema
- * de login en el proyecto, la protección la da Basic Auth en
- * src/gateway/server.ts. Sirve para operar/depurar el piloto — no es un
+ * Panel interno (ver docs de Fase 8/9/11/13): protegido por login real
+ * por tenant (Fase 13, ver src/admin/auth/ y ADR-025) — Basic Auth global
+ * quedó retirado. Sirve para operar/depurar el piloto — no es un
  * dashboard de cliente final.
  *
  * Sistema visual (Fase 11.1, ver docs/fase-11-panel-admin-dashboard/
@@ -1040,22 +1039,62 @@ const CLIENT_SCRIPT = `
 })();
 `;
 
-export async function renderTenantsPage(): Promise<string> {
-  const tenants = await listTenants();
-  const items = tenants
-    .map(
-      (tenant) =>
-        `<li><a href="/admin/${tenant.id}">${escapeHtml(brandName(tenant))}</a></li>`,
-    )
-    .join("\n");
+/**
+ * `GET /admin` sin tenantId — antes listaba todos los tenants de la
+ * plataforma (útil para saltar entre paneles de distintos clientes), pero
+ * eso es un dato de la plataforma completa, no de un tenant puntual, y
+ * ADR-025 no diseñó ningún rol de "operador de plataforma" que pueda
+ * verlo con login real. Se deja como página neutra sin datos — cada
+ * colaborador entra directo por `/admin/:tenantId/login` (Fase 13).
+ */
+export async function renderAdminRootPage(): Promise<string> {
   const body = `
     <div class="pagehead">
       <p class="eyebrow">agent-sale / admin</p>
-      <h1>Tenants</h1>
+      <h1>Panel de administración</h1>
+      <p>Iniciá sesión desde la URL de tu negocio: <span class="mono">/admin/&lt;tenant-id&gt;/login</span>.</p>
     </div>
-    <ul class="tenantlist">${items}</ul>
   `;
-  return layout("Tenants", null, body);
+  return layout("agent-sale", null, body);
+}
+
+/**
+ * `GET /admin/:tenantId/login` — formulario de login (Fase 13, ver
+ * src/admin/auth/session.ts y ADR-025). Reutiliza `layout()` con
+ * `tenant: null` (shell bare) para no exponer el riel de navegación a
+ * alguien todavía sin sesión.
+ */
+export async function renderLoginPage(tenantId: string, error?: string): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+
+  const errorBanner = error
+    ? `<div class="banner banner--error">${escapeHtml(error)}</div>`
+    : "";
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">${escapeHtml(brandName(tenant))}</p>
+      <h1>Iniciar sesión</h1>
+    </div>
+    ${errorBanner}
+    <div class="panel connection">
+      <form method="POST" action="/admin/${tenant.id}/login">
+        <div class="field">
+          <label for="email">Correo</label>
+          <input type="email" id="email" name="email" required autofocus>
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <input type="password" id="password" name="password" required>
+        </div>
+        <div class="formfoot"><button type="submit" class="btn btn--primary">Entrar</button></div>
+      </form>
+    </div>
+  `;
+  return layout(`${brandName(tenant)} — Iniciar sesión`, null, body);
 }
 
 interface OverviewKpiRow {

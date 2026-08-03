@@ -17,7 +17,7 @@ Reemplaza el Basic Auth global de todo `/admin/*` (una sola credencial `ADMIN_US
 
 ## Definición de terminado
 
-- [ ] Ningún acceso a `/admin/*` funciona ya con la credencial Basic Auth global; login individual obligatorio, hook de `src/gateway/server.ts:59-69` reemplazado.
+- [x] Ningún acceso a `/admin/*` funciona ya con la credencial Basic Auth global; login individual obligatorio, hook de `src/gateway/server.ts` reemplazado (`GET /admin` sin tenantId pasó a página neutra sin datos, ver adenda de ADR-025).
 - [ ] Tabla `admins` con roles (`master`/`colaborador`) y permisos granulares (`recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`) funcionando end-to-end.
 - [ ] Un administrador *master* puede desactivar a un colaborador y esa cuenta pierde acceso de inmediato (sesión invalidada).
 - [ ] Reporte diario (Fase 12.2) y notificación de pago aprobado (ADR-024) llegan solo a administradores con el permiso correspondiente, verificado con al menos 2 administradores de prueba con permisos distintos.

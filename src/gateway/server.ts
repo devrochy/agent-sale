@@ -1,4 +1,4 @@
-import crypto from "node:crypto";
+import fastifyCookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
@@ -16,35 +16,30 @@ import {
   guardarReviewLink,
   pausarBot,
   reactivarBot,
+  renderAdminRootPage,
   renderAnaliticaPage,
   renderConexionesPage,
   renderConfiguracionPage,
   renderConversacionesPage,
   renderFlujoPage,
   renderLeadsPage,
+  renderLoginPage,
   renderOverviewPage,
   renderPedidosPage,
   renderProductosPage,
-  renderTenantsPage,
   renderTicketsPage,
 } from "../admin/adminPanel.js";
-import { env } from "../config/env.js";
+import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
+import { login, logout } from "../admin/auth/session.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
 
-/**
- * Compara dos strings con largo variable en tiempo constante cuando
- * coinciden en longitud (timingSafeEqual lanza si no coinciden, y un
- * largo distinto ya es suficiente para saber que no son iguales — no
- * hace falta timing-safe para esa rama).
- */
-function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
-}
+// UUID con guiones — mismo patrón que UUID_PATTERN de withTenant.ts, acá
+// solo para reconocer el segmento :tenantId de la URL en el hook global
+// de auth (que corre antes de que Fastify resuelva request.params).
+const ADMIN_TENANT_PATH = /^\/admin\/([0-9a-f-]{36})(\/[^?]*)?/i;
 
 /**
  * Fastify se expone vía buildServer() (en vez de arrancar directamente)
@@ -75,24 +70,82 @@ export async function buildServer() {
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
-  // Panel admin de solo lectura (catálogo/pedidos, ver src/admin/adminPanel.ts):
-  // no hay sistema de login en el proyecto, Basic Auth con ADMIN_USER/ADMIN_PASSWORD
-  // es la única protección de este prefijo.
+  // Cookies sin firmar (ver src/admin/auth/currentAdmin.ts) — el token de
+  // sesión ya es el secreto, validado contra `admin_sessions` en Postgres.
+  await app.register(fastifyCookie);
+
+  // Panel admin (Fase 13, ver src/admin/auth/session.ts y ADR-025):
+  // Basic Auth global quedó retirado. Todo `/admin/:tenantId/*` requiere
+  // sesión válida, excepto el propio login. `/admin` sin tenantId no
+  // expone datos (ver renderAdminRootPage), así que no requiere sesión.
   app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/admin")) {
       return;
     }
-    const expected = `Basic ${Buffer.from(`${env.adminUser}:${env.adminPassword}`).toString("base64")}`;
-    const header = request.headers.authorization;
-    if (!header || !safeEqual(header, expected)) {
-      reply.header("WWW-Authenticate", 'Basic realm="admin"');
-      return reply.status(401).send();
+
+    const match = request.url.match(ADMIN_TENANT_PATH);
+    if (!match) {
+      return; // GET /admin (bare) — sin datos de tenant.
+    }
+
+    const tenantId = match[1]!;
+    const path = match[2] ?? "";
+    if (path === "/login") {
+      return; // formulario/acción de login, públicos por definición.
+    }
+
+    const admin = await currentAdmin(request, tenantId);
+    if (!admin) {
+      return reply.status(303).redirect(`/admin/${tenantId}/login`);
     }
   });
 
   app.get("/admin", async (_request, reply) => {
-    const html = await renderTenantsPage();
+    const html = await renderAdminRootPage();
     return reply.type("text/html").send(html);
+  });
+
+  app.get("/admin/:tenantId/login", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const html = await renderLoginPage(tenantId);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/:tenantId/login", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { email, password } = request.body as { email?: string; password?: string };
+    const token =
+      email && password ? await login(tenantId, email, password) : null;
+
+    if (!token) {
+      const html = await renderLoginPage(tenantId, "Correo o contraseña incorrectos.");
+      if (!html) {
+        return reply.status(404).send();
+      }
+      return reply.status(401).type("text/html").send(html);
+    }
+
+    reply.setCookie(SESSION_COOKIE_NAME, token, {
+      path: `/admin/${tenantId}`,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: request.protocol === "https",
+      maxAge: 7 * 24 * 60 * 60,
+    });
+    return reply.status(303).redirect(`/admin/${tenantId}`);
+  });
+
+  app.post("/admin/:tenantId/logout", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const token = request.cookies?.[SESSION_COOKIE_NAME];
+    if (token) {
+      await logout(token);
+    }
+    reply.clearCookie(SESSION_COOKIE_NAME, { path: `/admin/${tenantId}` });
+    return reply.status(303).redirect(`/admin/${tenantId}/login`);
   });
 
   app.get("/admin/:tenantId", async (request, reply) => {
