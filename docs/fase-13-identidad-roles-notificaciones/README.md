@@ -1,6 +1,6 @@
 # Fase 13 — Autenticación Real, Roles de Colaborador y Notificaciones Administrativas
 
-Estado: **en diseño** (v2)
+Estado: **en implementación** (v2) — ADR-025 aceptada 2026-08-02, primer incremento en `feature/impl-fase13-auth-colaboradores`.
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-13--autenticación-real-roles-de-colaborador-y-notificaciones-administrativas) · [PROPUESTA_V2.md §3.1, §3.4](../../PROPUESTA_V2.md) · [Fase 11 — Panel de Administración](../fase-11-panel-admin-dashboard/README.md) · [ADR-015](../fase-11-panel-admin-dashboard/adrs/ADR-015-alcance-autenticacion-panel.md)
 

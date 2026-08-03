@@ -1,7 +1,7 @@
 # ADR-025: Autenticación real por administrador y modelo de permisos de colaboradores
 
 ## Estado
-Propuesta (pendiente de aceptación antes de iniciar implementación de la Fase 13).
+Aceptada (2026-08-02) — Rob confirmó arrancar la implementación de la Fase 13 siguiendo el orden recomendado de `MASTER_PLAN_V2.md`.
 
 ## Contexto
 
