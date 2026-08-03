@@ -1,5 +1,5 @@
 import { INBOUND_STREAM } from "../gateway/queue.js";
-import { getBehaviorConfig, getTenant } from "../shared/db/tenantsDirectory.js";
+import { getBehaviorConfig, getSettings } from "../shared/db/settingsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
 import { resolveBehaviorConfig, DEBOUNCE_DELAY_MS } from "./behaviorConfig.js";
@@ -49,18 +49,17 @@ async function moveToDeadLetter(id: string, fields: string[]): Promise<void> {
  */
 async function processEntry(id: string, fields: string[]): Promise<void> {
   const message = fieldsToObject(fields);
-  const tenantId = message.tenant_id;
   const customerPhone = message.customer_phone;
   const customerName = message.customer_name || undefined;
   const messageSid = message.message_sid;
 
-  if (!tenantId || !customerPhone || !messageSid) {
+  if (!customerPhone || !messageSid) {
     // Payload inválido: no hay nada que reintentar, se descarta.
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
     return;
   }
 
-  const entryLogger = logger.child({ tenant_id: tenantId, message_sid: messageSid });
+  const entryLogger = logger.child({ message_sid: messageSid });
   const receivedAt = message.received_at ? Date.parse(message.received_at) : NaN;
   const queueLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
   entryLogger.info(
@@ -74,24 +73,24 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // pausado / inmediato / debounce con un único call-site — el mensaje
     // sigue su curso normal después, se haya capturado una calificación
     // pendiente o no.
-    await tryCaptureSurveyReply(tenantId, customerPhone, message.body ?? "", entryLogger);
+    await tryCaptureSurveyReply(customerPhone, message.body ?? "", entryLogger);
 
     // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md): se
     // chequea ACÁ, antes de invocar el orquestador — así se evita
-    // resolver el proveedor de LLM (y su costo) para un tenant pausado.
-    // El mensaje del cliente se guarda igual (mismo par de llamadas que
-    // usa appendInbound) para no perder historial mientras el bot está
+    // resolver el proveedor de LLM (y su costo) con el bot pausado. El
+    // mensaje del cliente se guarda igual (mismo par de llamadas que usa
+    // appendInbound) para no perder historial mientras el bot está
     // pausado; si se reactiva, el operador lo ve pendiente en el inbox de
     // Conversaciones. Deliberadamente NO pasa por appendInbound (que
     // podría escalar por palabra clave y mandar un mensaje automático de
     // fallback) — un bot pausado no manda absolutamente nada.
-    const tenant = await getTenant(tenantId);
-    if (tenant?.bot_paused) {
-      const { conversationId } = await resolveConversation(tenantId, customerPhone, customerName);
-      await appendMessage(tenantId, conversationId, "inbound", "customer", message.body ?? "");
+    const settings = await getSettings();
+    if (settings?.bot_paused) {
+      const { conversationId } = await resolveConversation(customerPhone, customerName);
+      await appendMessage(conversationId, "inbound", "customer", message.body ?? "");
       entryLogger.info(
         { event: "orchestrator.bot_pausado" },
-        "Bot pausado para este tenant — mensaje guardado sin respuesta automática",
+        "Bot pausado — mensaje guardado sin respuesta automática",
       );
       await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
       return;
@@ -101,29 +100,27 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // reglas que no pueden esperar (escalado ya, keyword) sin importar la
     // velocidad de respuesta configurada.
     const { conversationId, escalatedNow } = await appendInbound(
-      tenantId,
       customerPhone,
       message.body ?? "",
       customerName,
     );
 
     if (escalatedNow) {
-      await sendTurnBubbles(tenantId, customerPhone, escalatedNow, entryLogger, receivedAt);
+      await sendTurnBubbles(customerPhone, escalatedNow, entryLogger, receivedAt);
       await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
       return;
     }
 
-    const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+    const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
     if (behaviorConfig.velocidadRespuesta === "inmediato") {
-      const result = await processConversation(tenantId, customerPhone, messageSid, customerName);
-      await sendTurnBubbles(tenantId, customerPhone, result, entryLogger, receivedAt);
+      const result = await processConversation(customerPhone, messageSid, customerName);
+      await sendTurnBubbles(customerPhone, result, entryLogger, receivedAt);
     } else {
       // Velocidad de respuesta (Fase 11.4 extendida, ver ADR-022): difiere
       // el disparo del turno — si llega otro mensaje de esta conversación
       // antes de que venza la ventana, scheduleDebounce la reinicia sola
       // (mismo `conversationId` como member del sorted set).
       await scheduleDebounce(conversationId, DEBOUNCE_DELAY_MS[behaviorConfig.velocidadRespuesta], {
-        tenantId,
         customerPhone,
         messageSid,
         customerName,

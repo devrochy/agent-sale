@@ -1,5 +1,5 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildDailyReportText } from "../../../src/jobs/dailyReport.js";
@@ -8,10 +8,9 @@ import { pool as appPool } from "../../../src/shared/db/pool.js";
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
-let tenantId: string;
-let tenantSinReporte: string;
-let tenantConAdminMaster: string;
-let convCerradaId: string;
+const REPORT_RECIPIENT = "whatsapp:+573009999999";
+let settingsId: string;
+let customerId: string;
 
 beforeAll(async () => {
   // Límites reales de "ayer" en calendario de Bogotá — se calculan con la
@@ -28,116 +27,100 @@ beforeAll(async () => {
   const hoyMedio = new Date(hasta.getTime() + 60 * 60 * 1000);
   const anteayer = new Date(desde.getTime() - 60 * 60 * 1000);
 
-  const tenant = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name, report_recipient_phone)
-     VALUES ('Reporte Diario Test', 'whatsapp:+573009999999') RETURNING id`,
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name, report_recipient_phone)
+     VALUES ('Reporte Diario Test', $1) RETURNING id`,
+    [REPORT_RECIPIENT],
   );
-  tenantId = tenant.rows[0]!.id;
-
-  const tenantSin = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Reporte Diario Test Sin Config') RETURNING id`,
-  );
-  tenantSinReporte = tenantSin.rows[0]!.id;
-
-  // Fase 13 (ver ADR-025): sin report_recipient_phone legado, pero con un
-  // admin master (permiso recibeReporteDiario implícito) y teléfono
-  // cargado — buildDailyReportText debe dejar de depender solo del campo
-  // legado del tenant.
-  const tenantAdmin = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Reporte Diario Test Con Admin') RETURNING id`,
-  );
-  tenantConAdminMaster = tenantAdmin.rows[0]!.id;
-  const passwordHash = await hashPassword("clave-de-prueba-reporte");
-  await createAdmin(
-    tenantConAdminMaster,
-    "master-reporte@formotos-test.com",
-    passwordHash,
-    "master",
-    "whatsapp:+573000000097",
-  );
+  settingsId = settings.rows[0]!.id;
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, 'whatsapp:+573001112222') RETURNING id`,
-    [tenantId],
+    `INSERT INTO customers (phone_number) VALUES ('whatsapp:+573001112222') RETURNING id`,
   );
-  const customerId = customer.rows[0]!.id;
+  customerId = customer.rows[0]!.id;
 
   // Conversación cerrada AYER, sin escalar.
   const convCerrada = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id, status, closed_at)
-     VALUES ($1, $2, 'closed', $3) RETURNING id`,
-    [tenantId, customerId, ayerMedio],
+    `INSERT INTO conversations (customer_id, status, closed_at)
+     VALUES ($1, 'closed', $2) RETURNING id`,
+    [customerId, ayerMedio],
   );
-  convCerradaId = convCerrada.rows[0]!.id;
+  const convCerradaId = convCerrada.rows[0]!.id;
 
   // Conversación cerrada AYER, escalada.
   const convEscalada = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id, status, closed_at)
-     VALUES ($1, $2, 'closed', $3) RETURNING id`,
-    [tenantId, customerId, ayerMedio],
+    `INSERT INTO conversations (customer_id, status, closed_at)
+     VALUES ($1, 'closed', $2) RETURNING id`,
+    [customerId, ayerMedio],
   );
   await adminPool.query(
-    `INSERT INTO handoff_queue (tenant_id, conversation_id, reason, status, summary)
-     VALUES ($1, $2, 'solicitud_cliente', 'resuelto', 'test')`,
-    [tenantId, convEscalada.rows[0]!.id],
+    `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
+     VALUES ($1, 'solicitud_cliente', 'resuelto', 'test')`,
+    [convEscalada.rows[0]!.id],
   );
 
   // Conversación cerrada HOY — no debe contar en el reporte de "ayer".
   await adminPool.query(
-    `INSERT INTO conversations (tenant_id, customer_id, status, closed_at) VALUES ($1, $2, 'closed', $3)`,
-    [tenantId, customerId, hoyMedio],
+    `INSERT INTO conversations (customer_id, status, closed_at) VALUES ($1, 'closed', $2)`,
+    [customerId, hoyMedio],
   );
 
   // Mensajes: 2 de ayer (sí cuentan), 1 de hoy y 1 de anteayer (no deben contar).
   await adminPool.query(
-    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, created_at)
-     VALUES ($1, $2, 'inbound', 'customer', 'hola', $3), ($1, $2, 'outbound', 'agent', 'hola!', $3)`,
-    [tenantId, convCerradaId, ayerMedio],
+    `INSERT INTO messages (conversation_id, direction, sender_type, content, created_at)
+     VALUES ($1, 'inbound', 'customer', 'hola', $2), ($1, 'outbound', 'agent', 'hola!', $2)`,
+    [convCerradaId, ayerMedio],
   );
   await adminPool.query(
-    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, created_at)
-     VALUES ($1, $2, 'inbound', 'customer', 'mensaje de hoy', $3)`,
-    [tenantId, convCerradaId, hoyMedio],
+    `INSERT INTO messages (conversation_id, direction, sender_type, content, created_at)
+     VALUES ($1, 'inbound', 'customer', 'mensaje de hoy', $2)`,
+    [convCerradaId, hoyMedio],
   );
   await adminPool.query(
-    `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, created_at)
-     VALUES ($1, $2, 'inbound', 'customer', 'mensaje de anteayer', $3)`,
-    [tenantId, convCerradaId, anteayer],
+    `INSERT INTO messages (conversation_id, direction, sender_type, content, created_at)
+     VALUES ($1, 'inbound', 'customer', 'mensaje de anteayer', $2)`,
+    [convCerradaId, anteayer],
   );
 
-  // Pedido confirmado AYER — quotes solo por la FK de orders, sin quote_items
+  // Pedido confirmado AYER — quote solo por la FK de orders, sin quote_items
   // (el reporte no los necesita).
   const quote = await adminPool.query<{ id: string }>(
-    `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total)
-     VALUES ($1, $2, $3, 50000, 50000) RETURNING id`,
-    [tenantId, convCerradaId, customerId],
+    `INSERT INTO quotes (conversation_id, customer_id, subtotal, total)
+     VALUES ($1, $2, 50000, 50000) RETURNING id`,
+    [convCerradaId, customerId],
   );
   await adminPool.query(
     `INSERT INTO orders
-       (tenant_id, quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total, created_at)
-     VALUES ($1, $2, $3, $4, 'transferencia', 'domicilio', 'reporte-diario-test-key', 50000, $5)`,
-    [tenantId, quote.rows[0]!.id, convCerradaId, customerId, ayerMedio],
+       (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total, created_at)
+     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'reporte-diario-test-key', 50000, $4)`,
+    [quote.rows[0]!.id, convCerradaId, customerId, ayerMedio],
   );
 });
 
 afterAll(async () => {
-  const tenants = [tenantId, tenantSinReporte, tenantConAdminMaster];
-  await adminPool.query(`DELETE FROM orders WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM quotes WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM handoff_queue WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM messages WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM admin_permissions WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM admins WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM tenants WHERE id = ANY($1)`, [tenants]);
+  await adminPool.query(
+    `DELETE FROM orders WHERE customer_id = $1`,
+    [customerId],
+  );
+  await adminPool.query(`DELETE FROM quotes WHERE customer_id = $1`, [customerId]);
+  await adminPool.query(
+    `DELETE FROM handoff_queue WHERE conversation_id IN (SELECT id FROM conversations WHERE customer_id = $1)`,
+    [customerId],
+  );
+  await adminPool.query(
+    `DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE customer_id = $1)`,
+    [customerId],
+  );
+  await adminPool.query(`DELETE FROM conversations WHERE customer_id = $1`, [customerId]);
+  await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
 
 describe("buildDailyReportText", () => {
   it("resume solo lo de ayer (hora Bogotá): mensajes, conversaciones cerradas/escaladas y pedidos", async () => {
-    const text = await buildDailyReportText(tenantId);
+    const text = await buildDailyReportText();
 
     expect(text).not.toBeNull();
     expect(text).toContain("Mensajes: 2");
@@ -147,19 +130,58 @@ describe("buildDailyReportText", () => {
     expect(text).toContain("50.000");
   });
 
-  it("tenant sin report_recipient_phone configurado devuelve null, no un texto vacío", async () => {
-    const text = await buildDailyReportText(tenantSinReporte);
-    expect(text).toBeNull();
+  describe("sin ningún destinatario configurado", () => {
+    beforeEach(async () => {
+      await adminPool.query(`UPDATE settings SET report_recipient_phone = NULL WHERE id = $1`, [
+        settingsId,
+      ]);
+    });
+
+    afterEach(async () => {
+      await adminPool.query(`UPDATE settings SET report_recipient_phone = $1 WHERE id = $2`, [
+        REPORT_RECIPIENT,
+        settingsId,
+      ]);
+    });
+
+    it("devuelve null, no un texto vacío", async () => {
+      const text = await buildDailyReportText();
+      expect(text).toBeNull();
+    });
   });
 
-  it("tenant con admin master (Fase 13) recibe reporte aunque no tenga report_recipient_phone legado", async () => {
-    const text = await buildDailyReportText(tenantConAdminMaster);
-    expect(text).not.toBeNull();
-    expect(text).toContain("Mensajes: 0");
-  });
+  describe("con admin master (Fase 13)", () => {
+    let adminId: string;
 
-  it("tenant inexistente devuelve null", async () => {
-    const text = await buildDailyReportText("00000000-0000-0000-0000-000000000000");
-    expect(text).toBeNull();
+    beforeEach(async () => {
+      // Sin report_recipient_phone legado, pero con un admin master
+      // (permiso recibeReporteDiario implícito) y teléfono cargado —
+      // buildDailyReportText debe dejar de depender solo del campo legado.
+      await adminPool.query(`UPDATE settings SET report_recipient_phone = NULL WHERE id = $1`, [
+        settingsId,
+      ]);
+      const passwordHash = await hashPassword("clave-de-prueba-reporte");
+      adminId = await createAdmin(
+        "master-reporte-test",
+        "master-reporte@formotos-test.com",
+        passwordHash,
+        "master",
+        "whatsapp:+573000000097",
+      );
+    });
+
+    afterEach(async () => {
+      await adminPool.query(`DELETE FROM admin_permissions WHERE admin_id = $1`, [adminId]);
+      await adminPool.query(`DELETE FROM admins WHERE id = $1`, [adminId]);
+      await adminPool.query(`UPDATE settings SET report_recipient_phone = $1 WHERE id = $2`, [
+        REPORT_RECIPIENT,
+        settingsId,
+      ]);
+    });
+
+    it("recibe reporte aunque no tenga report_recipient_phone legado", async () => {
+      const text = await buildDailyReportText();
+      expect(text).not.toBeNull();
+    });
   });
 });

@@ -1,4 +1,4 @@
-import { withTenant } from "../../shared/db/index.js";
+import { withTransaction } from "../../shared/db/index.js";
 
 export interface ConsultarInventarioInput {
   query?: string;
@@ -32,10 +32,9 @@ interface ProductRow {
  * un detalle de la Fase 6 (dominio comercial), no de este incremento.
  */
 export async function consultarInventario(
-  tenantId: string,
   input: ConsultarInventarioInput,
 ): Promise<{ matches: ProductMatch[] }> {
-  const rows = await withTenant(tenantId, async (client) => {
+  const rows = await withTransaction(async (client) => {
     if (input.sku) {
       const result = await client.query<ProductRow>(
         `SELECT p.id, p.sku, p.name, p.price, p.description, p.image_url,

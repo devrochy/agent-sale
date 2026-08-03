@@ -1,6 +1,6 @@
 import { env } from "../../config/env.js";
 import { sendWhatsAppMessage } from "../../gateway/sendMessage.js";
-import { createHandoffToken, withTenant } from "../../shared/db/index.js";
+import { createHandoffToken, withTransaction } from "../../shared/db/index.js";
 import { logger } from "../../shared/observability/logger.js";
 
 // "guardrail_precio" y "fuera_de_alcance" se agregaron en la Fase 8
@@ -57,22 +57,21 @@ function buildNotificationText(
  * de Claude bajo su propio criterio para los motivos que lo ameritan —
  * aquí se registra en `handoff_queue`, se genera el enlace único de la
  * vista del asesor (ver src/advisor/) y se notifica al primer asesor
- * activo del tenant reutilizando WhatsApp (sin herramienta de soporte
- * dedicada, ver handoff-queue.md). El token queda atado a ese asesor
- * (`human_agent_id`) para que "Tomar conversación" pueda asignarlo sin
- * necesitar un sistema de login (ver vista-asesor.md).
+ * activo reutilizando WhatsApp (sin herramienta de soporte dedicada, ver
+ * handoff-queue.md). El token queda atado a ese asesor (`human_agent_id`)
+ * para que "Tomar conversación" pueda asignarlo sin necesitar un sistema
+ * de login (ver vista-asesor.md).
  */
 export async function escalarHumano(
-  tenantId: string,
   conversationId: string,
   input: EscalarHumanoInput,
 ): Promise<EscalarHumanoOutput> {
-  const { handoffId, agent } = await withTenant(tenantId, async (client) => {
+  const { handoffId, agent } = await withTransaction(async (client) => {
     const result = await client.query<{ id: string }>(
-      `INSERT INTO handoff_queue (tenant_id, conversation_id, reason, status, summary)
-       VALUES ($1, $2, $3, 'queued', $4)
+      `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
+       VALUES ($1, $2, 'queued', $3)
        RETURNING id`,
-      [tenantId, conversationId, input.reason, input.summary],
+      [conversationId, input.reason, input.summary],
     );
     const agentResult = await client.query<{ id: string; contact: string }>(
       `SELECT id, contact FROM human_agents WHERE active = true LIMIT 1`,
@@ -80,7 +79,7 @@ export async function escalarHumano(
     return { handoffId: result.rows[0]!.id, agent: agentResult.rows[0] ?? null };
   });
 
-  const token = await createHandoffToken(tenantId, handoffId, agent?.id ?? null);
+  const token = await createHandoffToken(handoffId, agent?.id ?? null);
 
   if (agent) {
     try {
@@ -94,7 +93,7 @@ export async function escalarHumano(
       // handoff_queue y el asesor puede revisarlo aunque el aviso
       // proactivo falle (ej. sin cuenta real de Twilio en desarrollo).
       logger
-        .child({ tenant_id: tenantId, conversation_id: conversationId })
+        .child({ conversation_id: conversationId })
         .warn({ error, handoff_id: handoffId }, "No se pudo notificar al asesor del escalamiento");
     }
   }

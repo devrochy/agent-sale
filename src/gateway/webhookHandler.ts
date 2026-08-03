@@ -1,4 +1,3 @@
-import { findTenantIdByWhatsappNumber } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { claimMessageOnce } from "./idempotency.js";
 import { enqueueInboundMessage } from "./queue.js";
@@ -7,7 +6,7 @@ import { verifyTwilioSignature } from "./twilioSignature.js";
 export interface WebhookResult {
   status: 200 | 403;
   enqueued: boolean;
-  reason: "ok" | "invalid_signature" | "invalid_payload" | "duplicate" | "unknown_tenant";
+  reason: "ok" | "invalid_signature" | "invalid_payload" | "duplicate";
 }
 
 /**
@@ -40,31 +39,21 @@ export async function handleInboundWebhook(
     return { status: 200, enqueued: false, reason: "duplicate" };
   }
 
-  const tenantId = await findTenantIdByWhatsappNumber(to);
-  if (!tenantId) {
-    // Evita tormenta de reintentos de Twilio: se responde 200 igual,
-    // solo que sin encolar (ver plan del incremento).
-    return { status: 200, enqueued: false, reason: "unknown_tenant" };
-  }
-
-  logger.child({ tenant_id: tenantId, message_sid: messageSid }).info(
-    { event: "gateway.mensaje_recibido" },
-    "Mensaje entrante recibido",
-  );
+  logger
+    .child({ message_sid: messageSid })
+    .info({ event: "gateway.mensaje_recibido" }, "Mensaje entrante recibido");
 
   await enqueueInboundMessage({
     messageSid,
-    tenantId,
     customerPhone: from,
     customerName,
     body,
     receivedAt: new Date().toISOString(),
   });
 
-  logger.child({ tenant_id: tenantId, message_sid: messageSid }).info(
-    { event: "gateway.encolado" },
-    "Mensaje entrante encolado",
-  );
+  logger
+    .child({ message_sid: messageSid })
+    .info({ event: "gateway.encolado" }, "Mensaje entrante encolado");
 
   return { status: 200, enqueued: true, reason: "ok" };
 }

@@ -13,7 +13,6 @@ import { pool as appPool } from "../../../src/shared/db/pool.js";
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
-let tenantId: string;
 let productId: string;
 
 const PHONES = {
@@ -43,50 +42,44 @@ async function seedCase(
   },
 ): Promise<Setup> {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, $2) RETURNING id`,
-    [tenantId, PHONES[key]],
+    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    [PHONES[key]],
   );
   const customerId = customer.rows[0]!.id;
 
   const conversation = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
-    [tenantId, customerId],
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerId],
   );
   const conversationId = conversation.rows[0]!.id;
 
   if (opts.lastCustomerMessageHoursAgo !== null) {
     await adminPool.query(
-      `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, created_at)
-       VALUES ($1, $2, 'inbound', 'customer', 'hola, cuánto cuesta?', now() - ($3 || ' hours')::interval)`,
-      [tenantId, conversationId, opts.lastCustomerMessageHoursAgo],
+      `INSERT INTO messages (conversation_id, direction, sender_type, content, created_at)
+       VALUES ($1, 'inbound', 'customer', 'hola, cuánto cuesta?', now() - ($2 || ' hours')::interval)`,
+      [conversationId, opts.lastCustomerMessageHoursAgo],
     );
   }
 
   const quote = await adminPool.query<{ id: string }>(
-    `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total, created_at, follow_up_sent_at)
-     VALUES ($1, $2, $3, 50000, 50000, now() - ($4 || ' hours')::interval, $5)
+    `INSERT INTO quotes (conversation_id, customer_id, subtotal, total, created_at, follow_up_sent_at)
+     VALUES ($1, $2, 50000, 50000, now() - ($3 || ' hours')::interval, $4)
      RETURNING id`,
-    [
-      tenantId,
-      conversationId,
-      customerId,
-      opts.quoteAgeHours,
-      opts.followUpAlreadySent ? new Date() : null,
-    ],
+    [conversationId, customerId, opts.quoteAgeHours, opts.followUpAlreadySent ? new Date() : null],
   );
   const quoteId = quote.rows[0]!.id;
 
   await adminPool.query(
-    `INSERT INTO quote_items (tenant_id, quote_id, product_id, quantity, unit_price) VALUES ($1, $2, $3, 1, 50000)`,
-    [tenantId, quoteId, productId],
+    `INSERT INTO quote_items (quote_id, product_id, quantity, unit_price) VALUES ($1, $2, 1, 50000)`,
+    [quoteId, productId],
   );
 
   if (opts.withOrder) {
     await adminPool.query(
       `INSERT INTO orders
-         (tenant_id, quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total)
-       VALUES ($1, $2, $3, $4, 'transferencia', 'domicilio', $5, 50000)`,
-      [tenantId, quoteId, conversationId, customerId, `cazador-test-${key}`],
+         (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total)
+       VALUES ($1, $2, $3, 'transferencia', 'domicilio', $4, 50000)`,
+      [quoteId, conversationId, customerId, `cazador-test-${key}`],
     );
   }
 
@@ -94,14 +87,8 @@ async function seedCase(
 }
 
 beforeAll(async () => {
-  const tenant = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Cazador Ventas Test') RETURNING id`,
-  );
-  tenantId = tenant.rows[0]!.id;
-
   const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (tenant_id, sku, name, price) VALUES ($1, 'CV-1', 'Guantes de prueba', 50000) RETURNING id`,
-    [tenantId],
+    `INSERT INTO products (sku, name, price) VALUES ('CV-1', 'Guantes de prueba', 50000) RETURNING id`,
   );
   productId = product.rows[0]!.id;
 
@@ -137,14 +124,43 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await adminPool.query(`DELETE FROM orders WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM quote_items WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM quotes WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM messages WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM products WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+  const phones = Object.values(PHONES);
+  await adminPool.query(
+    `DELETE FROM orders WHERE conversation_id IN (
+       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
+       WHERE cu.phone_number = ANY($1)
+     )`,
+    [phones],
+  );
+  await adminPool.query(
+    `DELETE FROM quote_items WHERE quote_id IN (
+       SELECT q.id FROM quotes q
+       JOIN conversations c ON c.id = q.conversation_id
+       JOIN customers cu ON cu.id = c.customer_id
+       WHERE cu.phone_number = ANY($1)
+     )`,
+    [phones],
+  );
+  await adminPool.query(
+    `DELETE FROM quotes WHERE conversation_id IN (
+       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
+       WHERE cu.phone_number = ANY($1)
+     )`,
+    [phones],
+  );
+  await adminPool.query(
+    `DELETE FROM messages WHERE conversation_id IN (
+       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
+       WHERE cu.phone_number = ANY($1)
+     )`,
+    [phones],
+  );
+  await adminPool.query(
+    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = ANY($1))`,
+    [phones],
+  );
+  await adminPool.query(`DELETE FROM customers WHERE phone_number = ANY($1)`, [phones]);
+  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productId]);
   await adminPool.end();
   await appPool.end();
 });

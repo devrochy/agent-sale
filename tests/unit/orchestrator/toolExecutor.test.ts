@@ -37,7 +37,7 @@ function makeToolUse(name: string, input: unknown): Extract<ContentBlock, { type
 }
 
 const run = (name: string, input: unknown) =>
-  executeTool("tenant-1", "conv-1", "customer-1", "sid-1", 1000000, makeToolUse(name, input));
+  executeTool("conv-1", "customer-1", "sid-1", 1000000, makeToolUse(name, input));
 
 describe("executeTool", () => {
   beforeEach(() => {
@@ -55,7 +55,7 @@ describe("executeTool", () => {
 
     const result = await run("consultar_inventario", { query: "casco" });
 
-    expect(consultarInventario).toHaveBeenCalledWith("tenant-1", { query: "casco" });
+    expect(consultarInventario).toHaveBeenCalledWith({ query: "casco" });
     expect(result).toEqual({
       type: "tool_result",
       tool_use_id: "toolu_123",
@@ -63,7 +63,7 @@ describe("executeTool", () => {
     });
   });
 
-  it("despacha generar_cotizacion con tenantId, conversationId y customerId", async () => {
+  it("despacha generar_cotizacion con conversationId y customerId", async () => {
     vi.mocked(generarCotizacion).mockResolvedValue({
       quote_id: "q1",
       items: [],
@@ -74,10 +74,10 @@ describe("executeTool", () => {
     const items = [{ product_id: "p1", quantity: 2 }];
     await run("generar_cotizacion", { items });
 
-    expect(generarCotizacion).toHaveBeenCalledWith("tenant-1", "conv-1", "customer-1", { items });
+    expect(generarCotizacion).toHaveBeenCalledWith("conv-1", "customer-1", { items });
   });
 
-  it("despacha aplicar_promocion con tenantId", async () => {
+  it("despacha aplicar_promocion", async () => {
     vi.mocked(aplicarPromocion).mockResolvedValue({
       quote_id: "q1",
       promotion_applied: null,
@@ -88,10 +88,10 @@ describe("executeTool", () => {
 
     await run("aplicar_promocion", { quote_id: "q1" });
 
-    expect(aplicarPromocion).toHaveBeenCalledWith("tenant-1", { quote_id: "q1" });
+    expect(aplicarPromocion).toHaveBeenCalledWith({ quote_id: "q1" });
   });
 
-  it("despacha crear_pedido con tenantId y el messageSid inyectado, sin exponer idempotency_key al LLM", async () => {
+  it("despacha crear_pedido con el messageSid inyectado, sin exponer idempotency_key al LLM", async () => {
     vi.mocked(crearPedido).mockResolvedValue({ order_id: "o1", status: "confirmed", total: 100 });
 
     const input = {
@@ -101,18 +101,18 @@ describe("executeTool", () => {
     };
     await run("crear_pedido", input);
 
-    expect(crearPedido).toHaveBeenCalledWith("tenant-1", "sid-1", input, 1000000);
+    expect(crearPedido).toHaveBeenCalledWith("sid-1", input, 1000000);
   });
 
-  it("despacha recomendar_producto con tenantId", async () => {
+  it("despacha recomendar_producto", async () => {
     vi.mocked(recomendarProducto).mockResolvedValue({ recommendations: [] });
 
     await run("recomendar_producto", { product_id: "p1" });
 
-    expect(recomendarProducto).toHaveBeenCalledWith("tenant-1", { product_id: "p1" });
+    expect(recomendarProducto).toHaveBeenCalledWith({ product_id: "p1" });
   });
 
-  it("despacha escalar_a_humano al dominio con tenantId y conversationId", async () => {
+  it("despacha escalar_a_humano al dominio con conversationId", async () => {
     vi.mocked(escalarHumano).mockResolvedValue({
       handoff_id: "h1",
       status: "queued",
@@ -121,7 +121,7 @@ describe("executeTool", () => {
 
     const result = await run("escalar_a_humano", { reason: "queja", summary: "resumen" });
 
-    expect(escalarHumano).toHaveBeenCalledWith("tenant-1", "conv-1", {
+    expect(escalarHumano).toHaveBeenCalledWith("conv-1", {
       reason: "queja",
       summary: "resumen",
     });
@@ -143,7 +143,6 @@ describe("executeTool", () => {
     await run("consultar_inventario", { query: "x" });
 
     expect(recordAudit).toHaveBeenCalledWith(
-      "tenant-1",
       "conv-1",
       "tool",
       "consultar_inventario",

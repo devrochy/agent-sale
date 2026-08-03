@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
-import { saveWompiConfig } from "../../../src/shared/db/tenantsDirectory.js";
+import { saveWompiConfig } from "../../../src/shared/db/settingsDirectory.js";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body, text: async () => JSON.stringify(body) } as Response;
@@ -12,62 +12,71 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
-let tenantA: string;
 let conversationA: string;
 let customerA: string;
 let productA: string;
+// La sección "pago_en_linea" necesita una fila de settings para
+// getWompiConfig/saveWompiConfig (settings es singleton — se siembra acá,
+// no en el beforeAll general, porque el resto de los tests de este
+// archivo no la necesitan).
+let settingsId: string;
 
 beforeAll(async () => {
-  const tenant = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Crear Pedido Test A') RETURNING id`,
-  );
-  tenantA = tenant.rows[0]!.id;
-
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, '3040000001') RETURNING id`,
-    [tenantA],
+    `INSERT INTO customers (phone_number) VALUES ('3040000001') RETURNING id`,
   );
   customerA = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
-    [tenantA, customerA],
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerA],
   );
   conversationA = conversation.rows[0]!.id;
 
   const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (tenant_id, sku, name, price) VALUES ($1, 'CASCO-PEDIDO', 'Casco pedido', 100000) RETURNING id`,
-    [tenantA],
+    `INSERT INTO products (sku, name, price) VALUES ('CASCO-PEDIDO', 'Casco pedido', 100000) RETURNING id`,
   );
   productA = product.rows[0]!.id;
-  await adminPool.query(
-    `INSERT INTO inventory (tenant_id, product_id, stock_quantity) VALUES ($1, $2, 50)`,
-    [tenantA, productA],
+  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 50)`, [
+    productA,
+  ]);
+
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Crear Pedido Test') RETURNING id`,
   );
+  settingsId = settings.rows[0]!.id;
 });
 
 afterAll(async () => {
-  await adminPool.query(`DELETE FROM order_items WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM wompi_payment_links WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM orders WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM quote_items WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM quotes WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM inventory WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM products WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id = $1`, [tenantA]);
-  await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantA]);
+  await adminPool.query(
+    `DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
+    [conversationA],
+  );
+  await adminPool.query(
+    `DELETE FROM wompi_payment_links WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
+    [conversationA],
+  );
+  await adminPool.query(`DELETE FROM orders WHERE conversation_id = $1`, [conversationA]);
+  await adminPool.query(
+    `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+    [conversationA],
+  );
+  await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationA]);
+  await adminPool.query(`DELETE FROM inventory WHERE product_id = $1`, [productA]);
+  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productA]);
+  await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationA]);
+  await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerA]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
 
 describe("crearPedido", () => {
   it("crea un pedido confirmado a partir de una cotización, copiando los items", async () => {
-    const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+    const quote = await generarCotizacion(conversationA, customerA, {
       items: [{ product_id: productA, quantity: 2 }],
     });
 
     const result = await crearPedido(
-      tenantA,
       "sid-1",
       {
         quote_id: quote.quote_id,
@@ -95,18 +104,16 @@ describe("crearPedido", () => {
   });
 
   it("el mismo message_sid reintentado sobre la misma cotización devuelve el mismo pedido (status duplicate)", async () => {
-    const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+    const quote = await generarCotizacion(conversationA, customerA, {
       items: [{ product_id: productA, quantity: 1 }],
     });
 
     const first = await crearPedido(
-      tenantA,
       "sid-2",
       { quote_id: quote.quote_id, payment_method: "tarjeta", delivery_method: "recoger_en_tienda" },
       1000000,
     );
     const second = await crearPedido(
-      tenantA,
       "sid-2",
       { quote_id: quote.quote_id, payment_method: "tarjeta", delivery_method: "recoger_en_tienda" },
       1000000,
@@ -130,12 +137,11 @@ describe("crearPedido", () => {
   });
 
   it("un message_sid distinto sobre una cotización ya convertida en pedido también devuelve 'duplicate' (0..1 quote->order)", async () => {
-    const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+    const quote = await generarCotizacion(conversationA, customerA, {
       items: [{ product_id: productA, quantity: 1 }],
     });
 
     const first = await crearPedido(
-      tenantA,
       "sid-3",
       {
         quote_id: quote.quote_id,
@@ -145,7 +151,6 @@ describe("crearPedido", () => {
       1000000,
     );
     const second = await crearPedido(
-      tenantA,
       "sid-distinto",
       {
         quote_id: quote.quote_id,
@@ -167,7 +172,6 @@ describe("crearPedido", () => {
   it("falla si la cotización no existe", async () => {
     await expect(
       crearPedido(
-        tenantA,
         "sid-4",
         {
           quote_id: "00000000-0000-0000-0000-000000000000",
@@ -180,7 +184,7 @@ describe("crearPedido", () => {
   });
 
   it("se niega a confirmar un pedido de monto alto: no crea la orden ni descuenta stock", async () => {
-    const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+    const quote = await generarCotizacion(conversationA, customerA, {
       items: [{ product_id: productA, quantity: 5 }], // 5 x 100.000 = 500.000
     });
 
@@ -190,7 +194,6 @@ describe("crearPedido", () => {
     );
 
     const result = await crearPedido(
-      tenantA,
       "sid-5",
       {
         quote_id: quote.quote_id,
@@ -216,12 +219,11 @@ describe("crearPedido", () => {
 
   describe("pago_en_linea (Fase 12.4, Wompi)", () => {
     it("sin Wompi configurado, devuelve 'wompi_no_configurado' sin crear pedido", async () => {
-      const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+      const quote = await generarCotizacion(conversationA, customerA, {
         items: [{ product_id: productA, quantity: 1 }],
       });
 
       const result = await crearPedido(
-        tenantA,
         "sid-wompi-no-config",
         { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
         1000000,
@@ -236,15 +238,14 @@ describe("crearPedido", () => {
     });
 
     it("con Wompi configurado pero total por debajo del mínimo, devuelve 'wompi_monto_minimo' sin llamar a Wompi", async () => {
-      await saveWompiConfig(tenantA, { privateKey: "prv_test_fake", eventsSecret: "test_events_fake" });
+      await saveWompiConfig({ privateKey: "prv_test_fake", eventsSecret: "test_events_fake" });
       vi.stubGlobal("fetch", vi.fn());
 
-      const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+      const quote = await generarCotizacion(conversationA, customerA, {
         items: [{ product_id: productA, quantity: 1 }], // 1 x 100.000 = 100.000, bajo MIN_AMOUNT_COP (150.000)
       });
 
       const result = await crearPedido(
-        tenantA,
         "sid-wompi-monto-minimo",
         { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
         1000000,
@@ -260,43 +261,38 @@ describe("crearPedido", () => {
 
       vi.unstubAllGlobals();
       await adminPool.query(
-        `UPDATE tenants SET wompi_private_key_encrypted = NULL, wompi_events_secret_encrypted = NULL WHERE id = $1`,
-        [tenantA],
+        `UPDATE settings SET wompi_private_key_encrypted = NULL, wompi_events_secret_encrypted = NULL WHERE id = $1`,
+        [settingsId],
       );
     });
 
     describe("con Wompi configurado", () => {
       beforeEach(async () => {
-        await saveWompiConfig(tenantA, {
-          privateKey: "prv_test_fake",
-          eventsSecret: "test_events_fake",
-        });
+        await saveWompiConfig({ privateKey: "prv_test_fake", eventsSecret: "test_events_fake" });
         vi.stubGlobal("fetch", vi.fn());
       });
 
       afterEach(async () => {
         vi.unstubAllGlobals();
         await adminPool.query(
-          `UPDATE tenants SET wompi_private_key_encrypted = NULL, wompi_events_secret_encrypted = NULL WHERE id = $1`,
-          [tenantA],
+          `UPDATE settings SET wompi_private_key_encrypted = NULL, wompi_events_secret_encrypted = NULL WHERE id = $1`,
+          [settingsId],
         );
       });
 
       it("crea el pedido pendiente de pago y devuelve el link", async () => {
         // Sufijo único por corrida — payment_link_id es PK global en
-        // wompi_payment_links (no compuesta con tenant_id), un literal fijo
-        // colisionaría entre corridas de test (mismo criterio que
-        // TENANT_WHATSAPP_NUMBER en webhook.test.ts).
+        // wompi_payment_links, un literal fijo colisionaría entre corridas
+        // de test (mismo criterio que TENANT_WHATSAPP_NUMBER en webhook.test.ts).
         const paymentLinkId = `link-test-${Date.now()}`;
         vi.mocked(fetch).mockResolvedValue(jsonResponse({ data: { id: paymentLinkId } }));
 
         // quantity: 2 (200.000) — por encima de MIN_AMOUNT_COP (150.000).
-        const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+        const quote = await generarCotizacion(conversationA, customerA, {
           items: [{ product_id: productA, quantity: 2 }],
         });
 
         const result = await crearPedido(
-          tenantA,
           "sid-wompi-1",
           { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
           1000000,
@@ -314,10 +310,10 @@ describe("crearPedido", () => {
         expect(order.rows[0]).toEqual({ payment_status: "pendiente", wompi_payment_link_id: paymentLinkId });
 
         const link = await adminPool.query(
-          `SELECT tenant_id, order_id FROM wompi_payment_links WHERE payment_link_id = $1`,
+          `SELECT order_id FROM wompi_payment_links WHERE payment_link_id = $1`,
           [paymentLinkId],
         );
-        expect(link.rows[0]).toMatchObject({ tenant_id: tenantA, order_id: result.order_id });
+        expect(link.rows[0]).toMatchObject({ order_id: result.order_id });
       });
 
       it("si Wompi rechaza la creación del link, no crea ningún pedido", async () => {
@@ -326,13 +322,12 @@ describe("crearPedido", () => {
         // quantity: 2 (200.000) — por encima de MIN_AMOUNT_COP (150.000),
         // para que el chequeo de monto mínimo no corte antes de llegar a
         // llamar a Wompi (que es lo que este test quiere ejercitar).
-        const quote = await generarCotizacion(tenantA, conversationA, customerA, {
+        const quote = await generarCotizacion(conversationA, customerA, {
           items: [{ product_id: productA, quantity: 2 }],
         });
 
         await expect(
           crearPedido(
-            tenantA,
             "sid-wompi-2",
             { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
             1000000,

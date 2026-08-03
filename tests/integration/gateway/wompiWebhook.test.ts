@@ -11,7 +11,7 @@ import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
-import { saveReportRecipient, saveWompiConfig } from "../../../src/shared/db/tenantsDirectory.js";
+import { saveReportRecipient, saveWompiConfig } from "../../../src/shared/db/settingsDirectory.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
@@ -54,51 +54,47 @@ function buildEvent(
   };
 }
 
-let tenantId: string;
+let settingsId: string;
+let customerId: string;
+let conversationId: string;
 let orderId: string;
 let quoteId: string;
 const PAYMENT_LINK_ID = `link-webhook-test-${Date.now()}`;
 const app = await buildServer();
 
 beforeAll(async () => {
-  const tenant = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Wompi Webhook Test') RETURNING id`,
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Wompi Webhook Test') RETURNING id`,
   );
-  tenantId = tenant.rows[0]!.id;
-  await saveWompiConfig(tenantId, { privateKey: "prv_test_fake", eventsSecret: EVENTS_SECRET });
-  await saveReportRecipient(tenantId, "whatsapp:+573000000002");
+  settingsId = settings.rows[0]!.id;
+  await saveWompiConfig({ privateKey: "prv_test_fake", eventsSecret: EVENTS_SECRET });
+  await saveReportRecipient("whatsapp:+573000000002");
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, '3050000001') RETURNING id`,
-    [tenantId],
+    `INSERT INTO customers (phone_number) VALUES ('3050000001') RETURNING id`,
   );
+  customerId = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
-    [tenantId, customer.rows[0]!.id],
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerId],
   );
+  conversationId = conversation.rows[0]!.id;
   const quote = await adminPool.query<{ id: string }>(
-    `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total) VALUES ($1, $2, $3, 1000, 1000) RETURNING id`,
-    [tenantId, conversation.rows[0]!.id, customer.rows[0]!.id],
+    `INSERT INTO quotes (conversation_id, customer_id, subtotal, total) VALUES ($1, $2, 1000, 1000) RETURNING id`,
+    [conversationId, customerId],
   );
   quoteId = quote.rows[0]!.id;
   const order = await adminPool.query<{ id: string }>(
-    `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
-     VALUES ($1, $2, $3, $4, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $5, 1000, $6)
+    `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
+     VALUES ($1, $2, $3, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
      RETURNING id`,
-    [
-      tenantId,
-      quoteId,
-      conversation.rows[0]!.id,
-      customer.rows[0]!.id,
-      `idem-wompi-webhook-${Date.now()}`,
-      PAYMENT_LINK_ID,
-    ],
+    [quoteId, conversationId, customerId, `idem-wompi-webhook-${Date.now()}`, PAYMENT_LINK_ID],
   );
   orderId = order.rows[0]!.id;
-  await adminPool.query(
-    `INSERT INTO wompi_payment_links (payment_link_id, tenant_id, order_id) VALUES ($1, $2, $3)`,
-    [PAYMENT_LINK_ID, tenantId, orderId],
-  );
+  await adminPool.query(`INSERT INTO wompi_payment_links (payment_link_id, order_id) VALUES ($1, $2)`, [
+    PAYMENT_LINK_ID,
+    orderId,
+  ]);
   await app.ready();
 });
 
@@ -107,12 +103,12 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await adminPool.query(`DELETE FROM wompi_payment_links WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM orders WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM quotes WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
+  await adminPool.query(`DELETE FROM wompi_payment_links WHERE order_id = $1`, [orderId]);
+  await adminPool.query(`DELETE FROM orders WHERE id = $1`, [orderId]);
+  await adminPool.query(`DELETE FROM quotes WHERE id = $1`, [quoteId]);
+  await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+  await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await app.close();
   await adminPool.end();
   await appPool.end();
@@ -145,7 +141,11 @@ describe("POST /webhooks/wompi", () => {
 
   it("checksum inválido responde 400 y no marca el pedido como pagado", async () => {
     const event = buildEvent("tx-bad-checksum", "APPROVED", PAYMENT_LINK_ID);
-    event.signature.checksum = `${event.signature.checksum.slice(0, -1)}0`;
+    const original = event.signature.checksum;
+    // Evita el caso borde en que el último caracter del hash real ya sea
+    // "0" (1/16 de las corridas): ahí "slice(0,-1) + '0'" reconstruiría el
+    // mismo checksum válido y el test dejaría de probar lo que dice probar.
+    event.signature.checksum = original.slice(0, -1) + (original.endsWith("0") ? "1" : "0");
 
     const response = await post(event);
     expect(response.statusCode).toBe(400);
@@ -192,61 +192,53 @@ describe("POST /webhooks/wompi", () => {
 });
 
 describe("POST /webhooks/wompi — notificación a admins con permiso (Fase 13)", () => {
-  let tenantId2: string;
   let orderId2: string;
+  let quoteId2: string;
+  let conversationId2: string;
+  let customerId2: string;
+  let adminId: string;
   const PAYMENT_LINK_ID_2 = `link-webhook-test-admins-${Date.now()}`;
 
   beforeAll(async () => {
-    const tenant = await adminPool.query<{ id: string }>(
-      `INSERT INTO tenants (name, report_recipient_phone) VALUES ('Wompi Webhook Admins Test', 'whatsapp:+573000000099') RETURNING id`,
-    );
-    tenantId2 = tenant.rows[0]!.id;
-    await saveWompiConfig(tenantId2, { privateKey: "prv_test_fake", eventsSecret: EVENTS_SECRET });
-
     const passwordHash = await hashPassword("clave-de-prueba-admin-pagos");
-    const adminId = await createAdmin(
-      tenantId2,
+    adminId = await createAdmin(
+      "pagos-webhook-test",
       "pagos@formotos-test.com",
       passwordHash,
       "colaborador",
       "whatsapp:+573000000098",
     );
-    await updateAdminPermissions(tenantId2, adminId, {
+    await updateAdminPermissions(adminId, {
       recibeReporteDiario: false,
       recibeTickets: false,
       recibeNotificacionPagos: true,
     });
 
     const customer = await adminPool.query<{ id: string }>(
-      `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, '3050000099') RETURNING id`,
-      [tenantId2],
+      `INSERT INTO customers (phone_number) VALUES ('3050000099') RETURNING id`,
     );
+    customerId2 = customer.rows[0]!.id;
     const conversation = await adminPool.query<{ id: string }>(
-      `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
-      [tenantId2, customer.rows[0]!.id],
+      `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+      [customerId2],
     );
+    conversationId2 = conversation.rows[0]!.id;
     const quote = await adminPool.query<{ id: string }>(
-      `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total) VALUES ($1, $2, $3, 1000, 1000) RETURNING id`,
-      [tenantId2, conversation.rows[0]!.id, customer.rows[0]!.id],
+      `INSERT INTO quotes (conversation_id, customer_id, subtotal, total) VALUES ($1, $2, 1000, 1000) RETURNING id`,
+      [conversationId2, customerId2],
     );
+    quoteId2 = quote.rows[0]!.id;
     const order = await adminPool.query<{ id: string }>(
-      `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
-       VALUES ($1, $2, $3, $4, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $5, 1000, $6)
+      `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
+       VALUES ($1, $2, $3, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
        RETURNING id`,
-      [
-        tenantId2,
-        quote.rows[0]!.id,
-        conversation.rows[0]!.id,
-        customer.rows[0]!.id,
-        `idem-wompi-webhook-admins-${Date.now()}`,
-        PAYMENT_LINK_ID_2,
-      ],
+      [quoteId2, conversationId2, customerId2, `idem-wompi-webhook-admins-${Date.now()}`, PAYMENT_LINK_ID_2],
     );
     orderId2 = order.rows[0]!.id;
-    await adminPool.query(
-      `INSERT INTO wompi_payment_links (payment_link_id, tenant_id, order_id) VALUES ($1, $2, $3)`,
-      [PAYMENT_LINK_ID_2, tenantId2, orderId2],
-    );
+    await adminPool.query(`INSERT INTO wompi_payment_links (payment_link_id, order_id) VALUES ($1, $2)`, [
+      PAYMENT_LINK_ID_2,
+      orderId2,
+    ]);
   });
 
   afterEach(() => {
@@ -254,14 +246,13 @@ describe("POST /webhooks/wompi — notificación a admins con permiso (Fase 13)"
   });
 
   afterAll(async () => {
-    await adminPool.query(`DELETE FROM wompi_payment_links WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM orders WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM quotes WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM conversations WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM customers WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM admin_permissions WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM admins WHERE tenant_id = $1`, [tenantId2]);
-    await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM admin_permissions WHERE admin_id = $1`, [adminId]);
+    await adminPool.query(`DELETE FROM admins WHERE id = $1`, [adminId]);
+    await adminPool.query(`DELETE FROM wompi_payment_links WHERE order_id = $1`, [orderId2]);
+    await adminPool.query(`DELETE FROM orders WHERE id = $1`, [orderId2]);
+    await adminPool.query(`DELETE FROM quotes WHERE id = $1`, [quoteId2]);
+    await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId2]);
+    await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId2]);
   });
 
   it("notifica al teléfono del admin con recibeNotificacionPagos, no al report_recipient_phone legado", async () => {
@@ -277,7 +268,7 @@ describe("POST /webhooks/wompi — notificación a admins con permiso (Fase 13)"
       expect.stringContaining(orderId2),
     );
     expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(
-      "whatsapp:+573000000099",
+      "whatsapp:+573000000002",
       expect.anything(),
     );
   });

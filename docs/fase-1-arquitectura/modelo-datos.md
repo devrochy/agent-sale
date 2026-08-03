@@ -1,17 +1,11 @@
 # Modelo de Datos (PostgreSQL)
 
-Todas las tablas con datos de negocio incluyen `tenant_id` y quedan protegidas por Row Level Security (ver [ADR-004](./adrs/ADR-004-multi-tenancy-rls.md)). No se detalla DDL/SQL en esta fase — es diseño conceptual, la implementación llega en fases posteriores.
+> **Actualizado por [ADR-032](./adrs/ADR-032-retiro-multi-tenancy.md):** agent-sale dejó de ser multi-tenant — no hay `tenant_id` ni Row Level Security en ninguna tabla. `TENANTS` de este documento pasó a llamarse `settings` (una única fila, configuración global del negocio). Este ERD queda actualizado a la forma real; para el histórico de por qué existía `tenant_id`, ver [ADR-004](./adrs/ADR-004-multi-tenancy-rls.md) (superada).
 
 ## Diagrama entidad-relación
 
 ```mermaid
 erDiagram
-    TENANTS ||--o{ CUSTOMERS : tiene
-    TENANTS ||--o{ PRODUCTS : tiene
-    TENANTS ||--o{ CONVERSATIONS : tiene
-    TENANTS ||--o{ PROMOTIONS : tiene
-    TENANTS ||--o{ HUMAN_AGENTS : tiene
-
     CUSTOMERS ||--o{ CONVERSATIONS : origina
     CONVERSATIONS ||--o{ MESSAGES : contiene
     CONVERSATIONS ||--o{ QUOTES : genera
@@ -27,22 +21,19 @@ erDiagram
     ORDERS ||--o{ ORDER_ITEMS : contiene
     HANDOFF_QUEUE }o--|| HUMAN_AGENTS : asignada_a
 
-    TENANTS {
+    SETTINGS {
         uuid id PK
         text name
-        text plan
         timestamptz created_at
     }
     CUSTOMERS {
         uuid id PK
-        uuid tenant_id FK
         text phone_number
         text name
         timestamptz created_at
     }
     CONVERSATIONS {
         uuid id PK
-        uuid tenant_id FK
         uuid customer_id FK
         text status
         jsonb state
@@ -60,7 +51,6 @@ erDiagram
     }
     PRODUCTS {
         uuid id PK
-        uuid tenant_id FK
         text sku
         text name
         text category
@@ -71,14 +61,12 @@ erDiagram
     INVENTORY {
         uuid id PK
         uuid product_id FK
-        uuid tenant_id FK
         int stock_quantity
         text source
         timestamptz last_synced_at
     }
     PROMOTIONS {
         uuid id PK
-        uuid tenant_id FK
         text type
         jsonb rules
         date valid_from
@@ -87,7 +75,6 @@ erDiagram
     }
     QUOTES {
         uuid id PK
-        uuid tenant_id FK
         uuid conversation_id FK
         uuid customer_id FK
         numeric subtotal
@@ -105,7 +92,6 @@ erDiagram
     }
     ORDERS {
         uuid id PK
-        uuid tenant_id FK
         uuid quote_id FK
         uuid conversation_id FK
         uuid customer_id FK
@@ -125,7 +111,6 @@ erDiagram
     }
     HANDOFF_QUEUE {
         uuid id PK
-        uuid tenant_id FK
         uuid conversation_id FK
         text reason
         text status
@@ -135,14 +120,12 @@ erDiagram
     }
     HUMAN_AGENTS {
         uuid id PK
-        uuid tenant_id FK
         text name
         text contact
         boolean active
     }
     AUDIT_LOG {
         uuid id PK
-        uuid tenant_id FK
         uuid conversation_id FK
         text actor
         text action
@@ -154,7 +137,7 @@ erDiagram
 
 ## Notas de diseño por tabla
 
-- **`tenants`** — una fila por PyME cliente (ej. ForMotos). Toda tabla de negocio cuelga de aquí vía `tenant_id`.
+- **`settings`** — una única fila con la configuración del negocio (antes `tenants`, una fila por PyME cliente — ver ADR-032). El resto de las tablas ya no cuelga de acá vía `tenant_id`; `settings` solo guarda config global (marca, número de WhatsApp, credenciales BYOK, etc.), no participa en ningún FK del resto del modelo.
 - **`conversations.state`** — memoria conversacional estructurada (no solo texto crudo): qué productos se mencionaron, en qué paso del flujo va el cliente, etc. Es lo que el orquestador lee para no "olvidar" contexto entre turnos.
 - **`messages.tool_calls`** — guarda qué tool se invocó y con qué parámetros en ese turno, para trazabilidad fina a nivel de mensaje (complementa `audit_log`, que es la vista de auditoría a nivel de decisión de negocio).
 - **`products.embedding`** — vector `pgvector` para similitud semántica, usado por la tool `recomendar_producto` sin necesidad de una vector DB separada.
@@ -164,18 +147,10 @@ erDiagram
   { "kind": "volumen", "tiers": [{"min": 10, "max": 20, "discount_pct": 5}, {"min": 20, "max": 40, "discount_pct": 10}] }
   { "kind": "temporada", "label": "fin_de_año", "discount_pct": 15 }
   ```
-- **`orders.idempotency_key`** — obligatorio y único por tenant; evita pedidos duplicados si el webhook de WhatsApp reintenta la entrega de un mensaje.
+- **`orders.idempotency_key`** — obligatorio y único; evita pedidos duplicados si el webhook de WhatsApp reintenta la entrega de un mensaje.
 - **`handoff_queue`** — cola explícita de conversaciones escaladas; separada de `conversations.status` para poder tener una bandeja de trabajo del asesor humano.
 - **`audit_log`** — inmutable (solo insert), registra cada decisión del agente para depuración y confianza; es el requisito de observabilidad más básico del sistema.
 
-## Row Level Security
+## Aislamiento de datos
 
-Política estándar aplicada a toda tabla con `tenant_id`:
-
-```sql
--- Ejemplo conceptual, no DDL final
-CREATE POLICY tenant_isolation ON <tabla>
-    USING (tenant_id = current_setting('app.tenant_id')::uuid);
-```
-
-La sesión de base de datos setea `app.tenant_id` al inicio de cada request/turno de conversación, según el tenant resuelto desde el número de WhatsApp entrante.
+Ya no aplica — ver [ADR-032](./adrs/ADR-032-retiro-multi-tenancy.md). El proyecto no usa Row Level Security ni un concepto de "tenant activo" por sesión de base de datos; todas las queries acceden directo a los datos del único negocio.

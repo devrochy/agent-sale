@@ -6,73 +6,47 @@ import { pool as appPool } from "../../../src/shared/db/pool.js";
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
-let tenantA: string;
-let tenantB: string;
 let conversationA: string;
 let customerA: string;
 let productA: string;
-let productB: string;
 
 beforeAll(async () => {
-  const a = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Generar Cotizacion Test A') RETURNING id`,
-  );
-  tenantA = a.rows[0]!.id;
-  const b = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Generar Cotizacion Test B') RETURNING id`,
-  );
-  tenantB = b.rows[0]!.id;
-
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, '3020000001') RETURNING id`,
-    [tenantA],
+    `INSERT INTO customers (phone_number) VALUES ('3020000001') RETURNING id`,
   );
   customerA = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
-    [tenantA, customerA],
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerA],
   );
   conversationA = conversation.rows[0]!.id;
 
   const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (tenant_id, sku, name, price) VALUES ($1, 'CASCO-COT', 'Casco cotización', 100000) RETURNING id`,
-    [tenantA],
+    `INSERT INTO products (sku, name, price) VALUES ('CASCO-COT', 'Casco cotización', 100000) RETURNING id`,
   );
   productA = product.rows[0]!.id;
-  await adminPool.query(
-    `INSERT INTO inventory (tenant_id, product_id, stock_quantity) VALUES ($1, $2, 10)`,
-    [tenantA, productA],
-  );
-
-  const productOtherTenant = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (tenant_id, sku, name, price) VALUES ($1, 'CASCO-COT-B', 'Casco tenant B', 50000) RETURNING id`,
-    [tenantB],
-  );
-  productB = productOtherTenant.rows[0]!.id;
-  await adminPool.query(
-    `INSERT INTO inventory (tenant_id, product_id, stock_quantity) VALUES ($1, $2, 5)`,
-    [tenantB, productB],
-  );
+  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 10)`, [
+    productA,
+  ]);
 });
 
 afterAll(async () => {
-  await adminPool.query(`DELETE FROM quote_items WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
-  await adminPool.query(`DELETE FROM quotes WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
-  await adminPool.query(`DELETE FROM inventory WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
-  await adminPool.query(`DELETE FROM products WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id IN ($1, $2)`, [
-    tenantA,
-    tenantB,
-  ]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id IN ($1, $2)`, [tenantA, tenantB]);
-  await adminPool.query(`DELETE FROM tenants WHERE id IN ($1, $2)`, [tenantA, tenantB]);
+  await adminPool.query(
+    `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+    [conversationA],
+  );
+  await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationA]);
+  await adminPool.query(`DELETE FROM inventory WHERE product_id = $1`, [productA]);
+  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productA]);
+  await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationA]);
+  await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerA]);
   await adminPool.end();
   await appPool.end();
 });
 
 describe("generarCotizacion", () => {
   it("crea una cotización con subtotal calculado a partir del precio real", async () => {
-    const result = await generarCotizacion(tenantA, conversationA, customerA, {
+    const result = await generarCotizacion(conversationA, customerA, {
       items: [{ product_id: productA, quantity: 3 }],
     });
 
@@ -98,23 +72,21 @@ describe("generarCotizacion", () => {
 
   it("falla si el stock no alcanza para la cantidad pedida", async () => {
     await expect(
-      generarCotizacion(tenantA, conversationA, customerA, {
+      generarCotizacion(conversationA, customerA, {
         items: [{ product_id: productA, quantity: 999 }],
       }),
     ).rejects.toThrow(/Stock insuficiente/);
   });
 
-  it("falla si el producto no existe (o pertenece a otro tenant, oculto por RLS)", async () => {
+  it("falla si el producto no existe", async () => {
     await expect(
-      generarCotizacion(tenantA, conversationA, customerA, {
-        items: [{ product_id: productB, quantity: 1 }],
+      generarCotizacion(conversationA, customerA, {
+        items: [{ product_id: "00000000-0000-0000-0000-000000000000", quantity: 1 }],
       }),
     ).rejects.toThrow(/Producto no encontrado/);
   });
 
   it("falla si la lista de items está vacía", async () => {
-    await expect(
-      generarCotizacion(tenantA, conversationA, customerA, { items: [] }),
-    ).rejects.toThrow();
+    await expect(generarCotizacion(conversationA, customerA, { items: [] })).rejects.toThrow();
   });
 });

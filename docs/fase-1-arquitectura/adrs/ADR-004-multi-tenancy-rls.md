@@ -1,7 +1,7 @@
 # ADR-004: Multi-tenancy con Row Level Security
 
 ## Estado
-Aceptado.
+**Superada por [ADR-032](./ADR-032-retiro-multi-tenancy.md)** — agent-sale dejó de ser multi-tenant; se mantiene este documento por trazabilidad histórica, no describe el sistema actual.
 
 ## Contexto
 La plataforma atenderá múltiples PyMEs (tenants) sobre la misma infraestructura. Un error de aislamiento entre tenants (que un dato de ForMotos sea visible para otro cliente) es uno de los riesgos más graves identificados para este proyecto — y uno de los más caros de corregir si se descubre tarde.

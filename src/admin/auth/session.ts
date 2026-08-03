@@ -3,16 +3,17 @@ import {
   deleteAdminSession,
   resolveAdminSession,
 } from "./adminSessionDirectory.js";
-import { findAdminByEmail, getAdminById, type AdminRecord } from "./adminsDirectory.js";
+import { findAdminByUsernameOrEmail, getAdminById, type AdminRecord } from "./adminsDirectory.js";
 import { verifyPassword } from "./passwordHash.js";
 
-/** Credenciales inválidas y cuenta desactivada devuelven lo mismo (null) — no se filtra cuál de los dos casos fue, mismo criterio que verifyPassword. */
-export async function login(
-  tenantId: string,
-  email: string,
-  password: string,
-): Promise<string | null> {
-  const admin = await findAdminByEmail(tenantId, email);
+/**
+ * Login combinado (Fase 13 v2, ver ADR-032): `identifier` matchea contra
+ * `username` O `email`, un solo campo de formulario. Credenciales
+ * inválidas y cuenta desactivada devuelven lo mismo (null) — no se filtra
+ * cuál de los dos casos fue, mismo criterio que verifyPassword.
+ */
+export async function login(identifier: string, password: string): Promise<string | null> {
+  const admin = await findAdminByUsernameOrEmail(identifier);
   if (!admin || !admin.active) {
     return null;
   }
@@ -22,26 +23,21 @@ export async function login(
     return null;
   }
 
-  return createAdminSession(admin.id, tenantId);
+  return createAdminSession(admin.id);
 }
 
 /**
  * Valida el token de sesión y, en cada request (no solo en el login), que
  * `admins.active` siga en true — es lo que garantiza la revocación
- * inmediata al desactivar un colaborador (ver ADR-025). También exige que
- * el `tenantId` de la URL coincida con el de la sesión, para que un token
- * de un tenant no pueda reutilizarse contra la URL de otro.
+ * inmediata al desactivar un colaborador (ver ADR-025).
  */
-export async function validateSession(
-  token: string,
-  tenantId: string,
-): Promise<AdminRecord | null> {
+export async function validateSession(token: string): Promise<AdminRecord | null> {
   const session = await resolveAdminSession(token);
-  if (!session || session.tenantId !== tenantId) {
+  if (!session) {
     return null;
   }
 
-  const admin = await getAdminById(tenantId, session.adminId);
+  const admin = await getAdminById(session.adminId);
   if (!admin || !admin.active) {
     return null;
   }

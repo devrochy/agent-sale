@@ -1,4 +1,4 @@
-import { withTenant } from "../shared/db/index.js";
+import { withTransaction } from "../shared/db/index.js";
 import type { LLMMessage } from "./llm/types.js";
 
 export interface ResolvedConversation {
@@ -15,41 +15,40 @@ export interface ResolvedConversation {
  * al cliente, no solo a la conversación.
  */
 export async function resolveConversation(
-  tenantId: string,
   customerPhone: string,
   customerName?: string,
 ): Promise<ResolvedConversation> {
-  return withTenant(tenantId, async (client) => {
+  return withTransaction(async (client) => {
     // `ProfileName` de Twilio (ver webhook-contrato.md) llega en cada
     // mensaje, no solo en el primero — COALESCE conserva el nombre ya
     // guardado si un mensaje puntual llega sin él, y lo actualiza cuando
     // sí llega (ej. el cliente cambió su nombre de perfil de WhatsApp).
     const customer = await client.query<{ id: string }>(
-      `INSERT INTO customers (tenant_id, phone_number, name)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (tenant_id, phone_number) DO UPDATE SET
+      `INSERT INTO customers (phone_number, name)
+       VALUES ($1, $2)
+       ON CONFLICT (phone_number) DO UPDATE SET
          phone_number = EXCLUDED.phone_number,
          name = COALESCE(EXCLUDED.name, customers.name)
        RETURNING id`,
-      [tenantId, customerPhone, customerName ?? null],
+      [customerPhone, customerName ?? null],
     );
     const customerId = customer.rows[0]!.id;
 
     const existing = await client.query<{ id: string; state: Record<string, unknown> }>(
       `SELECT id, state FROM conversations
-       WHERE tenant_id = $1 AND customer_id = $2 AND status = 'open'
+       WHERE customer_id = $1 AND status = 'open'
        ORDER BY started_at DESC LIMIT 1`,
-      [tenantId, customerId],
+      [customerId],
     );
     if (existing.rows[0]) {
       return { conversationId: existing.rows[0].id, customerId, state: existing.rows[0].state };
     }
 
     const created = await client.query<{ id: string; state: Record<string, unknown> }>(
-      `INSERT INTO conversations (tenant_id, customer_id, status, state)
-       VALUES ($1, $2, 'open', '{}'::jsonb)
+      `INSERT INTO conversations (customer_id, status, state)
+       VALUES ($1, 'open', '{}'::jsonb)
        RETURNING id, state`,
-      [tenantId, customerId],
+      [customerId],
     );
     return { conversationId: created.rows[0]!.id, customerId, state: created.rows[0]!.state };
   });
@@ -70,8 +69,8 @@ interface MessageRow {
  * genérico a propósito — cruza el límite de la base de datos, así que no
  * vale la pena forzar un tipo estático estricto en el round-trip.
  */
-export async function loadHistory(tenantId: string, conversationId: string): Promise<LLMMessage[]> {
-  const rows = await withTenant(tenantId, async (client) => {
+export async function loadHistory(conversationId: string): Promise<LLMMessage[]> {
+  const rows = await withTransaction(async (client) => {
     const result = await client.query<MessageRow>(
       `SELECT direction, sender_type, content, tool_calls
        FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC`,
@@ -88,26 +87,18 @@ export async function loadHistory(tenantId: string, conversationId: string): Pro
 
 /** Devuelve el `id` de la fila insertada — ver updateMessageContent, que lo usa para corregir el texto mostrado sin tocar `tool_calls`. */
 export async function appendMessage(
-  tenantId: string,
   conversationId: string,
   direction: "inbound" | "outbound",
   senderType: "customer" | "agent" | "human",
   content: string,
   toolCalls?: unknown,
 ): Promise<string> {
-  const result = await withTenant(tenantId, (client) =>
+  const result = await withTransaction((client) =>
     client.query<{ id: string }>(
-      `INSERT INTO messages (tenant_id, conversation_id, direction, sender_type, content, tool_calls)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO messages (conversation_id, direction, sender_type, content, tool_calls)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-      [
-        tenantId,
-        conversationId,
-        direction,
-        senderType,
-        content,
-        toolCalls ? JSON.stringify(toolCalls) : null,
-      ],
+      [conversationId, direction, senderType, content, toolCalls ? JSON.stringify(toolCalls) : null],
     ),
   );
   return result.rows[0]!.id;
@@ -124,22 +115,17 @@ export async function appendMessage(
  * sin esto, la transcripción del panel no coincidiría con lo que el
  * cliente recibió de verdad.
  */
-export async function updateMessageContent(
-  tenantId: string,
-  messageId: string,
-  content: string,
-): Promise<void> {
-  await withTenant(tenantId, (client) =>
+export async function updateMessageContent(messageId: string, content: string): Promise<void> {
+  await withTransaction((client) =>
     client.query(`UPDATE messages SET content = $1 WHERE id = $2`, [content, messageId]),
   );
 }
 
 export async function updateState(
-  tenantId: string,
   conversationId: string,
   patch: Record<string, unknown>,
 ): Promise<void> {
-  await withTenant(tenantId, (client) =>
+  await withTransaction((client) =>
     client.query(`UPDATE conversations SET state = state || $1::jsonb WHERE id = $2`, [
       JSON.stringify(patch),
       conversationId,

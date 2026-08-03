@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { appendMessage } from "../orchestrator/memory.js";
-import { listTenants, withTenant } from "../shared/db/index.js";
+import { withTransaction } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { verifyDelivery } from "./verifyDelivery.js";
 
@@ -25,8 +25,8 @@ interface QuoteItemRow {
  * va en la misma query (EXISTS sobre el último mensaje inbound del
  * cliente) en vez de una consulta separada por cotización.
  */
-async function fetchCandidates(tenantId: string): Promise<CandidateRow[]> {
-  return withTenant(tenantId, async (client) => {
+async function fetchCandidates(): Promise<CandidateRow[]> {
+  return withTransaction(async (client) => {
     const result = await client.query<CandidateRow>(
       `SELECT q.id AS quote_id, q.conversation_id, cu.phone_number, q.total
        FROM quotes q
@@ -46,8 +46,8 @@ async function fetchCandidates(tenantId: string): Promise<CandidateRow[]> {
   });
 }
 
-async function fetchQuoteItems(tenantId: string, quoteId: string): Promise<QuoteItemRow[]> {
-  return withTenant(tenantId, async (client) => {
+async function fetchQuoteItems(quoteId: string): Promise<QuoteItemRow[]> {
+  return withTransaction(async (client) => {
     const result = await client.query<QuoteItemRow>(
       `SELECT p.name, qi.quantity
        FROM quote_items qi
@@ -78,11 +78,7 @@ function formatFollowUpText(items: QuoteItemRow[], total: number): string {
  * verificar entrega): si esos fallaran y no marcáramos la cotización, la
  * próxima corrida le mandaría un segundo mensaje al mismo cliente.
  */
-async function processCandidate(
-  tenantId: string,
-  candidate: CandidateRow,
-  jobLogger: Logger,
-): Promise<void> {
+async function processCandidate(candidate: CandidateRow, jobLogger: Logger): Promise<void> {
   const candidateLogger = jobLogger.child({
     conversation_id: candidate.conversation_id,
     quote_id: candidate.quote_id,
@@ -90,7 +86,7 @@ async function processCandidate(
 
   let text: string;
   try {
-    const items = await fetchQuoteItems(tenantId, candidate.quote_id);
+    const items = await fetchQuoteItems(candidate.quote_id);
     text = formatFollowUpText(items, Number(candidate.total));
   } catch (error) {
     candidateLogger.warn(
@@ -112,7 +108,7 @@ async function processCandidate(
   }
 
   try {
-    await withTenant(tenantId, (client) =>
+    await withTransaction((client) =>
       client.query("UPDATE quotes SET follow_up_sent_at = now() WHERE id = $1", [
         candidate.quote_id,
       ]),
@@ -125,7 +121,7 @@ async function processCandidate(
   }
 
   try {
-    await appendMessage(tenantId, candidate.conversation_id, "outbound", "agent", text);
+    await appendMessage(candidate.conversation_id, "outbound", "agent", text);
   } catch (error) {
     candidateLogger.warn(
       { error, sid },
@@ -137,22 +133,18 @@ async function processCandidate(
 }
 
 /**
- * Itera todos los tenants (best-effort por tenant) y dentro de cada uno
- * todas las cotizaciones candidatas (best-effort por cotización — que una
- * falle no debe frenar las demás del mismo tenant). Se llama tanto desde
- * el cron (src/jobs/scheduler.ts, cada hora) como manualmente en QA.
+ * Recorre todas las cotizaciones candidatas (best-effort por cotización —
+ * que una falle no debe frenar las demás). Se llama tanto desde el cron
+ * (src/jobs/scheduler.ts, cada hora) como manualmente en QA.
  */
 export async function runCazadorDeVentas(): Promise<void> {
-  const tenants = await listTenants();
-  for (const tenant of tenants) {
-    const jobLogger = logger.child({ tenant_id: tenant.id, event: "jobs.cazador_ventas" });
-    try {
-      const candidates = await fetchCandidates(tenant.id);
-      for (const candidate of candidates) {
-        await processCandidate(tenant.id, candidate, jobLogger);
-      }
-    } catch (error) {
-      jobLogger.warn({ error }, "No se pudo correr el cazador de ventas para este tenant");
+  const jobLogger = logger.child({ event: "jobs.cazador_ventas" });
+  try {
+    const candidates = await fetchCandidates();
+    for (const candidate of candidates) {
+      await processCandidate(candidate, jobLogger);
     }
+  } catch (error) {
+    jobLogger.warn({ error }, "No se pudo correr el cazador de ventas");
   }
 }

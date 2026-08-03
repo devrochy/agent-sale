@@ -1,17 +1,16 @@
 import { escapeHtml } from "../advisor/handoffView.js";
-import { getReviewLink, getTenant, resolveReviewToken, withTenant } from "../shared/db/index.js";
-import type { TenantSummary } from "../shared/db/tenantsDirectory.js";
+import { getReviewLink, getSettings, resolveReviewToken, withTransaction } from "../shared/db/index.js";
+import type { SettingsSummary } from "../shared/db/settingsDirectory.js";
 
-function brandName(tenant: TenantSummary): string {
-  return tenant.display_name ?? tenant.name;
+function brandName(settings: SettingsSummary): string {
+  return settings.display_name ?? settings.name;
 }
 
 interface ReviewContext {
-  tenantId: string;
   conversationId: string;
   customerId: string;
   score: number | null;
-  tenant: TenantSummary;
+  settings: SettingsSummary;
   existingReviewText: string | null;
 }
 
@@ -20,11 +19,11 @@ async function loadContext(token: string): Promise<ReviewContext | null> {
   if (!lookup) {
     return null;
   }
-  const tenant = await getTenant(lookup.tenantId);
-  if (!tenant) {
+  const settings = await getSettings();
+  if (!settings) {
     return null;
   }
-  const data = await withTenant(lookup.tenantId, async (client) => {
+  const data = await withTransaction(async (client) => {
     const conversation = await client.query<{
       customer_id: string;
       satisfaction_score: number | null;
@@ -45,11 +44,10 @@ async function loadContext(token: string): Promise<ReviewContext | null> {
     return null;
   }
   return {
-    tenantId: lookup.tenantId,
     conversationId: lookup.conversationId,
     customerId: data.customerId,
     score: data.score,
-    tenant,
+    settings,
     existingReviewText: data.existingReviewText,
   };
 }
@@ -122,9 +120,9 @@ export async function renderReviewForm(token: string): Promise<ReviewViewResult>
   if (!ctx) {
     return { status: 404 };
   }
-  const brand = brandName(ctx.tenant);
+  const brand = brandName(ctx.settings);
   if (ctx.existingReviewText !== null) {
-    const externalLink = await getReviewLink(ctx.tenantId);
+    const externalLink = await getReviewLink();
     return {
       status: 200,
       html: renderThanksPage(brand, externalLink ? `/resena/${token}/compartir` : null),
@@ -145,7 +143,7 @@ export async function submitReview(token: string, reviewText: string): Promise<R
   if (!ctx) {
     return { status: 404 };
   }
-  const brand = brandName(ctx.tenant);
+  const brand = brandName(ctx.settings);
   const trimmed = reviewText.trim();
   if (trimmed === "") {
     return {
@@ -155,17 +153,17 @@ export async function submitReview(token: string, reviewText: string): Promise<R
   }
 
   if (ctx.existingReviewText === null) {
-    await withTenant(ctx.tenantId, (client) =>
+    await withTransaction((client) =>
       client.query(
-        `INSERT INTO reviews (tenant_id, conversation_id, customer_id, score, review_text)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO reviews (conversation_id, customer_id, score, review_text)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (conversation_id) DO NOTHING`,
-        [ctx.tenantId, ctx.conversationId, ctx.customerId, ctx.score, trimmed],
+        [ctx.conversationId, ctx.customerId, ctx.score, trimmed],
       ),
     );
   }
 
-  const externalLink = await getReviewLink(ctx.tenantId);
+  const externalLink = await getReviewLink();
   return {
     status: 200,
     html: renderThanksPage(brand, externalLink ? `/resena/${token}/compartir` : null),
@@ -179,19 +177,19 @@ export interface ShareReviewResult {
 
 /**
  * "Compartir en Google" — paso posterior opcional a la reseña interna
- * (ver contexto del PR). 404 si el tenant no configuró el link externo
- * (`tenants.review_link`) — nunca redirige a un link inventado.
+ * (ver contexto del PR). 404 si no hay link externo configurado
+ * (`settings.review_link`) — nunca redirige a un link inventado.
  */
 export async function shareReviewPublicly(token: string): Promise<ShareReviewResult> {
   const lookup = await resolveReviewToken(token);
   if (!lookup) {
     return { status: 404 };
   }
-  const externalLink = await getReviewLink(lookup.tenantId);
+  const externalLink = await getReviewLink();
   if (!externalLink) {
     return { status: 404 };
   }
-  await withTenant(lookup.tenantId, (client) =>
+  await withTransaction((client) =>
     client.query(`UPDATE reviews SET shared_publicly = true WHERE conversation_id = $1`, [
       lookup.conversationId,
     ]),

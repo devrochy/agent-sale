@@ -1,15 +1,10 @@
 import crypto from "node:crypto";
-import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { env } from "../../../src/config/env.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { redis } from "../../../src/shared/redis/client.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import { INBOUND_STREAM } from "../../../src/gateway/queue.js";
-
-const { Pool } = pg;
-
-const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
 function computeTwilioSignature(url: string, params: Record<string, string>): string {
   const data = Object.keys(params)
@@ -21,41 +16,14 @@ function computeTwilioSignature(url: string, params: Record<string, string>): st
     .digest("base64");
 }
 
-// Sufijo único por corrida (no un número fijo): si un consumer real llega
-// a levantar el mensaje encolado por estos tests (ej. un proceso de
-// desarrollo dejado corriendo por error) y genera audit_log real para
-// este tenant, el DELETE de abajo falla por el trigger de inmutabilidad
-// (ver ADR-011/guardrails) — con un número fijo eso bloquea TODAS las
-// corridas futuras por la constraint UNIQUE de whatsapp_number, no solo
-// esta. Con sufijo único, un tenant "atascado" así queda inerte pero no
-// vuelve a colisionar.
 const TENANT_WHATSAPP_NUMBER = `whatsapp:+5730000${String(Date.now()).slice(-6)}`;
-let tenantId: string;
 const app = await buildServer();
 
 beforeAll(async () => {
-  const result = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name, whatsapp_number) VALUES ('Gateway Test Tenant', $1) RETURNING id`,
-    [TENANT_WHATSAPP_NUMBER],
-  );
-  tenantId = result.rows[0]!.id;
   await app.ready();
 });
 
 afterAll(async () => {
-  // Best-effort: si algo llegó a procesar los mensajes encolados por
-  // estos tests (fuera del flujo normal, que solo verifica encolamiento)
-  // y quedó audit_log real para este tenant, el DELETE final falla por
-  // diseño (audit_log es inmutable) — no debe tumbar la suite por eso.
-  await adminPool.query(`DELETE FROM messages WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id = $1`, [tenantId]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id = $1`, [tenantId]);
-  try {
-    await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantId]);
-  } catch {
-    // Tenant queda inerte (ver comentario en TENANT_WHATSAPP_NUMBER) — no
-    // se puede evitar sin violar la inmutabilidad de audit_log.
-  }
   await redis.del(INBOUND_STREAM);
   await redis.del(
     "wa:processed:webhook-test-sid-1",
@@ -64,7 +32,6 @@ afterAll(async () => {
     "wa:processed:webhook-test-sid-profilename",
   );
   await app.close();
-  await adminPool.end();
   await redis.quit();
   await appPool.end();
 });
@@ -162,25 +129,6 @@ describe("POST /webhooks/whatsapp", () => {
 
     expect(response.statusCode).toBe(403);
     expect(after).toBe(before);
-  });
-
-  it("To desconocido responde 200 sin encolar", async () => {
-    const params = {
-      MessageSid: "webhook-test-sid-unknown-tenant",
-      From: "whatsapp:+573000000001",
-      To: "whatsapp:+579999999999",
-      Body: "Mensaje a un número que no es de ningún tenant",
-    };
-    const signature = computeTwilioSignature(env.publicWebhookUrl, params);
-
-    const before = await redis.xlen(INBOUND_STREAM);
-    const response = await post(params, signature);
-    const after = await redis.xlen(INBOUND_STREAM);
-
-    expect(response.statusCode).toBe(200);
-    expect(after).toBe(before);
-
-    await redis.del("wa:processed:webhook-test-sid-unknown-tenant");
   });
 
   it("supera el límite de rate limiting por IP y responde 429", async () => {

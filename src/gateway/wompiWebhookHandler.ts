@@ -1,6 +1,11 @@
 import { resolveNotificationRecipients } from "../admin/auth/adminsDirectory.js";
 import { verifyWompiChecksum } from "../payments/wompiSignature.js";
-import { getReportRecipient, getWompiConfig, resolveWompiPaymentLink, withTenant } from "../shared/db/index.js";
+import {
+  getReportRecipient,
+  getWompiConfig,
+  resolveWompiPaymentLink,
+  withTransaction,
+} from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { sendWhatsAppMessage } from "./sendMessage.js";
 
@@ -35,13 +40,13 @@ function buildApprovalNotification(orderId: string, total: number): string {
  * como función pura, testeable sin levantar un servidor HTTP real — mismo
  * criterio que handleInboundWebhook (src/gateway/webhookHandler.ts).
  *
- * `payment_link_id` resuelve a qué tenant/pedido pertenece la transacción
- * (ver wompiPaymentLinkDirectory.ts) *antes* de poder verificar el
- * checksum, porque el secreto de eventos es por tenant (BYOK). Un
- * `payment_link_id` desconocido o un checksum inválido responden sin tocar
- * ningún pedido. La actualización es idempotente (`WHERE payment_status =
- * 'pendiente'`) — reintentos o entregas duplicadas de Wompi (hasta 3 en
- * 24h si no respondemos 200) no vuelven a notificar al operador.
+ * `payment_link_id` resuelve a qué pedido pertenece la transacción (ver
+ * wompiPaymentLinkDirectory.ts) *antes* de poder verificar el checksum
+ * contra el secreto de eventos configurado (BYOK). Un `payment_link_id`
+ * desconocido o un checksum inválido responden sin tocar ningún pedido. La
+ * actualización es idempotente (`WHERE payment_status = 'pendiente'`) —
+ * reintentos o entregas duplicadas de Wompi (hasta 3 en 24h si no
+ * respondemos 200) no vuelven a notificar al operador.
  */
 export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookResult> {
   const payload = body as WompiEventPayload;
@@ -74,9 +79,9 @@ export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookRes
     return { status: 200, reason: "unknown_payment_link" };
   }
 
-  const wompiLogger = logger.child({ tenant_id: link.tenantId, order_id: link.orderId });
+  const wompiLogger = logger.child({ order_id: link.orderId });
 
-  const wompiConfig = await getWompiConfig(link.tenantId);
+  const wompiConfig = await getWompiConfig();
   const checksumValid =
     !!wompiConfig.eventsSecret &&
     verifyWompiChecksum(payload.data, properties, timestamp, checksum, wompiConfig.eventsSecret);
@@ -93,7 +98,7 @@ export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookRes
     return { status: 200, reason: "not_approved" };
   }
 
-  const updatedTotal = await withTenant(link.tenantId, async (client) => {
+  const updatedTotal = await withTransaction(async (client) => {
     const result = await client.query<{ total: string }>(
       `UPDATE orders SET payment_status = 'pagado', paid_at = now(), wompi_transaction_id = $1
        WHERE id = $2 AND payment_status = 'pendiente'
@@ -109,12 +114,8 @@ export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookRes
     // `recibeNotificacionPagos` y teléfono cargado; si no hay ninguno,
     // cae al `report_recipient_phone` legado (mismo criterio que
     // dailyReport.ts).
-    const fallbackPhone = await getReportRecipient(link.tenantId);
-    const recipients = await resolveNotificationRecipients(
-      link.tenantId,
-      "recibeNotificacionPagos",
-      fallbackPhone,
-    );
+    const fallbackPhone = await getReportRecipient();
+    const recipients = await resolveNotificationRecipients("recibeNotificacionPagos", fallbackPhone);
     for (const recipient of recipients) {
       try {
         await sendWhatsAppMessage(recipient, buildApprovalNotification(link.orderId, updatedTotal));

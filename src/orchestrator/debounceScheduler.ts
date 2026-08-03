@@ -1,7 +1,7 @@
-import { listTenants } from "../shared/db/tenantsDirectory.js";
-import { withTenant } from "../shared/db/withTenant.js";
+import { withTransaction } from "../shared/db/withTransaction.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
+import { getSettings } from "../shared/db/settingsDirectory.js";
 import { processConversation } from "./loop.js";
 import { sendTurnBubbles } from "./sendTurnResult.js";
 
@@ -14,7 +14,6 @@ const PAYLOAD_KEY_PREFIX = "debounce:payload:";
 const POLL_INTERVAL_MS = 1500;
 
 interface DebouncePayload {
-  tenantId: string;
   customerPhone: string;
   messageSid: string;
   customerName?: string;
@@ -44,15 +43,10 @@ export async function cancelDebounce(conversationId: string): Promise<void> {
 }
 
 async function fireConversation(conversationId: string, payload: DebouncePayload): Promise<void> {
-  const turnLogger = logger.child({ tenant_id: payload.tenantId, conversation_id: conversationId });
+  const turnLogger = logger.child({ conversation_id: conversationId });
   try {
-    const result = await processConversation(
-      payload.tenantId,
-      payload.customerPhone,
-      payload.messageSid,
-      payload.customerName,
-    );
-    await sendTurnBubbles(payload.tenantId, payload.customerPhone, result, turnLogger);
+    const result = await processConversation(payload.customerPhone, payload.messageSid, payload.customerName);
+    await sendTurnBubbles(payload.customerPhone, result, turnLogger);
   } catch (error) {
     // Sin backing de Redis Streams acá (el mensaje ya se hizo ACK al
     // ingerirse, ver consumer.ts) — un fallo en este punto no se
@@ -113,56 +107,47 @@ interface OrphanRow {
  * tool_result intermedia — está esperando una respuesta que nunca llegó)
  * y no tienen ya un timer vivo, y las reprograma con score=now (no hace
  * esperar de nuevo la ventana completa).
- *
- * Recorre tenant por tenant con `withTenant` (no una query cruda cruzando
- * tenants): `conversations`/`messages`/`customers` tienen RLS con FORCE
- * (ver migrations/0010_rls_policies.cjs) — sin `app.tenant_id` seteado en
- * la sesión, cualquier query devuelve cero filas siempre, sin error. Solo
- * `tenants` (que sí se puede leer sin ese contexto) sirve para armar la
- * lista de a qué tenants iterar.
  */
 async function recoverOrphanedConversations(): Promise<void> {
-  const tenants = await listTenants();
-  for (const tenant of tenants) {
-    if (tenant.bot_paused) {
+  const settings = await getSettings();
+  if (settings?.bot_paused) {
+    return;
+  }
+
+  const orphans = await withTransaction((client) =>
+    client.query<OrphanRow>(`
+      SELECT conv.id AS conversation_id, c.phone_number, c.name AS customer_name
+      FROM conversations conv
+      JOIN customers c ON c.id = conv.customer_id
+      JOIN LATERAL (
+        SELECT direction FROM messages
+        WHERE conversation_id = conv.id
+        ORDER BY created_at DESC LIMIT 1
+      ) last_msg ON true
+      WHERE conv.status = 'open'
+        AND (conv.state ->> 'step') IS DISTINCT FROM 'escalado'
+        AND last_msg.direction = 'inbound'
+    `),
+  );
+
+  for (const row of orphans.rows) {
+    const pending = await redis.zscore(PENDING_KEY, row.conversation_id);
+    if (pending !== null) {
+      // Ya tiene un timer vivo (mensaje reciente que sí se programó bien) — no tocar.
       continue;
     }
-    const orphans = await withTenant(tenant.id, (client) =>
-      client.query<OrphanRow>(`
-        SELECT conv.id AS conversation_id, c.phone_number, c.name AS customer_name
-        FROM conversations conv
-        JOIN customers c ON c.id = conv.customer_id
-        JOIN LATERAL (
-          SELECT direction FROM messages
-          WHERE conversation_id = conv.id
-          ORDER BY created_at DESC LIMIT 1
-        ) last_msg ON true
-        WHERE conv.status = 'open'
-          AND (conv.state ->> 'step') IS DISTINCT FROM 'escalado'
-          AND last_msg.direction = 'inbound'
-      `),
+    logger.warn(
+      { conversation_id: row.conversation_id },
+      "Conversación huérfana detectada al arrancar — se reprograma para disparar de inmediato",
     );
-
-    for (const row of orphans.rows) {
-      const pending = await redis.zscore(PENDING_KEY, row.conversation_id);
-      if (pending !== null) {
-        // Ya tiene un timer vivo (mensaje reciente que sí se programó bien) — no tocar.
-        continue;
-      }
-      logger.warn(
-        { tenant_id: tenant.id, conversation_id: row.conversation_id },
-        "Conversación huérfana detectada al arrancar — se reprograma para disparar de inmediato",
-      );
-      // messageSid sintético: no hay un Sid real disponible acá (el
-      // original ya se usó/perdió) — solo importa para el idempotency_key
-      // de crear_pedido, que tolera un valor nunca antes visto.
-      await scheduleDebounce(row.conversation_id, 0, {
-        tenantId: tenant.id,
-        customerPhone: row.phone_number,
-        messageSid: `recovery-${row.conversation_id}`,
-        customerName: row.customer_name ?? undefined,
-      });
-    }
+    // messageSid sintético: no hay un Sid real disponible acá (el
+    // original ya se usó/perdió) — solo importa para el idempotency_key
+    // de crear_pedido, que tolera un valor nunca antes visto.
+    await scheduleDebounce(row.conversation_id, 0, {
+      customerPhone: row.phone_number,
+      messageSid: `recovery-${row.conversation_id}`,
+      customerName: row.customer_name ?? undefined,
+    });
   }
 }
 
