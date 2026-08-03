@@ -8,16 +8,21 @@ import {
   tomarConversacion,
 } from "../advisor/handoffView.js";
 import {
+  activarColaborador,
+  crearColaborador,
+  desactivarColaborador,
   exportLeadsCsv,
   guardarCobros,
   guardarComportamiento,
   guardarModeloIa,
+  guardarPermisosColaborador,
   guardarReporteDiario,
   guardarReviewLink,
   pausarBot,
   reactivarBot,
   renderAdminRootPage,
   renderAnaliticaPage,
+  renderColaboradoresPage,
   renderConexionesPage,
   renderConfiguracionPage,
   renderConversacionesPage,
@@ -29,12 +34,22 @@ import {
   renderProductosPage,
   renderTicketsPage,
 } from "../admin/adminPanel.js";
+import type { AdminRecord } from "../admin/auth/adminsDirectory.js";
 import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
 import { login, logout } from "../admin/auth/session.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
+
+declare module "fastify" {
+  interface FastifyRequest {
+    // Seteado por el hook de auth de /admin/:tenantId/* (ver más abajo) —
+    // null en cualquier ruta pública (webhooks, /asesor, /resena, /admin
+    // bare, /admin/:tenantId/login).
+    admin: AdminRecord | null;
+  }
+}
 
 // UUID con guiones — mismo patrón que UUID_PATTERN de withTenant.ts, acá
 // solo para reconocer el segmento :tenantId de la URL en el hook global
@@ -73,6 +88,7 @@ export async function buildServer() {
   // Cookies sin firmar (ver src/admin/auth/currentAdmin.ts) — el token de
   // sesión ya es el secreto, validado contra `admin_sessions` en Postgres.
   await app.register(fastifyCookie);
+  app.decorateRequest("admin", null);
 
   // Panel admin (Fase 13, ver src/admin/auth/session.ts y ADR-025):
   // Basic Auth global quedó retirado. Todo `/admin/:tenantId/*` requiere
@@ -97,6 +113,19 @@ export async function buildServer() {
     const admin = await currentAdmin(request, tenantId);
     if (!admin) {
       return reply.status(303).redirect(`/admin/${tenantId}/login`);
+    }
+    request.admin = admin;
+  });
+
+  // Colaboradores (Fase 13, ver ADR-025) — el hook de arriba solo exige
+  // sesión válida, no `role='master'`; esa restricción es específica de
+  // esta sección, así que se chequea acá, no en el hook global.
+  app.addHook("preHandler", async (request, reply) => {
+    if (!request.url.match(/^\/admin\/[0-9a-f-]{36}\/colaboradores/i)) {
+      return;
+    }
+    if (request.admin?.role !== "master") {
+      return reply.status(403).send("Solo un administrador master puede gestionar colaboradores.");
     }
   });
 
@@ -150,7 +179,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderOverviewPage(tenantId);
+    const html = await renderOverviewPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -160,7 +189,12 @@ export async function buildServer() {
   app.get("/admin/:tenantId/conversaciones", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const { estado, c } = request.query as { estado?: string; c?: string };
-    const html = await renderConversacionesPage(tenantId, estado, c);
+    const html = await renderConversacionesPage(
+      tenantId,
+      estado,
+      c,
+      request.admin?.role === "master",
+    );
     if (!html) {
       return reply.status(404).send();
     }
@@ -169,7 +203,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/leads", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderLeadsPage(tenantId);
+    const html = await renderLeadsPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -190,7 +224,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/tickets", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderTicketsPage(tenantId);
+    const html = await renderTicketsPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -200,7 +234,7 @@ export async function buildServer() {
   app.get("/admin/:tenantId/analitica", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const { moneda } = request.query as { moneda?: string };
-    const html = await renderAnaliticaPage(tenantId, moneda);
+    const html = await renderAnaliticaPage(tenantId, moneda, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -209,7 +243,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/flujo", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderFlujoPage(tenantId);
+    const html = await renderFlujoPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -218,17 +252,72 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/conexiones", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderConexionesPage(tenantId);
+    const html = await renderConexionesPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
+  app.get("/admin/:tenantId/colaboradores", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderColaboradoresPage(tenantId, request.admin!.id, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/:tenantId/colaboradores", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { email, password, role } = request.body as {
+      email?: string;
+      password?: string;
+      role?: string;
+    };
+    const result = await crearColaborador(tenantId, {
+      email: email ?? "",
+      password: password ?? "",
+      role: role ?? "",
+    });
+    const redirectUrl = result.ok
+      ? `/admin/${tenantId}/colaboradores?guardado=1`
+      : `/admin/${tenantId}/colaboradores?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/:tenantId/colaboradores/:adminId/activar", async (request, reply) => {
+    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+    await activarColaborador(tenantId, adminId);
+    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  });
+
+  app.post("/admin/:tenantId/colaboradores/:adminId/desactivar", async (request, reply) => {
+    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+    await desactivarColaborador(tenantId, adminId);
+    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  });
+
+  app.post("/admin/:tenantId/colaboradores/:adminId/permisos", async (request, reply) => {
+    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+    const body = request.body as Record<string, string | undefined>;
+    await guardarPermisosColaborador(tenantId, adminId, {
+      recibeReporteDiario: body.recibeReporteDiario === "on",
+      recibeTickets: body.recibeTickets === "on",
+      recibeNotificacionPagos: body.recibeNotificacionPagos === "on",
+    });
+    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  });
+
   app.get("/admin/:tenantId/configuracion", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const { error, guardado } = request.query as { error?: string; guardado?: string };
-    const html = await renderConfiguracionPage(tenantId, { error, guardado });
+    const html = await renderConfiguracionPage(
+      tenantId,
+      { error, guardado },
+      request.admin?.role === "master",
+    );
     if (!html) {
       return reply.status(404).send();
     }
@@ -323,7 +412,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/productos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderProductosPage(tenantId);
+    const html = await renderProductosPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }
@@ -332,7 +421,7 @@ export async function buildServer() {
 
   app.get("/admin/:tenantId/pedidos", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const html = await renderPedidosPage(tenantId);
+    const html = await renderPedidosPage(tenantId, request.admin?.role === "master");
     if (!html) {
       return reply.status(404).send();
     }

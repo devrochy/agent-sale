@@ -2,6 +2,10 @@ import { withTenant } from "../../shared/db/withTenant.js";
 
 export type AdminRole = "master" | "colaborador";
 
+export function isAdminRole(value: unknown): value is AdminRole {
+  return value === "master" || value === "colaborador";
+}
+
 export interface AdminPermissions {
   recibeReporteDiario: boolean;
   recibeTickets: boolean;

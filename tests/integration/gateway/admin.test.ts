@@ -648,4 +648,194 @@ describe("panel admin", () => {
       expect(response.headers.location).toBe("/admin/00000000-0000-0000-0000-000000000000/login");
     });
   });
+
+  describe("colaboradores", () => {
+    it("un master ve la lista de colaboradores existentes", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/colaboradores`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(ADMIN_EMAIL);
+      expect(response.body).toContain("Master");
+    });
+
+    it("crea un colaborador nuevo, que puede loguearse pero no ver Colaboradores", async () => {
+      const nuevoEmail = "nuevo.colaborador@formotos-test.com";
+      const nuevaPassword = "otra-clave-de-prueba";
+
+      const crear = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({
+          email: nuevoEmail,
+          password: nuevaPassword,
+          role: "colaborador",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(crear.statusCode).toBe(303);
+      expect(crear.headers.location).toBe(`/admin/${tenantA}/colaboradores?guardado=1`);
+
+      const lista = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/colaboradores`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(lista.body).toContain(nuevoEmail);
+      expect(lista.body).toContain("Colaborador");
+
+      const loginColaborador = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/login`,
+        payload: new URLSearchParams({ email: nuevoEmail, password: nuevaPassword }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(loginColaborador.statusCode).toBe(303);
+      const colaboradorCookie = cookieValueFrom(loginColaborador.headers["set-cookie"]);
+
+      // Puede ver el resto del panel...
+      const overview = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}`,
+        headers: { cookie: colaboradorCookie },
+      });
+      expect(overview.statusCode).toBe(200);
+
+      // ...pero no la sección de Colaboradores (solo master, ver ADR-025).
+      const colaboradores = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}/colaboradores`,
+        headers: { cookie: colaboradorCookie },
+      });
+      expect(colaboradores.statusCode).toBe(403);
+    });
+
+    it("desactivar un colaborador le bloquea el login de inmediato", async () => {
+      const email = "para-desactivar@formotos-test.com";
+      const password = "clave-para-desactivar";
+
+      await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({ email, password, role: "colaborador" }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+
+      const primerLogin = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/login`,
+        payload: new URLSearchParams({ email, password }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(primerLogin.statusCode).toBe(303);
+      const cookieAntesDesactivar = cookieValueFrom(primerLogin.headers["set-cookie"]);
+
+      // Se busca el id directo en la base por email — scrapear el HTML
+      // de la tabla es frágil acá: ya hay más de un colaborador activo
+      // sembrado por los tests anteriores de este mismo describe, y
+      // "el primer link .../desactivar" no necesariamente es el de este.
+      const adminRow = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE tenant_id = $1 AND email = $2`,
+        [tenantA, email],
+      );
+      const adminId = adminRow.rows[0]!.id;
+
+      const desactivar = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores/${adminId}/desactivar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(desactivar.statusCode).toBe(303);
+
+      // La sesión ya creada deja de servir de inmediato (chequeo de
+      // admins.active en cada request, no solo al login — ver ADR-025).
+      const overviewConSesionVieja = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}`,
+        headers: { cookie: cookieAntesDesactivar },
+      });
+      expect(overviewConSesionVieja.statusCode).toBe(303);
+      expect(overviewConSesionVieja.headers.location).toBe(`/admin/${tenantA}/login`);
+
+      // Y ya no puede volver a loguearse.
+      const segundoLogin = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/login`,
+        payload: new URLSearchParams({ email, password }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(segundoLogin.statusCode).toBe(401);
+    });
+
+    it("guarda los permisos de un colaborador", async () => {
+      const email = "con-permisos@formotos-test.com";
+      await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({
+          email,
+          password: "clave-de-permisos",
+          role: "colaborador",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+
+      // Mismo criterio que en el test de desactivar: buscar el id por
+      // email directo en la base, no scrapear "el primer link .../permisos"
+      // (todas las filas, incluida la del master, tienen ese formulario).
+      const adminRow = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE tenant_id = $1 AND email = $2`,
+        [tenantA, email],
+      );
+      const adminId = adminRow.rows[0]!.id;
+
+      const guardar = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores/${adminId}/permisos`,
+        payload: new URLSearchParams({ recibeTickets: "on" }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(guardar.statusCode).toBe(303);
+
+      const row = await adminPool.query<{
+        recibe_tickets: boolean;
+        recibe_reporte_diario: boolean;
+      }>(
+        `SELECT recibe_tickets, recibe_reporte_diario FROM admin_permissions WHERE admin_id = $1`,
+        [adminId],
+      );
+      expect(row.rows[0]!.recibe_tickets).toBe(true);
+      expect(row.rows[0]!.recibe_reporte_diario).toBe(false);
+    });
+
+    it("rechaza crear un colaborador con contraseña corta o email repetido", async () => {
+      const corta = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({
+          email: "clave-corta@formotos-test.com",
+          password: "123",
+          role: "colaborador",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(corta.statusCode).toBe(303);
+      expect(corta.headers.location).toContain("error=");
+
+      const repetido = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({
+          email: ADMIN_EMAIL,
+          password: "clave-valida-larga",
+          role: "colaborador",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(repetido.statusCode).toBe(303);
+      expect(repetido.headers.location).toContain("error=");
+    });
+  });
 });

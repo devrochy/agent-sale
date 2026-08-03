@@ -1,4 +1,13 @@
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
+import {
+  createAdmin,
+  isAdminRole,
+  listAdmins,
+  setAdminActive,
+  updateAdminPermissions,
+  type AdminPermissions,
+} from "./auth/adminsDirectory.js";
+import { hashPassword } from "./auth/passwordHash.js";
 import { env } from "../config/env.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import {
@@ -174,6 +183,8 @@ const ICON_CONEXIONES =
 
 const ICON_CONFIGURACION =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 2.4v1.5M8 12.1v1.5M13.6 8h-1.5M3.9 8H2.4M11.9 4.1l-1.05 1.05M5.15 10.85 4.1 11.9M11.9 11.9l-1.05-1.05M5.15 5.15 4.1 4.1"/></svg>';
+const ICON_COLABORADORES =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="5.5" r="2.3"/><path d="M1.6 13.4c.5-2.4 2-3.6 3.9-3.6s3.4 1.2 3.9 3.6"/><circle cx="11.2" cy="5.9" r="1.9"/><path d="M10 9.9c1.6.1 2.7 1.2 3.1 3.1"/></svg>';
 
 const ICON_WHATSAPP =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2a5.6 5.6 0 0 0-4.8 8.5L2.4 13.6l3-.75A5.6 5.6 0 1 0 8 2.2Z"/><path d="M5.7 5.9c.15-.35.3-.35.45-.35h.3c.15 0 .3 0 .45.35.2.45.6 1.35.65 1.45.05.1.1.25 0 .4-.1.2-.15.3-.3.45-.15.2-.3.3-.15.55.5.9 1.1 1.5 2 2 .25.15.35.1.5-.05.15-.15.6-.7.75-.9.15-.2.3-.15.5-.1.2.1 1.3.6 1.5.7.2.1.35.15.4.25.05.15.05.7-.2 1.15-.25.45-1.15.85-1.55.85-.4 0-.85.05-2.7-1.1-1.65-1-2.6-2.5-2.75-2.75-.15-.25-1.05-1.55-1-2.6.05-1.05.6-1.5.8-1.7Z" fill="currentColor" stroke="none"/></svg>';
@@ -228,12 +239,13 @@ type ActiveSection =
   | "configuracion"
   | "productos"
   | "pedidos"
+  | "colaboradores"
   | null;
 
 const ICON_COLLAPSE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 6 8l4 5"/></svg>';
 
-function navRail(tenant: TenantSummary, active: ActiveSection): string {
+function navRail(tenant: TenantSummary, active: ActiveSection, isMaster: boolean): string {
   const item = (
     href: string,
     label: string,
@@ -284,6 +296,17 @@ function navRail(tenant: TenantSummary, active: ActiveSection): string {
           ${item(`/admin/${tenant.id}/pedidos`, "Pedidos", "pedidos", ICON_PEDIDOS)}
         </ul>
       </div>
+      ${
+        isMaster
+          ? `<div class="laneline"></div>
+      <div class="navgroup">
+        <p class="navgroup__label">Equipo</p>
+        <ul class="navgroup__items">
+          ${item(`/admin/${tenant.id}/colaboradores`, "Colaboradores", "colaboradores", ICON_COLABORADORES)}
+        </ul>
+      </div>`
+          : ""
+      }
     </nav>
     <div class="rail__status">
       <span class="pulse" aria-hidden="true"></span>
@@ -297,9 +320,10 @@ function layout(
   tenant: TenantSummary | null,
   body: string,
   active: ActiveSection = null,
+  isMaster = false,
 ): string {
   const heading = tenant ? `${brandName(tenant)} — ${title}` : title;
-  const rail = tenant ? navRail(tenant, active) : "";
+  const rail = tenant ? navRail(tenant, active, isMaster) : "";
 
   return `<!doctype html>
 <html lang="es">
@@ -593,6 +617,11 @@ table.resizing { cursor: col-resize; user-select: none; }
 .formfoot { display: flex; align-items: center; gap: 12px; margin-top: 22px; }
 .btn--primary { background: var(--chrome); border-color: var(--chrome); color: var(--bg); font-weight: 700; }
 .btn--primary:hover { filter: brightness(1.08); border-color: var(--chrome); background: var(--chrome); }
+.btn--ghost { background: transparent; }
+.btn--ghost:hover { background: var(--panel-inset); }
+.btn--sm { padding: 6px 11px; font-size: 11.5px; }
+.permform { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.permcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
 .banner--error { background: var(--redline-soft); color: var(--redline); }
@@ -1142,7 +1171,7 @@ function trendChip(current: number, previous: number): string {
  * Home del tenant en el panel (ver docs/fase-11-panel-admin-dashboard/
  * overview-kpis.md, Fase 11.1).
  */
-export async function renderOverviewPage(tenantId: string): Promise<string | null> {
+export async function renderOverviewPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -1288,7 +1317,7 @@ export async function renderOverviewPage(tenantId: string): Promise<string | nul
     </section>
   `;
 
-  return layout("Resumen", tenant, body, "resumen");
+  return layout("Resumen", tenant, body, "resumen", isMaster);
 }
 
 type ConversacionesEstado = "todas" | "abiertas" | "escaladas" | "cerradas";
@@ -1343,6 +1372,7 @@ export async function renderConversacionesPage(
   tenantId: string,
   estadoParam: string | undefined,
   selectedId: string | undefined,
+  isMaster: boolean,
 ): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
@@ -1455,7 +1485,7 @@ export async function renderConversacionesPage(
     </div>
   `;
 
-  return layout("Conversaciones", tenant, body, "conversaciones");
+  return layout("Conversaciones", tenant, body, "conversaciones", isMaster);
 }
 
 type LeadEstado = "con_pedido" | "escalada" | "con_cotizacion" | "sin_actividad_comercial";
@@ -1529,7 +1559,7 @@ async function fetchLeads(tenantId: string): Promise<LeadRow[]> {
  * datos ya existentes, no de un resumen generado por LLM — evita el costo
  * recurrente que mapeo-funcionalidades.md marca fuera de alcance.
  */
-export async function renderLeadsPage(tenantId: string): Promise<string | null> {
+export async function renderLeadsPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -1583,7 +1613,7 @@ export async function renderLeadsPage(tenantId: string): Promise<string | null> 
     </div>
   `;
 
-  return layout(`Leads (${rows.length})`, tenant, body, "leads");
+  return layout(`Leads (${rows.length})`, tenant, body, "leads", isMaster);
 }
 
 /** Mismo dato que renderLeadsPage, serializado a mano igual que el resto del panel arma HTML a mano (sin dependencia nueva). */
@@ -1656,7 +1686,7 @@ interface TicketRow {
  * accesible por token individual (GET /asesor/:token, src/advisor/
  * handoffView.ts). No reemplaza ese flujo, es solo de supervisión.
  */
-export async function renderTicketsPage(tenantId: string): Promise<string | null> {
+export async function renderTicketsPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -1728,7 +1758,7 @@ export async function renderTicketsPage(tenantId: string): Promise<string | null
     </div>
   `;
 
-  return layout(`Tickets (${rows.length})`, tenant, body, "tickets");
+  return layout(`Tickets (${rows.length})`, tenant, body, "tickets", isMaster);
 }
 
 // Nombres reales de src/orchestrator/toolDefinitions.ts — no los nodos
@@ -1801,7 +1831,11 @@ interface PagosEnLineaRow {
  * disponible (ver src/shared/exchangeRates.ts), se degrada a USD en vez de
  * mostrar un número inventado.
  */
-export async function renderAnaliticaPage(tenantId: string, monedaParam?: string): Promise<string | null> {
+export async function renderAnaliticaPage(
+  tenantId: string,
+  monedaParam: string | undefined,
+  isMaster: boolean,
+): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -2038,7 +2072,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
     </section>
   `;
 
-  return layout("Analítica", tenant, body, "analitica");
+  return layout("Analítica", tenant, body, "analitica", isMaster);
 }
 
 /**
@@ -2048,7 +2082,7 @@ export async function renderAnaliticaPage(tenantId: string, monedaParam?: string
  * ("radiografía honesta, no un editor"). Los contadores por tool se
  * derivan de messages.tool_calls, sin tabla nueva.
  */
-export async function renderFlujoPage(tenantId: string): Promise<string | null> {
+export async function renderFlujoPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -2118,7 +2152,7 @@ export async function renderFlujoPage(tenantId: string): Promise<string | null> 
     <p class="flowfoot">Llamadas por tool en los últimos 30 días.</p>
   `;
 
-  return layout("Flujo del agente", tenant, body, "flujo");
+  return layout("Flujo del agente", tenant, body, "flujo", isMaster);
 }
 
 /**
@@ -2131,7 +2165,7 @@ export async function renderFlujoPage(tenantId: string): Promise<string | null> 
  * canal con credenciales realmente opcionales en el futuro sea agregar
  * una entrada a esta lista, no rediseñar la página.
  */
-export async function renderConexionesPage(tenantId: string): Promise<string | null> {
+export async function renderConexionesPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -2178,10 +2212,10 @@ export async function renderConexionesPage(tenantId: string): Promise<string | n
     </div>
   `;
 
-  return layout("Conexiones", tenant, body, "conexiones");
+  return layout("Conexiones", tenant, body, "conexiones", isMaster);
 }
 
-export async function renderProductosPage(tenantId: string): Promise<string | null> {
+export async function renderProductosPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -2247,10 +2281,10 @@ export async function renderProductosPage(tenantId: string): Promise<string | nu
     </div>
   `;
 
-  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos");
+  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", isMaster);
 }
 
-export async function renderPedidosPage(tenantId: string): Promise<string | null> {
+export async function renderPedidosPage(tenantId: string, isMaster: boolean): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
     return null;
@@ -2330,7 +2364,177 @@ export async function renderPedidosPage(tenantId: string): Promise<string | null
     </div>
   `;
 
-  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos");
+  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", isMaster);
+}
+
+/**
+ * Colaboradores (Fase 13, ver ADR-025) — solo visible/accionable para un
+ * admin `role='master'`; el hook de auth de server.ts no filtra esto (solo
+ * exige sesión válida para el tenant), así que el propio route handler de
+ * `GET /admin/:tenantId/colaboradores` debe rechazar a un no-master antes
+ * de llamar a esta función (ver server.ts).
+ */
+export async function renderColaboradoresPage(
+  tenantId: string,
+  currentAdminId: string,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+
+  const admins = await listAdmins(tenantId);
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Cambios guardados.</div>`
+      : "";
+
+  const permisoCheckbox = (
+    adminId: string,
+    name: keyof AdminPermissions,
+    label: string,
+    checked: boolean,
+    disabled: boolean,
+  ): string =>
+    `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(label)}</label>`;
+
+  const rows = admins
+    .map((admin) => {
+      const isSelf = admin.id === currentAdminId;
+      const isMasterRow = admin.role === "master";
+      const roleLabel = isMasterRow ? "Master" : "Colaborador";
+      const estadoChip = admin.active
+        ? '<span class="chip chip--go">Activo</span>'
+        : '<span class="chip chip--redline">Inactivo</span>';
+
+      // Un master siempre tiene todos los permisos implícitos (ver
+      // resolveEffectivePermissions en adminsDirectory.ts) — los checkbox
+      // se muestran tildados y deshabilitados para no sugerir que se
+      // pueden editar sin efecto real.
+      const permisosForm = `
+        <form method="POST" action="/admin/${tenant.id}/colaboradores/${admin.id}/permisos" class="permform">
+          ${permisoCheckbox(admin.id, "recibeReporteDiario", "Reporte diario", admin.permissions.recibeReporteDiario, isMasterRow)}
+          ${permisoCheckbox(admin.id, "recibeTickets", "Tickets nuevos", admin.permissions.recibeTickets, isMasterRow)}
+          ${permisoCheckbox(admin.id, "recibeNotificacionPagos", "Pagos aprobados", admin.permissions.recibeNotificacionPagos, isMasterRow)}
+          ${isMasterRow ? "" : '<button type="submit" class="btn btn--ghost btn--sm">Guardar</button>'}
+        </form>
+      `;
+
+      const estadoForm = isSelf
+        ? '<span class="hint">Vos</span>'
+        : `<form method="POST" action="/admin/${tenant.id}/colaboradores/${admin.id}/${admin.active ? "desactivar" : "activar"}">
+             <button type="submit" class="btn btn--ghost btn--sm">${admin.active ? "Desactivar" : "Activar"}</button>
+           </form>`;
+
+      return `<tr>
+        <td>${escapeHtml(admin.email)}</td>
+        <td>${escapeHtml(roleLabel)}</td>
+        <td>${estadoChip}</td>
+        <td>${permisosForm}</td>
+        <td>${estadoForm}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Equipo</p>
+      <h1>Colaboradores</h1>
+      <p>Cuentas con acceso al panel de ${escapeHtml(brandName(tenant))}.</p>
+    </div>
+    ${banner}
+    <div class="panel tablewrap">
+      <table>
+        <thead><tr><th>Correo</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el formulario de abajo.")}</td></tr>`}</tbody>
+      </table>
+    </div>
+    <section class="block" aria-label="Nuevo colaborador">
+      <div class="blockhead"><h2>Nuevo colaborador</h2></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/${tenant.id}/colaboradores">
+          <div class="field">
+            <label for="email">Correo</label>
+            <input type="email" id="email" name="email" required>
+          </div>
+          <div class="field">
+            <label for="password">Contraseña</label>
+            <input type="password" id="password" name="password" required minlength="8">
+          </div>
+          <div class="field">
+            <label id="role-label">Rol</label>
+            <div class="choicegrid" role="radiogroup" aria-labelledby="role-label">
+              <label class="choice">
+                <input type="radio" name="role" value="colaborador" checked>
+                <span class="choice__card">
+                  <span class="choice__title">Colaborador</span>
+                  <span class="choice__desc">Ve el panel, recibe solo las notificaciones que le marques.</span>
+                </span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="role" value="master">
+                <span class="choice__card">
+                  <span class="choice__title">Master</span>
+                  <span class="choice__desc">Todos los permisos, puede gestionar colaboradores.</span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Crear colaborador</button></div>
+        </form>
+      </div>
+    </section>
+  `;
+
+  return layout("Colaboradores", tenant, body, "colaboradores", true);
+}
+
+export async function crearColaborador(
+  tenantId: string,
+  input: { email: string; password: string; role: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const email = input.email.trim().toLowerCase();
+  if (!email) {
+    return { ok: false, error: "El correo es obligatorio." };
+  }
+  if (input.password.length < 8) {
+    return { ok: false, error: "La contraseña debe tener al menos 8 caracteres." };
+  }
+  if (!isAdminRole(input.role)) {
+    return { ok: false, error: "Rol no válido." };
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  try {
+    await createAdmin(tenantId, email, passwordHash, input.role);
+  } catch (error) {
+    // UNIQUE (tenant_id, email) — ver migrations/0033_admins.cjs.
+    const message =
+      error instanceof Error && "code" in error && (error as { code?: string }).code === "23505"
+        ? "Ya existe un colaborador con ese correo."
+        : "No se pudo crear el colaborador.";
+    return { ok: false, error: message };
+  }
+  return { ok: true };
+}
+
+export async function activarColaborador(tenantId: string, adminId: string): Promise<void> {
+  await setAdminActive(tenantId, adminId, true);
+}
+
+export async function desactivarColaborador(tenantId: string, adminId: string): Promise<void> {
+  await setAdminActive(tenantId, adminId, false);
+}
+
+export async function guardarPermisosColaborador(
+  tenantId: string,
+  adminId: string,
+  permissions: AdminPermissions,
+): Promise<void> {
+  await updateAdminPermissions(tenantId, adminId, permissions);
 }
 
 /** Serializado para <script type="application/json"> — ver CLIENT_SCRIPT, filtro de Modelo según Proveedor. */
@@ -2353,6 +2557,7 @@ function llmCatalogForClient(): Record<ProviderKey, { models: { id: string; labe
 export async function renderConfiguracionPage(
   tenantId: string,
   query: { error?: string; guardado?: string },
+  isMaster: boolean,
 ): Promise<string | null> {
   const tenant = await getTenant(tenantId);
   if (!tenant) {
@@ -2530,7 +2735,7 @@ export async function renderConfiguracionPage(
     </section>
   `;
 
-  return layout("Configuración", tenant, body, "configuracion");
+  return layout("Configuración", tenant, body, "configuracion", isMaster);
 }
 
 export async function pausarBot(tenantId: string): Promise<void> {
