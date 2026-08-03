@@ -29,13 +29,16 @@ import {
 } from "../shared/db/productCategoriesDirectory.js";
 import {
   createProduct,
+  findVariantBySku,
   getProductDetail,
   listProductsSummary,
   updateProduct,
+  updateVariantStockAndPrice,
   type ProductDetail,
   type VariantInput,
   type VariantUpdateInput,
 } from "../shared/db/productsDirectory.js";
+import { parseCsv } from "../shared/csv/parseCsv.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import {
   isLlmRoutingMode,
@@ -1346,6 +1349,21 @@ const CLIENT_SCRIPT = `
         }
       };
       reader.readAsDataURL(file);
+    });
+  }
+
+  /* ---------- Importar productos: archivo CSV -> texto plano en campo oculto (mismo patrón que el avatar, sin @fastify/multipart) ---------- */
+  var csvInput = document.querySelector("[data-csv-input]");
+  if (csvInput) {
+    csvInput.addEventListener("change", function () {
+      var file = csvInput.files && csvInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var hidden = document.querySelector("[data-csv-hidden]");
+        if (hidden) hidden.value = reader.result;
+      };
+      reader.readAsText(file);
     });
   }
 
@@ -2757,6 +2775,7 @@ export async function renderProductosPage(
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por nombre, categoría o descripción…" aria-label="Buscar productos">
         <span class="hint tabular"><span data-table-count>${products.length}</span> de ${products.length}</span>
+        <a href="/admin/productos/importar" class="btn btn--sm">Importar CSV</a>
         <button type="button" data-open-dialog="nuevo-producto-dialog" class="btn btn--primary btn--icon" aria-label="Agregar producto" title="Agregar producto">${ICON_PLUS}</button>
       </div>
       <table data-resizable-table="productos">
@@ -2946,6 +2965,122 @@ export async function guardarProducto(
     return { ok: false, error: productUniqueViolationMessage(error) };
   }
   return { ok: true };
+}
+
+/**
+ * Carga masiva de productos por CSV (extensión post-Fase 14, ver
+ * docs/fase-14-catalogo-extendido/README.md#extensión-post-fase) — la
+ * sube un admin del panel en nombre del aliado (no hay portal propio para
+ * que el aliado externo suba su archivo, queda anotado como pendiente).
+ * El archivo se lee client-side con FileReader (mismo patrón que el
+ * avatar del Perfil, ver CLIENT_SCRIPT) y viaja como texto plano en un
+ * campo oculto — evita agregar `@fastify/multipart` al proyecto.
+ */
+export async function renderImportarProductosPage(
+  admin: AdminRecord,
+  query: { error?: string; creados?: string; actualizados?: string; errores?: string },
+): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const allies = await listAllies();
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.creados !== undefined
+      ? `<div class="banner ${query.errores && query.errores !== "0" ? "banner--error" : "banner--ok"}">
+           Creados: ${escapeHtml(query.creados)} · Actualizados: ${escapeHtml(query.actualizados ?? "0")} · Con error: ${escapeHtml(query.errores ?? "0")}
+           ${query.errores && query.errores !== "0" ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron." : ""}
+         </div>`
+      : "";
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Catálogo</p>
+      <h1>Importar productos por CSV</h1>
+      <p>Carga masiva en nombre de un aliado — actualiza el stock/precio si el SKU ya existe, crea el producto si es nuevo.</p>
+    </div>
+    ${banner}
+    <div class="panel connection">
+      <form method="POST" action="/admin/productos/importar">
+        <div class="field">
+          <label for="importar-aliado">Aliado</label>
+          <select id="importar-aliado" name="allyId">${allyOptionsHtml(allies, allies[0]?.id ?? "")}</select>
+          <p class="hint">Los SKU nuevos del archivo se crean bajo este aliado. Los SKU que ya existen no cambian de aliado — solo se actualiza su precio y stock.</p>
+        </div>
+        <div class="field">
+          <label for="importar-archivo">Archivo CSV</label>
+          <input type="file" id="importar-archivo" accept=".csv,text/csv" data-csv-input>
+          <input type="hidden" name="csvText" data-csv-hidden>
+          <p class="hint">Columnas: <code>sku,name,price,stock</code> obligatorias — <code>talla,color,description</code> opcionales. La primera fila debe ser el encabezado.</p>
+        </div>
+        <div class="formfoot"><button type="submit" class="btn btn--primary">Importar</button></div>
+      </form>
+    </div>
+  `;
+
+  return layout("Importar productos", tenant, body, "productos", admin);
+}
+
+/** Actualiza solo precio/stock si el SKU ya existe (nunca reasigna aliado/categoría/nombre); crea un producto nuevo de una sola variante si no existe. Nunca aborta el archivo completo por una fila mala — la reporta y sigue. */
+export async function importarProductosCsv(
+  allyId: string,
+  csvText: string,
+): Promise<{ creados: number; actualizados: number; errores: { row: number; message: string }[] }> {
+  const parsed = parseCsv(csvText);
+  const errores: { row: number; message: string }[] = [];
+  let creados = 0;
+  let actualizados = 0;
+
+  for (let i = 0; i < parsed.rows.length; i++) {
+    const row = parsed.rows[i]!;
+    const rowNumber = i + 2; // +1 por el encabezado, +1 por índice base 1
+    const sku = row.sku?.trim();
+    if (!sku) {
+      errores.push({ row: rowNumber, message: "Falta el SKU." });
+      continue;
+    }
+    const price = Number.parseFloat(row.price ?? "");
+    const stock = Number.parseInt(row.stock ?? "", 10);
+    if (!Number.isFinite(price) || price < 0) {
+      errores.push({ row: rowNumber, message: `Precio inválido para el SKU ${sku}.` });
+      continue;
+    }
+    if (!Number.isInteger(stock) || stock < 0) {
+      errores.push({ row: rowNumber, message: `Stock inválido para el SKU ${sku}.` });
+      continue;
+    }
+
+    const existing = await findVariantBySku(sku);
+    if (existing) {
+      await updateVariantStockAndPrice(existing.id, price, stock);
+      actualizados++;
+      continue;
+    }
+
+    const name = row.name?.trim();
+    if (!name) {
+      errores.push({ row: rowNumber, message: `Falta el nombre para el SKU nuevo ${sku}.` });
+      continue;
+    }
+    try {
+      await createProduct({
+        name,
+        description: row.description?.trim() || null,
+        imageUrl: null,
+        allyId,
+        categoryId: null,
+        variants: [{ sku, attributes: buildVariantAttributes(row.talla ?? "", row.color ?? ""), price, stock }],
+      });
+      creados++;
+    } catch (error) {
+      errores.push({ row: rowNumber, message: productUniqueViolationMessage(error) });
+    }
+  }
+
+  return { creados, actualizados, errores };
 }
 
 export async function renderPedidosPage(admin: AdminRecord): Promise<string | null> {

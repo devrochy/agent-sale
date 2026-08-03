@@ -29,6 +29,7 @@ import {
   guardarProducto,
   guardarReporteDiario,
   guardarReviewLink,
+  importarProductosCsv,
   pausarBot,
   reactivarBot,
   renderAliadosPage,
@@ -39,6 +40,7 @@ import {
   renderConfiguracionPage,
   renderConversacionesPage,
   renderFlujoPage,
+  renderImportarProductosPage,
   renderLeadsPage,
   renderLoginPage,
   renderOverviewPage,
@@ -488,6 +490,35 @@ export async function buildServer() {
       ? "/admin/productos?guardado=1"
       : `/admin/productos?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.get("/admin/productos/importar", async (request, reply) => {
+    const { error, creados, actualizados, errores } = request.query as {
+      error?: string;
+      creados?: string;
+      actualizados?: string;
+      errores?: string;
+    };
+    const html = await renderImportarProductosPage(request.admin!, { error, creados, actualizados, errores });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/productos/importar", async (request, reply) => {
+    const { allyId, csvText } = request.body as { allyId?: string; csvText?: string };
+    if (!allyId || !csvText) {
+      return reply
+        .status(303)
+        .redirect(`/admin/productos/importar?error=${encodeURIComponent("Elegí un aliado y un archivo CSV.")}`);
+    }
+    const resultado = await importarProductosCsv(allyId, csvText);
+    return reply
+      .status(303)
+      .redirect(
+        `/admin/productos/importar?creados=${resultado.creados}&actualizados=${resultado.actualizados}&errores=${resultado.errores.length}`,
+      );
   });
 
   app.get("/admin/aliados", async (request, reply) => {
