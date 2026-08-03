@@ -128,6 +128,24 @@ function brandName(tenant: TenantSummary): string {
   return tenant.display_name ?? tenant.name;
 }
 
+/** Icono + título + explicación en voz del panel, no una frase gris suelta — ver Fase 11 (mejora informada por el panel de referencia externo). */
+function emptyState(icon: string, title: string, desc: string): string {
+  return `<div class="emptystate"><span class="emptystate__icon">${icon}</span><p class="emptystate__title">${escapeHtml(title)}</p><p class="emptystate__desc">${escapeHtml(desc)}</p></div>`;
+}
+
+/** Tarjeta seleccionable (radio + label, sin JS) para Configuración → Voz y estilo — reemplaza los <select> por el patrón táctil del panel de referencia externo, adaptado a los iconos y color de acento propios de este panel. */
+function choiceCard(name: string, value: string, current: string, icon: string, title: string, desc: string): string {
+  const checked = value === current;
+  return `<label class="choice">
+    <input type="radio" name="${escapeHtml(name)}" value="${escapeHtml(value)}"${checked ? " checked" : ""}>
+    <span class="choice__card">
+      <span class="choice__icon">${icon}</span>
+      <span class="choice__title">${escapeHtml(title)}</span>
+      <span class="choice__desc">${escapeHtml(desc)}</span>
+    </span>
+  </label>`;
+}
+
 const ICON_PRODUCTOS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5.2 8 2l6 3.2v5.6L8 14 2 10.8V5.2Z"/><path d="M2 5.2 8 8l6-2.8"/><path d="M8 8v6"/></svg>';
 
@@ -157,6 +175,48 @@ const ICON_CONEXIONES =
 
 const ICON_CONFIGURACION =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 2.4v1.5M8 12.1v1.5M13.6 8h-1.5M3.9 8H2.4M11.9 4.1l-1.05 1.05M5.15 10.85 4.1 11.9M11.9 11.9l-1.05-1.05M5.15 5.15 4.1 4.1"/></svg>';
+
+const ICON_WHATSAPP =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2a5.6 5.6 0 0 0-4.8 8.5L2.4 13.6l3-.75A5.6 5.6 0 1 0 8 2.2Z"/><path d="M5.7 5.9c.15-.35.3-.35.45-.35h.3c.15 0 .3 0 .45.35.2.45.6 1.35.65 1.45.05.1.1.25 0 .4-.1.2-.15.3-.3.45-.15.2-.3.3-.15.55.5.9 1.1 1.5 2 2 .25.15.35.1.5-.05.15-.15.6-.7.75-.9.15-.2.3-.15.5-.1.2.1 1.3.6 1.5.7.2.1.35.15.4.25.05.15.05.7-.2 1.15-.25.45-1.15.85-1.55.85-.4 0-.85.05-2.7-1.1-1.65-1-2.6-2.5-2.75-2.75-.15-.25-1.05-1.55-1-2.6.05-1.05.6-1.5.8-1.7Z" fill="currentColor" stroke="none"/></svg>';
+
+const ICON_ORQUESTADOR =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.8" y="4.8" width="6.4" height="6.4" rx="1"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.3 3.3l1.4 1.4M11.3 11.3l1.4 1.4M12.7 3.3l-1.4 1.4M4.7 11.3l-1.4 1.4"/></svg>';
+
+const ICON_RESPUESTA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8h10.6M9 4.4 12.6 8 9 11.6"/></svg>';
+
+const ICON_TOOL =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 2.6a3 3 0 0 0-3.9 3.7L2.6 10.4a1.4 1.4 0 0 0 2 2l4.1-4.1a3 3 0 0 0 3.7-3.9l-2 2-1.5-.5-.5-1.5 2.2-2.2Z"/></svg>';
+
+const ICON_TONO_CALIDO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M5.4 9.2c.5.9 1.4 1.4 2.6 1.4s2.1-.5 2.6-1.4"/><path d="M5.9 6.3h.01M10.1 6.3h.01"/></svg>';
+
+const ICON_TONO_FORMAL =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 3.4h7.6l-1 2.6 1 2.6H4.2Z"/><path d="M4.2 3.4v9.2"/></svg>';
+
+const ICON_TONO_DIVERTIDO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 9 5l3.2-1.4L10.6 6.6 14 8l-3.4 1.2L12 12.6 8.8 11l-.8 3.2-.8-3.2L4 12.6l1.4-3.4L2 8l3.4-1.4L4 3.6 7.2 5Z"/></svg>';
+
+const ICON_VEL_INMEDIATO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.6 1.6 3.4 9h3.4l-1 5.4 5.8-8.2H8.2l.4-4.6Z"/></svg>';
+
+const ICON_VEL_RAPIDO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.4v9.2M5.4 3.4 10 8l-4.6 4.6M9.4 3.4 14 8l-4.6 4.6"/></svg>';
+
+const ICON_VEL_NORMAL =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.4 1.4"/></svg>';
+
+const ICON_VEL_PAUSADO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.6 3h6.8M4.6 13h6.8M5.2 3c0 2.4 1 3.3 2.8 4.3-1.8 1-2.8 1.9-2.8 4.3M10.8 3c0 2.4-1 3.3-2.8 4.3 1.8 1 2.8 1.9 2.8 4.3"/></svg>';
+
+const ICON_ESTILO_UNO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.4 3.6h11.2v6.4H7l-2.6 2.4v-2.4H2.4V3.6Z"/></svg>';
+
+const ICON_ESTILO_POCOS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 2.6h8v4.2H5.6L3.4 8.6V6.8H2V2.6Z"/><path d="M6.4 9h7.6v4.2h-2.4v1.8L9.4 13.2H6.4V9Z"/></svg>';
+
+const ICON_ESTILO_VARIOS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 2.4h6.4v3.2H4.6L2.8 7v-1.6H1.8V2.4Z"/><path d="M7.8 6.4h6.4v3.2h-1.4V11l-2-1.4H7.8V6.4Z"/><path d="M3.4 10.2h6.4v3.2H7.2l-1.8 1.6v-1.6H3.4v-3.2Z"/></svg>';
 
 type ActiveSection =
   | "resumen"
@@ -567,6 +627,37 @@ table.resizing { cursor: col-resize; user-select: none; }
 .bubble.outbound { align-self: flex-end; background: var(--chrome-soft); border-bottom-right-radius: 4px; }
 .bubble .meta { display: block; margin-top: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); }
 .thread__empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--ink-faint); font-size: 13px; padding: 40px; text-align: center; }
+.emptystate { padding: 52px 24px; text-align: center; }
+.emptystate__icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; margin: 0 auto 14px; color: var(--ink-faint); }
+.emptystate__title { font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--ink); margin: 0 0 6px; }
+.emptystate__desc { font-size: 12.5px; color: var(--ink-faint); max-width: 380px; margin: 0 auto; line-height: 1.5; }
+td .emptystate { padding: 34px 20px; }
+.choicegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.choice { position: relative; display: block; }
+.choice input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.choice__card { display: flex; flex-direction: column; gap: 7px; height: 100%; padding: 13px 15px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-inset); transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease; text-transform: none; letter-spacing: normal; font-weight: 400; }
+.choice__icon { width: 18px; height: 18px; color: var(--ink-faint); transition: color 140ms ease; }
+.choice__title { font-weight: 700; font-size: 13px; color: var(--ink); }
+.choice__desc { font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; }
+.choice:hover .choice__card { border-color: var(--border-strong); }
+.choice input:checked + .choice__card { border-color: var(--ignition); background: var(--panel); box-shadow: 0 0 0 1px var(--ignition), 0 0 16px -7px var(--ignition-glow); }
+.choice input:checked + .choice__card .choice__icon { color: var(--ignition); }
+.choice input:focus-visible + .choice__card { outline: 2px solid var(--chrome); outline-offset: 2px; }
+.connection__titlewrap { display: flex; align-items: center; gap: 12px; }
+.connection__icon { width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; background: var(--panel-inset); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: var(--ink-muted); }
+.connection--live { box-shadow: var(--shadow), 0 0 0 1px var(--go), 0 0 24px -9px var(--go); }
+.connection--live .connection__icon { color: var(--go); border-color: var(--go); }
+.flownode__badge { display: inline-flex; align-items: center; justify-content: center; width: 21px; height: 21px; border-radius: 6px; background: var(--panel-inset); border: 1px solid var(--border); color: var(--chrome); margin-right: 8px; vertical-align: -5px; }
+.flownode__badge svg { width: 12px; height: 12px; }
+.flowsatellites { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+@media (max-width: 480px) { .flowsatellites { grid-template-columns: 1fr; } }
+.flowsat { position: relative; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-inset); padding: 9px 12px 10px; }
+.flowsat::before { content: ""; position: absolute; top: -12px; left: 18px; width: 1px; height: 11px; border-left: 1px dashed var(--border-strong); }
+.flowsat__label { display: block; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--chrome); font-weight: 600; margin-bottom: 3px; }
+.flowsat__value { font-size: 12.5px; }
+.flowtools { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--panel-inset); }
+.flowtools__label { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; margin-bottom: 9px; }
+.flowtools__label svg { width: 12px; height: 12px; }
 `;
 
 const CLIENT_SCRIPT = `
@@ -1153,7 +1244,7 @@ export async function renderOverviewPage(tenantId: string): Promise<string | nul
     <section class="block" aria-label="Conversaciones recientes">
       <div class="blockhead"><h2>Conversaciones recientes</h2><span class="hint">últimas ${recientes.length}</span></div>
       <div class="panel">
-        <ul class="convlist">${conversacionesHtml || '<li class="empty">Sin conversaciones todavía.</li>'}</ul>
+        <ul class="convlist">${conversacionesHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Sin conversaciones todavía", "Acá aparecerán los últimos mensajes apenas un cliente le escriba al agente por WhatsApp.")}</li>`}</ul>
       </div>
     </section>
   `;
@@ -1319,7 +1410,7 @@ export async function renderConversacionesPage(
     <div class="convtabs">${tabsHtml}</div>
     <div class="inbox">
       <aside class="panel inbox__list">
-        <ul class="convitems">${listaHtml || '<li class="empty">Sin conversaciones en este filtro.</li>'}</ul>
+        <ul class="convitems">${listaHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Nada en este filtro", "Probá con otra pestaña — Todas, Abiertas, Escaladas o Cerradas.")}</li>`}</ul>
       </aside>
       <section class="panel inbox__detail">${detalleHtml}</section>
     </div>
@@ -1443,7 +1534,7 @@ export async function renderLeadsPage(tenantId: string): Promise<string | null> 
           <col style="width:20%"><col style="width:44%"><col style="width:18%"><col style="width:18%">
         </colgroup>
         <thead><tr><th>Cliente</th><th>Último mensaje</th><th>Estado</th><th>Cliente desde</th></tr></thead>
-        <tbody>${tableRows || '<tr><td colspan="4" class="empty">Sin leads todavía.</td></tr>'}</tbody>
+        <tbody>${tableRows || `<tr><td colspan="4">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
       <div class="pager" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
@@ -1588,7 +1679,7 @@ export async function renderTicketsPage(tenantId: string): Promise<string | null
           <col style="width:13%"><col style="width:11%"><col style="width:25%"><col style="width:12%">
         </colgroup>
         <thead><tr><th>Cliente</th><th>Motivo</th><th>Estado</th><th>Asignado a</th><th>Creado</th><th>Resumen</th><th></th></tr></thead>
-        <tbody>${tableRows || '<tr><td colspan="7" class="empty">Sin tickets todavía.</td></tr>'}</tbody>
+        <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>
       <div class="pager" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
@@ -1962,22 +2053,27 @@ export async function renderFlujoPage(tenantId: string): Promise<string | null> 
     <div class="flow">
       <div class="flownode">
         <span class="flownode__eyebrow">Canal</span>
-        <span class="flownode__title">WhatsApp · Twilio</span>
+        <span class="flownode__title"><span class="flownode__badge">${ICON_WHATSAPP}</span>WhatsApp · Twilio</span>
       </div>
       <div class="flowline"></div>
       <div class="flownode flownode--core">
         <span class="flownode__eyebrow">Orquestador</span>
-        <span class="flownode__title mono">src/orchestrator/loop.ts</span>
+        <span class="flownode__title mono"><span class="flownode__badge">${ICON_ORQUESTADOR}</span>src/orchestrator/loop.ts</span>
         <div class="flowsub">
-          <div class="flowsub__row"><span class="flowsub__label">Modelo</span><span class="mono">${modelo}</span></div>
-          <div class="flowsub__row"><span class="flowsub__label">Memoria</span><span>Estado de la conversación + historial completo de mensajes</span></div>
-          <div class="flowsub__row flowsub__row--tools"><span class="flowsub__label">Tools</span><div class="toolgrid">${toolPills}</div></div>
+          <div class="flowsatellites">
+            <div class="flowsat"><span class="flowsat__label">Modelo</span><span class="flowsat__value mono">${modelo}</span></div>
+            <div class="flowsat"><span class="flowsat__label">Memoria</span><span class="flowsat__value">Estado de la conversación + historial completo de mensajes</span></div>
+          </div>
+          <div class="flowtools">
+            <span class="flowtools__label">${ICON_TOOL}Tools</span>
+            <div class="toolgrid">${toolPills}</div>
+          </div>
         </div>
       </div>
       <div class="flowline"></div>
       <div class="flownode">
         <span class="flownode__eyebrow">Respuesta</span>
-        <span class="flownode__title">Outbound vía Twilio</span>
+        <span class="flownode__title"><span class="flownode__badge">${ICON_RESPUESTA}</span>Outbound vía Twilio</span>
       </div>
     </div>
     <p class="flowfoot">Llamadas por tool en los últimos 30 días.</p>
@@ -2018,11 +2114,14 @@ export async function renderConexionesPage(tenantId: string): Promise<string | n
     <div class="pagehead">
       <p class="eyebrow">Agente</p>
       <h1>Conexiones</h1>
-      <p>Canales conectados al agente de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${conectado ? "1 de 1" : "0 de 1"} canal conectado — WhatsApp por Twilio es el único canal que integra ${escapeHtml(brandName(tenant))} hoy.</p>
     </div>
-    <div class="panel connection">
+    <div class="panel connection${conectado ? " connection--live" : ""}">
       <div class="connection__head">
-        <h2>WhatsApp · Twilio</h2>
+        <div class="connection__titlewrap">
+          <span class="connection__icon">${ICON_WHATSAPP}</span>
+          <h2>WhatsApp · Twilio</h2>
+        </div>
         <span class="connection__badge ${conectado ? "connection__badge--on" : "connection__badge--off"}">${conectado ? '<span class="pulse"></span>Conectado' : "Sin conectar"}</span>
       </div>
       <dl class="connection__meta">
@@ -2099,7 +2198,7 @@ export async function renderProductosPage(tenantId: string): Promise<string | nu
           <col style="width:11%"><col style="width:9%"><col style="width:7%"><col style="width:38%">
         </colgroup>
         <thead><tr><th>Foto</th><th>SKU</th><th>Nombre</th><th>Categoría</th><th>Precio</th><th>Stock</th><th>Descripción</th></tr></thead>
-        <tbody>${tableRows || '<tr><td colspan="7" class="empty">Sin productos todavía.</td></tr>'}</tbody>
+        <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Cuando se agreguen productos a la base de datos, van a aparecer acá listos para que el agente los recomiende.")}</td></tr>`}</tbody>
       </table>
       <div class="pager" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
@@ -2182,7 +2281,7 @@ export async function renderPedidosPage(tenantId: string): Promise<string | null
           <col style="width:14%"><col style="width:14%"><col style="width:9%"><col style="width:9%">
         </colgroup>
         <thead><tr><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th></tr></thead>
-        <tbody>${tableRows || '<tr><td colspan="7" class="empty">Sin pedidos todavía.</td></tr>'}</tbody>
+        <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
       <div class="pager" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
@@ -2309,29 +2408,29 @@ export async function renderConfiguracionPage(
       <div class="panel connection">
         <form method="POST" action="/admin/${tenant.id}/configuracion/comportamiento">
           <div class="field">
-            <label for="tono">Tono</label>
-            <select id="tono" name="tono">
-              <option value="calido"${behaviorConfig.tono === "calido" ? " selected" : ""}>Cálido — amable y cercano, como un amigo</option>
-              <option value="formal"${behaviorConfig.tono === "formal" ? " selected" : ""}>Formal — serio y profesional, trato de usted</option>
-              <option value="divertido"${behaviorConfig.tono === "divertido" ? " selected" : ""}>Divertido — relajado y con buen humor</option>
-            </select>
+            <label id="tono-label">Tono</label>
+            <div class="choicegrid" role="radiogroup" aria-labelledby="tono-label">
+              ${choiceCard("tono", "calido", behaviorConfig.tono, ICON_TONO_CALIDO, "Cálido", "Amable y cercano, como un amigo.")}
+              ${choiceCard("tono", "formal", behaviorConfig.tono, ICON_TONO_FORMAL, "Formal", "Serio y profesional, trato de usted.")}
+              ${choiceCard("tono", "divertido", behaviorConfig.tono, ICON_TONO_DIVERTIDO, "Divertido", "Relajado y con buen humor.")}
+            </div>
           </div>
           <div class="field">
-            <label for="estilo-mensajes">Estilo de mensajes</label>
-            <select id="estilo-mensajes" name="estiloMensajes">
-              <option value="un_mensaje"${behaviorConfig.estiloMensajes === "un_mensaje" ? " selected" : ""}>Un mensaje — toda la respuesta en una sola burbuja</option>
-              <option value="pocos_cortos"${behaviorConfig.estiloMensajes === "pocos_cortos" ? " selected" : ""}>2-3 cortos — parte la respuesta en pocas burbujas</option>
-              <option value="varios_cortos"${behaviorConfig.estiloMensajes === "varios_cortos" ? " selected" : ""}>Varios cortos — muchas burbujas, estilo chat</option>
-            </select>
+            <label id="estilo-mensajes-label">Estilo de mensajes</label>
+            <div class="choicegrid" role="radiogroup" aria-labelledby="estilo-mensajes-label">
+              ${choiceCard("estiloMensajes", "un_mensaje", behaviorConfig.estiloMensajes, ICON_ESTILO_UNO, "Un mensaje", "Toda la respuesta en una sola burbuja.")}
+              ${choiceCard("estiloMensajes", "pocos_cortos", behaviorConfig.estiloMensajes, ICON_ESTILO_POCOS, "2-3 cortos", "Parte la respuesta en pocas burbujas.")}
+              ${choiceCard("estiloMensajes", "varios_cortos", behaviorConfig.estiloMensajes, ICON_ESTILO_VARIOS, "Varios cortos", "Muchas burbujas, estilo chat.")}
+            </div>
           </div>
           <div class="field">
-            <label for="velocidad-respuesta">Velocidad de respuesta</label>
-            <select id="velocidad-respuesta" name="velocidadRespuesta">
-              <option value="inmediato"${behaviorConfig.velocidadRespuesta === "inmediato" ? " selected" : ""}>Inmediato (recomendado) — responde apenas llega el mensaje</option>
-              <option value="rapido"${behaviorConfig.velocidadRespuesta === "rapido" ? " selected" : ""}>Rápido — espera 5 segundos por si el cliente sigue escribiendo</option>
-              <option value="normal"${behaviorConfig.velocidadRespuesta === "normal" ? " selected" : ""}>Normal — espera 15 segundos</option>
-              <option value="pausado"${behaviorConfig.velocidadRespuesta === "pausado" ? " selected" : ""}>Pausado — espera 30 segundos para juntar todo el mensaje</option>
-            </select>
+            <label id="velocidad-respuesta-label">Velocidad de respuesta</label>
+            <div class="choicegrid" role="radiogroup" aria-labelledby="velocidad-respuesta-label">
+              ${choiceCard("velocidadRespuesta", "inmediato", behaviorConfig.velocidadRespuesta, ICON_VEL_INMEDIATO, "Inmediato", "Responde apenas llega el mensaje (recomendado).")}
+              ${choiceCard("velocidadRespuesta", "rapido", behaviorConfig.velocidadRespuesta, ICON_VEL_RAPIDO, "Rápido", "Espera 5 segundos por si el cliente sigue escribiendo.")}
+              ${choiceCard("velocidadRespuesta", "normal", behaviorConfig.velocidadRespuesta, ICON_VEL_NORMAL, "Normal", "Espera 15 segundos.")}
+              ${choiceCard("velocidadRespuesta", "pausado", behaviorConfig.velocidadRespuesta, ICON_VEL_PAUSADO, "Pausado", "Espera 30 segundos para juntar todo el mensaje.")}
+            </div>
             <p class="hint">Fuera de "Inmediato", el agente agrupa los mensajes seguidos del cliente en un solo turno de respuesta.</p>
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
