@@ -14,18 +14,19 @@ import {
   crearAliado,
   crearCategoria,
   crearColaborador,
+  crearProducto,
   desactivarAliado,
   desactivarCategoria,
   desactivarColaborador,
   exportLeadsCsv,
   guardarAliado,
-  guardarAsignacionProducto,
   guardarCategoria,
   guardarCobros,
   guardarComportamiento,
   guardarModeloIa,
   guardarPerfil,
   guardarPermisosColaborador,
+  guardarProducto,
   guardarReporteDiario,
   guardarReviewLink,
   pausarBot,
@@ -436,7 +437,12 @@ export async function buildServer() {
   });
 
   app.get("/admin/productos", async (request, reply) => {
-    const html = await renderProductosPage(request.admin!);
+    const { error, guardado, allyId } = request.query as {
+      error?: string;
+      guardado?: string;
+      allyId?: string;
+    };
+    const html = await renderProductosPage(request.admin!, { error, guardado, allyId });
     if (!html) {
       return reply.status(404).send();
     }
@@ -451,11 +457,37 @@ export async function buildServer() {
     return reply.type("text/html").send(html);
   });
 
-  app.post("/admin/productos/:productId/asignar", async (request, reply) => {
+  app.post("/admin/productos", async (request, reply) => {
+    const body = request.body as Record<string, string | string[] | undefined>;
+    const result = await crearProducto({
+      name: (body.name as string) ?? "",
+      description: (body.description as string) ?? "",
+      imageUrl: (body.imageUrl as string) ?? "",
+      allyId: (body.allyId as string) ?? "",
+      categoryId: (body.categoryId as string) ?? "",
+      variants: body,
+    });
+    const redirectUrl = result.ok
+      ? "/admin/productos?guardado=1"
+      : `/admin/productos?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/productos/:productId", async (request, reply) => {
     const { productId } = request.params as { productId: string };
-    const { allyId, categoryId } = request.body as { allyId?: string; categoryId?: string };
-    await guardarAsignacionProducto(productId, { allyId: allyId ?? "", categoryId: categoryId ?? "" });
-    return reply.status(303).redirect("/admin/productos");
+    const body = request.body as Record<string, string | string[] | undefined>;
+    const result = await guardarProducto(productId, {
+      name: (body.name as string) ?? "",
+      description: (body.description as string) ?? "",
+      imageUrl: (body.imageUrl as string) ?? "",
+      allyId: (body.allyId as string) ?? "",
+      categoryId: (body.categoryId as string) ?? "",
+      variants: body,
+    });
+    const redirectUrl = result.ok
+      ? "/admin/productos?guardado=1"
+      : `/admin/productos?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
   });
 
   app.get("/admin/aliados", async (request, reply) => {
