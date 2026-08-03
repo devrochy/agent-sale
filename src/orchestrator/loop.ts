@@ -2,7 +2,7 @@ import type { EscalationReason } from "../domains/escalation/escalarHumano.js";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
 import { getBehaviorConfig, getEscalationConfig } from "../shared/db/index.js";
-import { withTenant } from "../shared/db/withTenant.js";
+import { withTransaction } from "../shared/db/withTransaction.js";
 import { logger } from "../shared/observability/logger.js";
 import {
   extractMonetaryValues,
@@ -14,7 +14,7 @@ import { calculateCost } from "../shared/pricing.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import type { DifficultySignal } from "./llm/difficultyRouting.js";
-import { resolveLlmProviderForTenant, type ContentBlock, type LLMMessage } from "./llm/index.js";
+import { resolveLlmProvider, type ContentBlock, type LLMMessage } from "./llm/index.js";
 import { appendMessage, loadHistory, resolveConversation, updateMessageContent, updateState } from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
@@ -143,25 +143,17 @@ function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): stri
 }
 
 async function escalateAndReply(
-  tenantId: string,
   conversationId: string,
   reason: EscalationReason,
   summary: string,
 ): Promise<TurnResult> {
-  const escalation = await escalarHumano(tenantId, conversationId, { reason, summary });
-  await recordAudit(
-    tenantId,
-    conversationId,
-    "orchestrator",
-    "escalar_a_humano",
-    { reason, summary },
-    escalation,
-  );
+  const escalation = await escalarHumano(conversationId, { reason, summary });
+  await recordAudit(conversationId, "orchestrator", "escalar_a_humano", { reason, summary }, escalation);
   logger
-    .child({ tenant_id: tenantId, conversation_id: conversationId })
+    .child({ conversation_id: conversationId })
     .info({ event: "orchestrator.escalado", reason }, "Conversación escalada a un asesor humano");
-  await appendMessage(tenantId, conversationId, "outbound", "agent", FALLBACK_ESCALATION_MESSAGE);
-  await updateState(tenantId, conversationId, { step: "escalado" });
+  await appendMessage(conversationId, "outbound", "agent", FALLBACK_ESCALATION_MESSAGE);
+  await updateState(conversationId, { step: "escalado" });
   return { responseText: FALLBACK_ESCALATION_MESSAGE, mediaUrl: null };
 }
 
@@ -180,13 +172,12 @@ async function escalateAndReply(
  * que empezar a pasar el objeto de conversación entre funciones.
  */
 export async function appendInbound(
-  tenantId: string,
   customerPhone: string,
   incomingBody: string,
   customerName?: string,
 ): Promise<{ conversationId: string; escalatedNow: TurnResult | null }> {
-  const { conversationId, state } = await resolveConversation(tenantId, customerPhone, customerName);
-  await appendMessage(tenantId, conversationId, "inbound", "customer", incomingBody);
+  const { conversationId, state } = await resolveConversation(customerPhone, customerName);
+  await appendMessage(conversationId, "inbound", "customer", incomingBody);
 
   if (state.step === "escalado") {
     // El mensaje ya quedó guardado para que el asesor lo vea (vista del
@@ -195,11 +186,10 @@ export async function appendInbound(
     return { conversationId, escalatedNow: { responseText: null, mediaUrl: null } };
   }
 
-  const escalationConfig = resolveEscalationConfig(await getEscalationConfig(tenantId));
+  const escalationConfig = resolveEscalationConfig(await getEscalationConfig());
   const keywordMatch = matchKeywordEscalation(incomingBody, escalationConfig);
   if (keywordMatch) {
     const result = await escalateAndReply(
-      tenantId,
       conversationId,
       keywordMatch.reason,
       `El mensaje del cliente contiene el término "${keywordMatch.matchedTerm}" (regla de palabras clave).`,
@@ -218,42 +208,37 @@ export async function appendInbound(
  * nuevo (no desde el mensaje puntual que disparó el turno) para que, si
  * `appendInbound` se llamó varias veces durante una ventana de debounce
  * (ver ADR-022), este turno vea el estado y el historial más recientes —
- * incluye todos los mensajes acumulados, no solo el último. `tenant_id`,
- * `conversation_id` y `customer_id` nunca se exponen al LLM como
- * parámetros de tool — los inyecta este módulo. `messageSid` se usa solo
- * para el idempotency_key de crear_pedido (ver domains/commerce/crearPedido.ts) —
- * con debounce, es el Sid del último mensaje que (re)armó el timer.
+ * incluye todos los mensajes acumulados, no solo el último. `conversation_id`
+ * y `customer_id` nunca se exponen al LLM como parámetros de tool — los
+ * inyecta este módulo. `messageSid` se usa solo para el idempotency_key
+ * de crear_pedido (ver domains/commerce/crearPedido.ts) — con debounce,
+ * es el Sid del último mensaje que (re)armó el timer.
  */
 export async function processConversation(
-  tenantId: string,
   customerPhone: string,
   messageSid: string,
   customerName?: string,
 ): Promise<TurnResult> {
-  const { conversationId, customerId, state } = await resolveConversation(
-    tenantId,
-    customerPhone,
-    customerName,
-  );
-  const turnLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
+  const { conversationId, customerId, state } = await resolveConversation(customerPhone, customerName);
+  const turnLogger = logger.child({ conversation_id: conversationId });
 
   if (state.step === "escalado") {
     return { responseText: null, mediaUrl: null };
   }
 
-  const escalationConfig = resolveEscalationConfig(await getEscalationConfig(tenantId));
-  // Tono de voz del tenant (Fase 11.4 extendida, ver ADR-021) — segundo
+  const escalationConfig = resolveEscalationConfig(await getEscalationConfig());
+  // Tono de voz del negocio (Fase 11.4 extendida, ver ADR-021) — segundo
   // bloque de `system`, con su propio cache_control en AnthropicProvider.
-  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
   const systemPrompt = [SYSTEM_PROMPT, TONE_BLOCKS[behaviorConfig.tono]];
 
-  const messages = await loadHistory(tenantId, conversationId);
+  const messages = await loadHistory(conversationId);
   // Se resuelve una sola vez por turno (Fase 11.4, ver ADR-020) — un turno
   // puede llamar al LLM varias veces (tool calling), todas usan el mismo
   // proveedor/modelo, nunca se re-resuelve a mitad de turno. `model`/
   // `providerKey` quedan disponibles para el insert de llm_usage (Fase
-  // 11.5). `difficultySignal` solo importa si el tenant tiene "Cerebro del
-  // bot" activo (ADR-023) — se arma desde el historial recién cargado, no
+  // 11.5). `difficultySignal` solo importa si "Cerebro del bot" está
+  // activo (ADR-023) — se arma desde el historial recién cargado, no
   // desde un `incomingBody` puntual (bajo debounce, ver ADR-022, puede
   // haber más de un mensaje de cliente en este turno).
   const difficultySignal = buildDifficultySignal(messages, state);
@@ -262,7 +247,7 @@ export async function processConversation(
     model: resolvedModel,
     providerKey,
     dificultad,
-  } = await resolveLlmProviderForTenant(tenantId, difficultySignal);
+  } = await resolveLlmProvider(difficultySignal);
 
   let hadAnyToolCall = false;
   // Montos reales devueltos por tools — de toda la conversación, no solo
@@ -334,7 +319,7 @@ export async function processConversation(
       "Llamada al LLM completada",
     );
 
-    await recordAudit(tenantId, conversationId, "agent", "turno_conversacion", null, {
+    await recordAudit(conversationId, "agent", "turno_conversacion", null, {
       stop_reason: response.stopReason,
       usage: response.usage,
     });
@@ -345,13 +330,12 @@ export async function processConversation(
     // verdad operacional.
     try {
       const cost = calculateCost(resolvedModel, response.usage.inputTokens, response.usage.outputTokens);
-      await withTenant(tenantId, (client) =>
+      await withTransaction((client) =>
         client.query(
           `INSERT INTO llm_usage
-             (tenant_id, conversation_id, provider, model, input_tokens, output_tokens, latency_ms, cost_usd)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+             (conversation_id, provider, model, input_tokens, output_tokens, latency_ms, cost_usd)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
           [
-            tenantId,
             conversationId,
             providerKey,
             resolvedModel,
@@ -367,11 +351,10 @@ export async function processConversation(
     }
 
     if (response.stopReason === "refusal") {
-      await recordAudit(tenantId, conversationId, "orchestrator", "refusal", null, {
+      await recordAudit(conversationId, "orchestrator", "refusal", null, {
         category: response.refusalCategory ?? null,
       });
       return escalateAndReply(
-        tenantId,
         conversationId,
         "queja",
         "El agente rehusó continuar la conversación (stop_reason: refusal).",
@@ -380,7 +363,6 @@ export async function processConversation(
 
     messages.push({ role: "assistant", content: response.content });
     lastAssistantMessageId = await appendMessage(
-      tenantId,
       conversationId,
       "outbound",
       "agent",
@@ -397,7 +379,6 @@ export async function processConversation(
       let montoAltoAmount: number | null = null;
       for (const toolUse of toolUseBlocks) {
         const toolResult = await executeTool(
-          tenantId,
           conversationId,
           customerId,
           messageSid,
@@ -424,11 +405,10 @@ export async function processConversation(
         }
       }
       messages.push({ role: "user", content: toolResults });
-      await appendMessage(tenantId, conversationId, "inbound", "agent", "", toolResults);
+      await appendMessage(conversationId, "inbound", "agent", "", toolResults);
 
       if (montoAltoAmount !== null) {
         return escalateAndReply(
-          tenantId,
           conversationId,
           "monto_alto",
           `El pedido ($${montoAltoAmount}) supera el umbral configurado ($${escalationConfig.montoAltoThreshold}) — crear_pedido se negó a confirmarlo.`,
@@ -455,7 +435,6 @@ export async function processConversation(
     if (!priceGuardrailResult.ok || !stockGuardrailResult.ok) {
       const failedGuardrail: "precio" | "stock" = !priceGuardrailResult.ok ? "precio" : "stock";
       await recordAudit(
-        tenantId,
         conversationId,
         "orchestrator",
         failedGuardrail === "precio" ? "guardrail_precio_incidente" : "guardrail_stock_incidente",
@@ -482,12 +461,11 @@ export async function processConversation(
           failedGuardrail === "precio" ? GUARDRAIL_RETRY_INSTRUCTION_PRECIO : GUARDRAIL_RETRY_INSTRUCTION_STOCK;
         const retryInstruction: ContentBlock[] = [{ type: "text", text: retryText }];
         messages.push({ role: "user", content: retryInstruction });
-        await appendMessage(tenantId, conversationId, "inbound", "agent", "", retryInstruction);
+        await appendMessage(conversationId, "inbound", "agent", "", retryInstruction);
         continue;
       }
 
       return escalateAndReply(
-        tenantId,
         conversationId,
         failedGuardrail === "precio" ? "guardrail_precio" : "guardrail_stock",
         failedGuardrail === "precio"
@@ -506,14 +484,13 @@ export async function processConversation(
 
     if (turnosSinResolver >= escalationConfig.maxIntentosFallidos) {
       return escalateAndReply(
-        tenantId,
         conversationId,
         "intentos_fallidos",
         `El agente respondió ${turnosSinResolver} turnos consecutivos sin usar ninguna tool para resolver la necesidad del cliente.`,
       );
     }
 
-    await updateState(tenantId, conversationId, {
+    await updateState(conversationId, {
       step: "resuelto",
       turnos_sin_resolver: turnosSinResolver,
     });
@@ -529,13 +506,12 @@ export async function processConversation(
       // del LLM, sin el link — se corrige acá para que la transcripción
       // del panel/vista del asesor coincida con lo que el cliente recibió
       // de verdad por WhatsApp.
-      await updateMessageContent(tenantId, lastAssistantMessageId, finalResponseText);
+      await updateMessageContent(lastAssistantMessageId, finalResponseText);
     }
     return { responseText: finalResponseText, mediaUrl };
   }
 
   return escalateAndReply(
-    tenantId,
     conversationId,
     "intentos_fallidos",
     "El agente alcanzó el límite de iteraciones de tool calling sin resolver.",
@@ -546,20 +522,19 @@ export async function processConversation(
  * Conveniencia para el caso "inmediato" (default — ver ADR-022): ingesta
  * y procesamiento en la misma llamada, sin pasar por la cola de
  * debounce. Firma y comportamiento idénticos a los del `runTurn` de
- * antes de esta fase — cero regresión para tenants sin `behavior_config`
- * configurado. Con debounce activo, `consumer.ts` llama `appendInbound` y
+ * antes de esta fase — cero regresión sin `behavior_config` configurado.
+ * Con debounce activo, `consumer.ts` llama `appendInbound` y
  * `processConversation` por separado (ver debounceScheduler.ts).
  */
 export async function runTurn(
-  tenantId: string,
   customerPhone: string,
   incomingBody: string,
   messageSid: string,
   customerName?: string,
 ): Promise<TurnResult> {
-  const { escalatedNow } = await appendInbound(tenantId, customerPhone, incomingBody, customerName);
+  const { escalatedNow } = await appendInbound(customerPhone, incomingBody, customerName);
   if (escalatedNow) {
     return escalatedNow;
   }
-  return processConversation(tenantId, customerPhone, messageSid, customerName);
+  return processConversation(customerPhone, messageSid, customerName);
 }

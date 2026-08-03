@@ -1,4 +1,4 @@
-import { withTenant } from "../../shared/db/index.js";
+import { withTransaction } from "../../shared/db/index.js";
 
 export interface CotizacionItemInput {
   product_id: string;
@@ -41,7 +41,6 @@ interface ProductStockRow {
  * quote_id nuevo.
  */
 export async function generarCotizacion(
-  tenantId: string,
   conversationId: string,
   customerId: string,
   input: GenerarCotizacionInput,
@@ -50,7 +49,7 @@ export async function generarCotizacion(
     throw new Error("La cotización necesita al menos un producto.");
   }
 
-  return withTenant(tenantId, async (client) => {
+  return withTransaction(async (client) => {
     const items: CotizacionItemOutput[] = [];
 
     for (const item of input.items) {
@@ -90,18 +89,18 @@ export async function generarCotizacion(
     const subtotal = items.reduce((sum, item) => sum + item.line_total, 0);
 
     const quote = await client.query<{ id: string }>(
-      `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, discount, total, status)
-       VALUES ($1, $2, $3, $4, 0, $4, 'draft')
+      `INSERT INTO quotes (conversation_id, customer_id, subtotal, discount, total, status)
+       VALUES ($1, $2, $3, 0, $3, 'draft')
        RETURNING id`,
-      [tenantId, conversationId, customerId, subtotal],
+      [conversationId, customerId, subtotal],
     );
     const quoteId = quote.rows[0]!.id;
 
     for (const item of items) {
       await client.query(
-        `INSERT INTO quote_items (tenant_id, quote_id, product_id, quantity, unit_price)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [tenantId, quoteId, item.product_id, item.quantity, item.unit_price],
+        `INSERT INTO quote_items (quote_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, $3, $4)`,
+        [quoteId, item.product_id, item.quantity, item.unit_price],
       );
     }
 

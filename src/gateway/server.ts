@@ -15,12 +15,12 @@ import {
   guardarCobros,
   guardarComportamiento,
   guardarModeloIa,
+  guardarPerfil,
   guardarPermisosColaborador,
   guardarReporteDiario,
   guardarReviewLink,
   pausarBot,
   reactivarBot,
-  renderAdminRootPage,
   renderAnaliticaPage,
   renderColaboradoresPage,
   renderConexionesPage,
@@ -31,10 +31,11 @@ import {
   renderLoginPage,
   renderOverviewPage,
   renderPedidosPage,
+  renderPerfilPage,
   renderProductosPage,
   renderTicketsPage,
 } from "../admin/adminPanel.js";
-import type { AdminRecord } from "../admin/auth/adminsDirectory.js";
+import { isUsernameTaken, type AdminRecord } from "../admin/auth/adminsDirectory.js";
 import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
 import { login, logout } from "../admin/auth/session.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
@@ -44,17 +45,11 @@ import { handleWompiWebhook } from "./wompiWebhookHandler.js";
 
 declare module "fastify" {
   interface FastifyRequest {
-    // Seteado por el hook de auth de /admin/:tenantId/* (ver más abajo) —
-    // null en cualquier ruta pública (webhooks, /asesor, /resena, /admin
-    // bare, /admin/:tenantId/login).
+    // Seteado por el hook de auth de /admin/* (ver más abajo) — null en
+    // cualquier ruta pública (webhooks, /asesor, /resena, /login).
     admin: AdminRecord | null;
   }
 }
-
-// UUID con guiones — mismo patrón que UUID_PATTERN de withTenant.ts, acá
-// solo para reconocer el segmento :tenantId de la URL en el hook global
-// de auth (que corre antes de que Fastify resuelva request.params).
-const ADMIN_TENANT_PATH = /^\/admin\/([0-9a-f-]{36})(\/[^?]*)?/i;
 
 /**
  * Fastify se expone vía buildServer() (en vez de arrancar directamente)
@@ -75,12 +70,9 @@ export async function buildServer() {
 
   // Rate limiting por IP (ver docs/fase-8-observabilidad-seguridad/revision-seguridad.md,
   // "Controles nuevos de esta fase"): protege contra abuso o un error de
-  // configuración del lado de Twilio. Por IP, no por tenant — el tenant
-  // no se conoce hasta después de verificar firma y resolver el número;
-  // limitar por tenant queda fuera de alcance mientras el piloto sea de
-  // un solo tenant (ForMotos). El registro se espera explícitamente: sin
-  // el `await`, el hook global de rate limiting no queda activo a tiempo
-  // para las rutas que se declaran a continuación.
+  // configuración del lado de Twilio. El registro se espera
+  // explícitamente: sin el `await`, el hook global de rate limiting no
+  // queda activo a tiempo para las rutas que se declaran a continuación.
   await app.register(rateLimit, { max: 200, timeWindow: "1 minute" });
 
   app.get("/healthz", async () => ({ status: "ok" }));
@@ -91,28 +83,18 @@ export async function buildServer() {
   app.decorateRequest("admin", null);
 
   // Panel admin (Fase 13, ver src/admin/auth/session.ts y ADR-025):
-  // Basic Auth global quedó retirado. Todo `/admin/:tenantId/*` requiere
-  // sesión válida, excepto el propio login. `/admin` sin tenantId no
-  // expone datos (ver renderAdminRootPage), así que no requiere sesión.
+  // Basic Auth global quedó retirado. Todo `/admin/*` requiere sesión
+  // válida. El login/logout combinado (Fase 13 v2, ver ADR-032) vive en
+  // `/login`/`/logout`, fuera de este prefijo, así que no necesita ningún
+  // caso especial acá — queda público por no matchear el prefijo.
   app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/admin")) {
       return;
     }
 
-    const match = request.url.match(ADMIN_TENANT_PATH);
-    if (!match) {
-      return; // GET /admin (bare) — sin datos de tenant.
-    }
-
-    const tenantId = match[1]!;
-    const path = match[2] ?? "";
-    if (path === "/login") {
-      return; // formulario/acción de login, públicos por definición.
-    }
-
-    const admin = await currentAdmin(request, tenantId);
+    const admin = await currentAdmin(request);
     if (!admin) {
-      return reply.status(303).redirect(`/admin/${tenantId}/login`);
+      return reply.status(303).redirect("/login");
     }
     request.admin = admin;
   });
@@ -121,7 +103,7 @@ export async function buildServer() {
   // sesión válida, no `role='master'`; esa restricción es específica de
   // esta sección, así que se chequea acá, no en el hook global.
   app.addHook("preHandler", async (request, reply) => {
-    if (!request.url.match(/^\/admin\/[0-9a-f-]{36}\/colaboradores/i)) {
+    if (!request.url.match(/^\/admin\/colaboradores/i)) {
       return;
     }
     if (request.admin?.role !== "master") {
@@ -129,28 +111,20 @@ export async function buildServer() {
     }
   });
 
-  app.get("/admin", async (_request, reply) => {
-    const html = await renderAdminRootPage();
-    return reply.type("text/html").send(html);
-  });
-
-  app.get("/admin/:tenantId/login", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderLoginPage(tenantId);
+  app.get("/login", async (request, reply) => {
+    const html = await renderLoginPage();
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.post("/admin/:tenantId/login", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const { email, password } = request.body as { email?: string; password?: string };
-    const token =
-      email && password ? await login(tenantId, email, password) : null;
+  app.post("/login", async (request, reply) => {
+    const { identifier, password } = request.body as { identifier?: string; password?: string };
+    const token = identifier && password ? await login(identifier, password) : null;
 
     if (!token) {
-      const html = await renderLoginPage(tenantId, "Correo o contraseña incorrectos.");
+      const html = await renderLoginPage("Correo o contraseña incorrectos.");
       if (!html) {
         return reply.status(404).send();
       }
@@ -158,61 +132,51 @@ export async function buildServer() {
     }
 
     reply.setCookie(SESSION_COOKIE_NAME, token, {
-      path: `/admin/${tenantId}`,
+      path: "/",
       httpOnly: true,
       sameSite: "lax",
       secure: request.protocol === "https",
       maxAge: 7 * 24 * 60 * 60,
     });
-    return reply.status(303).redirect(`/admin/${tenantId}`);
+    return reply.status(303).redirect("/admin");
   });
 
-  app.post("/admin/:tenantId/logout", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.post("/logout", async (request, reply) => {
     const token = request.cookies?.[SESSION_COOKIE_NAME];
     if (token) {
       await logout(token);
     }
-    reply.clearCookie(SESSION_COOKIE_NAME, { path: `/admin/${tenantId}` });
-    return reply.status(303).redirect(`/admin/${tenantId}/login`);
+    reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+    return reply.status(303).redirect("/login");
   });
 
-  app.get("/admin/:tenantId", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderOverviewPage(tenantId, request.admin?.role === "master");
+  app.get("/admin", async (request, reply) => {
+    const html = await renderOverviewPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/conversaciones", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.get("/admin/conversaciones", async (request, reply) => {
     const { estado, c } = request.query as { estado?: string; c?: string };
-    const html = await renderConversacionesPage(
-      tenantId,
-      estado,
-      c,
-      request.admin?.role === "master",
-    );
+    const html = await renderConversacionesPage(estado, c, request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/leads", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderLeadsPage(tenantId, request.admin?.role === "master");
+  app.get("/admin/leads", async (request, reply) => {
+    const html = await renderLeadsPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/leads.csv", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const csv = await exportLeadsCsv(tenantId);
+  app.get("/admin/leads.csv", async (_request, reply) => {
+    const csv = await exportLeadsCsv();
     if (csv === null) {
       return reply.status(404).send();
     }
@@ -222,208 +186,254 @@ export async function buildServer() {
       .send(csv);
   });
 
-  app.get("/admin/:tenantId/tickets", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderTicketsPage(tenantId, request.admin?.role === "master");
+  app.get("/admin/tickets", async (request, reply) => {
+    const html = await renderTicketsPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/analitica", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.get("/admin/analitica", async (request, reply) => {
     const { moneda } = request.query as { moneda?: string };
-    const html = await renderAnaliticaPage(tenantId, moneda, request.admin?.role === "master");
+    const html = await renderAnaliticaPage(moneda, request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/flujo", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderFlujoPage(tenantId, request.admin?.role === "master");
+  app.get("/admin/flujo", async (request, reply) => {
+    const html = await renderFlujoPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/conexiones", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderConexionesPage(tenantId, request.admin?.role === "master");
+  app.get("/admin/conexiones", async (request, reply) => {
+    const html = await renderConexionesPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/colaboradores", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.get("/admin/colaboradores", async (request, reply) => {
     const { error, guardado } = request.query as { error?: string; guardado?: string };
-    const html = await renderColaboradoresPage(tenantId, request.admin!.id, { error, guardado });
+    const html = await renderColaboradoresPage(request.admin!, { error, guardado });
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.post("/admin/:tenantId/colaboradores", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const { email, password, role, phone } = request.body as {
+  app.post("/admin/colaboradores", async (request, reply) => {
+    const { username, email, password, role, phonePrefix, phoneNumber } = request.body as {
+      username?: string;
       email?: string;
       password?: string;
       role?: string;
-      phone?: string;
+      phonePrefix?: string;
+      phoneNumber?: string;
     };
-    const result = await crearColaborador(tenantId, {
+    const result = await crearColaborador({
+      username: username ?? "",
       email: email ?? "",
       password: password ?? "",
       role: role ?? "",
-      phone: phone ?? "",
+      phonePrefix: phonePrefix ?? "",
+      phoneNumber: phoneNumber ?? "",
     });
     const redirectUrl = result.ok
-      ? `/admin/${tenantId}/colaboradores?guardado=1`
-      : `/admin/${tenantId}/colaboradores?error=${encodeURIComponent(result.error)}`;
+      ? "/admin/colaboradores?guardado=1"
+      : `/admin/colaboradores?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/:tenantId/colaboradores/:adminId/activar", async (request, reply) => {
-    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
-    await activarColaborador(tenantId, adminId);
-    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  app.post("/admin/colaboradores/:adminId/activar", async (request, reply) => {
+    const { adminId } = request.params as { adminId: string };
+    await activarColaborador(adminId);
+    return reply.status(303).redirect("/admin/colaboradores?guardado=1");
   });
 
-  app.post("/admin/:tenantId/colaboradores/:adminId/desactivar", async (request, reply) => {
-    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
-    await desactivarColaborador(tenantId, adminId);
-    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+  app.post("/admin/colaboradores/:adminId/desactivar", async (request, reply) => {
+    const { adminId } = request.params as { adminId: string };
+    await desactivarColaborador(adminId);
+    return reply.status(303).redirect("/admin/colaboradores?guardado=1");
   });
 
-  app.post("/admin/:tenantId/colaboradores/:adminId/permisos", async (request, reply) => {
-    const { tenantId, adminId } = request.params as { tenantId: string; adminId: string };
+  app.post("/admin/colaboradores/:adminId/permisos", async (request, reply) => {
+    const { adminId } = request.params as { adminId: string };
     const body = request.body as Record<string, string | undefined>;
-    await guardarPermisosColaborador(tenantId, adminId, {
+    await guardarPermisosColaborador(adminId, {
       recibeReporteDiario: body.recibeReporteDiario === "on",
       recibeTickets: body.recibeTickets === "on",
       recibeNotificacionPagos: body.recibeNotificacionPagos === "on",
     });
-    return reply.status(303).redirect(`/admin/${tenantId}/colaboradores?guardado=1`);
+    return reply.status(303).redirect("/admin/colaboradores?guardado=1");
   });
 
-  app.get("/admin/:tenantId/configuracion", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  // Perfil (Fase 13 v2, ver ADR-032): cualquier admin autenticado, master o
+  // colaborador — a propósito por fuera del preHandler de arriba, que solo
+  // gatea `/admin/colaboradores`.
+  app.get("/admin/perfil", async (request, reply) => {
     const { error, guardado } = request.query as { error?: string; guardado?: string };
-    const html = await renderConfiguracionPage(
-      tenantId,
-      { error, guardado },
-      request.admin?.role === "master",
-    );
+    const html = await renderPerfilPage(request.admin!, { error, guardado });
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.post("/admin/:tenantId/configuracion/pausar", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    await pausarBot(tenantId);
-    return reply.status(303).redirect(`/admin/${tenantId}/configuracion`);
+  app.post("/admin/perfil", async (request, reply) => {
+    const { username, email, phonePrefix, phoneNumber, avatarData } = request.body as {
+      username?: string;
+      email?: string;
+      phonePrefix?: string;
+      phoneNumber?: string;
+      avatarData?: string;
+    };
+    const result = await guardarPerfil(request.admin!, {
+      username: username ?? "",
+      email: email ?? "",
+      phonePrefix: phonePrefix ?? "",
+      phoneNumber: phoneNumber ?? "",
+      avatarData: avatarData ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/perfil?guardado=1"
+      : `/admin/perfil?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/:tenantId/configuracion/reactivar", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    await reactivarBot(tenantId);
-    return reply.status(303).redirect(`/admin/${tenantId}/configuracion`);
+  // Chequeo de disponibilidad en vivo (Fase 13 v2): cualquier admin
+  // autenticado, no solo master — lo usa tanto el alta de un colaborador
+  // como la edición del propio Perfil, a propósito por fuera del prefijo
+  // `/admin/colaboradores` que el preHandler de arriba gatea a master.
+  app.get("/admin/username-disponible", async (request, reply) => {
+    const { username, excludeSelf } = request.query as { username?: string; excludeSelf?: string };
+    if (!username) {
+      return reply.send({ taken: false });
+    }
+    // `excludeSelf=1` solo lo manda el form de Perfil (ver CLIENT_SCRIPT) —
+    // ahí sí hay que excluir al propio admin logueado, porque está
+    // reafirmando su username actual, no reservando uno nuevo. Desde el
+    // alta de un colaborador (Colaboradores) no se manda: no hay que
+    // excluir a nadie.
+    const taken = await isUsernameTaken(
+      username.trim().toLowerCase(),
+      excludeSelf === "1" ? request.admin!.id : null,
+    );
+    return reply.send({ taken });
   });
 
-  app.post("/admin/:tenantId/configuracion/modelo-ia", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.get("/admin/configuracion", async (request, reply) => {
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderConfiguracionPage({ error, guardado }, request.admin!);
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/configuracion/pausar", async (_request, reply) => {
+    await pausarBot();
+    return reply.status(303).redirect("/admin/configuracion");
+  });
+
+  app.post("/admin/configuracion/reactivar", async (_request, reply) => {
+    await reactivarBot();
+    return reply.status(303).redirect("/admin/configuracion");
+  });
+
+  app.post("/admin/configuracion/modelo-ia", async (request, reply) => {
     const { provider, model, apiKey, routingMode } = request.body as {
       provider?: string;
       model?: string;
       apiKey?: string;
       routingMode?: string;
     };
-    const result = await guardarModeloIa(tenantId, {
+    const result = await guardarModeloIa({
       provider: provider ?? "",
       model: model ?? "",
       apiKey: apiKey ?? "",
       routingMode: routingMode ?? "",
     });
     const redirectUrl = result.ok
-      ? `/admin/${tenantId}/configuracion?guardado=1`
-      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/:tenantId/configuracion/comportamiento", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.post("/admin/configuracion/comportamiento", async (request, reply) => {
     const { tono, estiloMensajes, velocidadRespuesta } = request.body as {
       tono?: string;
       estiloMensajes?: string;
       velocidadRespuesta?: string;
     };
-    const result = await guardarComportamiento(tenantId, {
+    const result = await guardarComportamiento({
       tono: tono ?? "",
       estiloMensajes: estiloMensajes ?? "",
       velocidadRespuesta: velocidadRespuesta ?? "",
     });
     const redirectUrl = result.ok
-      ? `/admin/${tenantId}/configuracion?guardado=1`
-      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/:tenantId/configuracion/reporte-diario", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const { telefono } = request.body as { telefono?: string };
-    const result = await guardarReporteDiario(tenantId, { telefono: telefono ?? "" });
+  app.post("/admin/configuracion/reporte-diario", async (request, reply) => {
+    const { telefono, frecuencia, diasPersonalizados } = request.body as {
+      telefono?: string;
+      frecuencia?: string;
+      diasPersonalizados?: string;
+    };
+    const result = await guardarReporteDiario({
+      telefono: telefono ?? "",
+      frecuencia: frecuencia ?? "",
+      diasPersonalizados: diasPersonalizados ?? "",
+    });
     const redirectUrl = result.ok
-      ? `/admin/${tenantId}/configuracion?guardado=1`
-      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/:tenantId/configuracion/resenas", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.post("/admin/configuracion/resenas", async (request, reply) => {
     const { link } = request.body as { link?: string };
-    const result = await guardarReviewLink(tenantId, { link: link ?? "" });
+    const result = await guardarReviewLink({ link: link ?? "" });
     const redirectUrl = result.ok
-      ? `/admin/${tenantId}/configuracion?guardado=1`
-      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/:tenantId/configuracion/cobros", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
+  app.post("/admin/configuracion/cobros", async (request, reply) => {
     const { privateKey, eventsSecret } = request.body as {
       privateKey?: string;
       eventsSecret?: string;
     };
-    const result = await guardarCobros(tenantId, {
+    const result = await guardarCobros({
       privateKey: privateKey ?? "",
       eventsSecret: eventsSecret ?? "",
     });
     const redirectUrl = result.ok
-      ? `/admin/${tenantId}/configuracion?guardado=1`
-      : `/admin/${tenantId}/configuracion?error=${encodeURIComponent(result.error)}`;
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.get("/admin/:tenantId/productos", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderProductosPage(tenantId, request.admin?.role === "master");
+  app.get("/admin/productos", async (request, reply) => {
+    const html = await renderProductosPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
   });
 
-  app.get("/admin/:tenantId/pedidos", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const html = await renderPedidosPage(tenantId, request.admin?.role === "master");
+  app.get("/admin/pedidos", async (request, reply) => {
+    const html = await renderPedidosPage(request.admin!);
     if (!html) {
       return reply.status(404).send();
     }

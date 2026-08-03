@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createWompiPaymentLink, getWompiConfig, withTenant } from "../../shared/db/index.js";
+import { createWompiPaymentLink, getWompiConfig, withTransaction } from "../../shared/db/index.js";
 import { createPaymentLink, MIN_AMOUNT_COP } from "../../payments/wompiClient.js";
 
 export type PaymentMethod =
@@ -36,8 +36,8 @@ export interface CrearPedidoOutput {
  * NO se expone como parámetro de la tool al LLM (ver
  * orchestrator/toolDefinitions.ts): el mecanismo depende de datos que el
  * modelo nunca ve, y un valor inventado por el LLM no sería estable entre
- * reintentos — igual que tenant_id/conversation_id, lo inyecta el
- * orquestador, no el modelo.
+ * reintentos — igual que conversation_id, lo inyecta el orquestador, no
+ * el modelo.
  */
 function buildIdempotencyKey(quoteId: string, messageSid: string): string {
   return createHash("sha256").update(`${quoteId}:${messageSid}`).digest("hex");
@@ -55,13 +55,13 @@ function buildIdempotencyKey(quoteId: string, messageSid: string): string {
  * entre dos intentos concurrentes para la misma cotización.
  *
  * `montoAltoThreshold` lo inyecta el orquestador (viene de
- * `escalation_config` del tenant, ver escalationRules.ts) — se evalúa acá,
- * *antes* de insertar el pedido, para que un monto alto nunca llegue a
- * quedar `status: 'confirmed'` ni descuente stock. Antes este chequeo
- * vivía en el orquestador y se aplicaba sobre el resultado de esta misma
- * tool, es decir después de que el pedido ya existía en la base — el
- * cliente recibía el mensaje de escalamiento, pero el pedido real ya
- * estaba confirmado (ver docs/fase-7-escalamiento-humano/reglas-escalamiento.md).
+ * `escalation_config`, ver escalationRules.ts) — se evalúa acá, *antes*
+ * de insertar el pedido, para que un monto alto nunca llegue a quedar
+ * `status: 'confirmed'` ni descuente stock. Antes este chequeo vivía en
+ * el orquestador y se aplicaba sobre el resultado de esta misma tool, es
+ * decir después de que el pedido ya existía en la base — el cliente
+ * recibía el mensaje de escalamiento, pero el pedido real ya estaba
+ * confirmado (ver docs/fase-7-escalamiento-humano/reglas-escalamiento.md).
  *
  * `pago_en_linea` (Fase 12.4, ver ADR-024) agrega un paso de solo-lectura
  * antes del insert: la creación del link de pago es una llamada de red
@@ -78,17 +78,16 @@ function buildIdempotencyKey(quoteId: string, messageSid: string): string {
  * garantía.
  */
 export async function crearPedido(
-  tenantId: string,
   messageSid: string,
   input: CrearPedidoInput,
   montoAltoThreshold: number,
 ): Promise<CrearPedidoOutput> {
   const idempotencyKey = buildIdempotencyKey(input.quote_id, messageSid);
 
-  const checked = await withTenant(tenantId, async (client) => {
+  const checked = await withTransaction(async (client) => {
     const existing = await client.query<{ id: string; total: string }>(
-      `SELECT id, total FROM orders WHERE tenant_id = $1 AND quote_id = $2`,
-      [tenantId, input.quote_id],
+      `SELECT id, total FROM orders WHERE quote_id = $1`,
+      [input.quote_id],
     );
     if (existing.rows[0]) {
       return {
@@ -130,7 +129,7 @@ export async function crearPedido(
 
   let paymentLink: { paymentLinkId: string; url: string } | null = null;
   if (input.payment_method === "pago_en_linea") {
-    const wompiConfig = await getWompiConfig(tenantId);
+    const wompiConfig = await getWompiConfig();
     if (!wompiConfig.privateKey) {
       return { order_id: null, status: "wompi_no_configurado", total };
     }
@@ -149,14 +148,13 @@ export async function crearPedido(
     );
   }
 
-  const created = await withTenant(tenantId, async (client) => {
+  const created = await withTransaction(async (client) => {
     const order = await client.query<{ id: string }>(
-      `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
-       VALUES ($1, $2, $3, $4, 'confirmed', $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+      `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
+       VALUES ($1, $2, $3, 'confirmed', $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING id`,
       [
-        tenantId,
         input.quote_id,
         quote.conversation_id,
         quote.customer_id,
@@ -173,8 +171,8 @@ export async function crearPedido(
       // Carrera entre el SELECT y el INSERT (muy improbable en este
       // sistema, el loop del orquestador es secuencial por conversación).
       const raced = await client.query<{ id: string; total: string }>(
-        `SELECT id, total FROM orders WHERE tenant_id = $1 AND idempotency_key = $2`,
-        [tenantId, idempotencyKey],
+        `SELECT id, total FROM orders WHERE idempotency_key = $1`,
+        [idempotencyKey],
       );
       return {
         order_id: raced.rows[0]!.id,
@@ -185,9 +183,9 @@ export async function crearPedido(
     const orderId = order.rows[0].id;
 
     await client.query(
-      `INSERT INTO order_items (tenant_id, order_id, product_id, quantity, unit_price)
-       SELECT $1, $2, product_id, quantity, unit_price FROM quote_items WHERE quote_id = $3`,
-      [tenantId, orderId, input.quote_id],
+      `INSERT INTO order_items (order_id, product_id, quantity, unit_price)
+       SELECT $1, product_id, quantity, unit_price FROM quote_items WHERE quote_id = $2`,
+      [orderId, input.quote_id],
     );
 
     // Descuento de stock al confirmar (ver docs/fase-5-catalogo-inventario/
@@ -204,8 +202,8 @@ export async function crearPedido(
       `UPDATE inventory i
        SET stock_quantity = GREATEST(i.stock_quantity - oi.quantity, 0)
        FROM order_items oi
-       WHERE oi.order_id = $1 AND oi.tenant_id = $2 AND i.tenant_id = $2 AND i.product_id = oi.product_id`,
-      [orderId, tenantId],
+       WHERE oi.order_id = $1 AND i.product_id = oi.product_id`,
+      [orderId],
     );
 
     return { order_id: orderId, status: "confirmed" as const, total };
@@ -213,12 +211,12 @@ export async function crearPedido(
 
   // createWompiPaymentLink corre en una conexión propia (fuera de la
   // transacción de arriba) — igual que createHandoffToken en
-  // escalarHumano.ts, se llama después de que `withTenant` ya resolvió
-  // (el pedido quedó comprometido/commiteado). Insertarlo *dentro* de la
-  // transacción del pedido violaría el FK a `orders`: esa fila todavía no
-  // sería visible desde otra conexión hasta el COMMIT.
+  // escalarHumano.ts, se llama después de que `withTransaction` ya
+  // resolvió (el pedido quedó comprometido/commiteado). Insertarlo
+  // *dentro* de la transacción del pedido violaría el FK a `orders`: esa
+  // fila todavía no sería visible desde otra conexión hasta el COMMIT.
   if (paymentLink && created.status === "confirmed") {
-    await createWompiPaymentLink(tenantId, created.order_id, paymentLink.paymentLinkId);
+    await createWompiPaymentLink(created.order_id, paymentLink.paymentLinkId);
     return { ...created, payment_link_url: paymentLink.url };
   }
 

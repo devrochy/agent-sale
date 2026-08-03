@@ -5,7 +5,9 @@ import {
   listAdmins,
   setAdminActive,
   updateAdminPermissions,
+  updateAdminProfile,
   type AdminPermissions,
+  type AdminRecord,
 } from "./auth/adminsDirectory.js";
 import { hashPassword } from "./auth/passwordHash.js";
 import { env } from "../config/env.js";
@@ -23,19 +25,21 @@ import {
   clearLlmConfig,
   getBehaviorConfig,
   getLlmConfig,
+  getReportFrequencyDays,
   getReportRecipient,
   getReviewLink,
-  getTenant,
+  getSettings,
   getWompiConfig,
   saveBehaviorConfig,
   saveLlmConfig,
+  saveReportFrequencyDays,
   saveReportRecipient,
   saveReviewLink,
   saveWompiConfig,
   setBotPaused,
-  type TenantSummary,
-} from "../shared/db/tenantsDirectory.js";
-import { withTenant } from "../shared/db/withTenant.js";
+  type SettingsSummary,
+} from "../shared/db/settingsDirectory.js";
+import { withTransaction } from "../shared/db/withTransaction.js";
 import {
   convertFromUsd,
   CURRENCY_META,
@@ -132,8 +136,8 @@ function truncate(value: string, max: number): string {
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
-function brandName(tenant: TenantSummary): string {
-  return tenant.display_name ?? tenant.name;
+function brandName(settings: SettingsSummary): string {
+  return settings.display_name ?? settings.name;
 }
 
 /** Icono + título + explicación en voz del panel, no una frase gris suelta — ver Fase 11 (mejora informada por el panel de referencia externo). */
@@ -240,12 +244,32 @@ type ActiveSection =
   | "productos"
   | "pedidos"
   | "colaboradores"
+  | "perfil"
   | null;
 
 const ICON_COLLAPSE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3 6 8l4 5"/></svg>';
 
-function navRail(tenant: TenantSummary, active: ActiveSection, isMaster: boolean): string {
+const ICON_IGNITION =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2v5"/><path d="M4.4 4.3a5 5 0 1 0 7.2 0"/></svg>';
+
+const ICON_EDIT =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 2.6a1.6 1.6 0 0 1 2.3 2.3L5.8 12l-2.9.7.7-2.9 7-7Z"/></svg>';
+
+const ICON_LOGOUT =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
+
+const ICON_PLUS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
+
+const ICON_CALENDARIO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.2" width="11" height="10.3" rx="1.2"/><path d="M2.5 6.2h11M5.3 2v2.4M10.7 2v2.4"/></svg>';
+
+const ICON_PERSONALIZADO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h10"/><circle cx="6" cy="4.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="11" cy="8" r="1.3" fill="currentColor" stroke="none"/><circle cx="7" cy="11.5" r="1.3" fill="currentColor" stroke="none"/></svg>';
+
+function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminRecord): string {
+  const isMaster = admin.role === "master";
   const item = (
     href: string,
     label: string,
@@ -257,13 +281,30 @@ function navRail(tenant: TenantSummary, active: ActiveSection, isMaster: boolean
     return `<li><a class="navitem${isActive ? " navitem--active" : ""}" href="${href}"${isActive ? ' aria-current="page"' : ""} title="${escapeHtml(label)}">${dot}<span class="navitem__label">${escapeHtml(label)}</span></a></li>`;
   };
 
-  const canal = tenant.whatsapp_number ? `WhatsApp configurado` : `Sin canal configurado`;
+  const canal = settings.whatsapp_number ? `WhatsApp configurado` : `Sin canal configurado`;
+
+  const perfilActive = active === "perfil";
+  const avatar = admin.avatarData
+    ? `<img src="${escapeHtml(admin.avatarData)}" class="avatar" alt="">`
+    : `<span class="avatar avatar--initial">${escapeHtml(admin.username.charAt(0).toUpperCase())}</span>`;
+  // Botón (no link directo): abre el menú de cuenta de abajo — "Editar
+  // perfil" navega a /admin/perfil, "Cerrar sesión" queda ahí mismo, sin
+  // tener que entrar al Perfil solo para salir (pedido explícito).
+  const railProfile = `<div class="railprofile-wrap">
+    <button type="button" class="railprofile navitem${perfilActive ? " navitem--active" : ""}" data-profile-menu-toggle aria-haspopup="menu" aria-expanded="false" title="Cuenta">${avatar}<span class="navitem__label">${escapeHtml(admin.username)}</span></button>
+    <div class="railprofile-menu" data-profile-menu role="menu">
+      <a class="railprofile-menu__item" href="/admin/perfil" role="menuitem">${ICON_EDIT}Editar perfil</a>
+      <form method="POST" action="/logout" role="none">
+        <button type="submit" class="railprofile-menu__item railprofile-menu__item--danger" role="menuitem">${ICON_LOGOUT}Cerrar sesión</button>
+      </form>
+    </div>
+  </div>`;
 
   return `<aside class="rail">
     <div class="rail__resize" data-rail-resize aria-hidden="true"></div>
     <div class="rail__top">
       <div class="brand">
-        <span class="brand__mark">${escapeHtml(brandName(tenant).toUpperCase())}</span>
+        <span class="brand__mark">${escapeHtml(brandName(settings).toUpperCase())}</span>
         <span class="brand__role">Panel</span>
       </div>
       <button type="button" class="rail__toggle" data-rail-toggle aria-label="Contraer u expandir el menú" title="Contraer u expandir el menú">${ICON_COLLAPSE}</button>
@@ -272,28 +313,28 @@ function navRail(tenant: TenantSummary, active: ActiveSection, isMaster: boolean
       <div class="navgroup">
         <p class="navgroup__label">Panel</p>
         <ul class="navgroup__items">
-          ${item(`/admin/${tenant.id}`, "Resumen", "resumen", ICON_RESUMEN)}
-          ${item(`/admin/${tenant.id}/conversaciones`, "Conversaciones", "conversaciones", ICON_CONVERSACIONES)}
-          ${item(`/admin/${tenant.id}/leads`, "Leads", "leads", ICON_LEADS)}
-          ${item(`/admin/${tenant.id}/tickets`, "Tickets", "tickets", ICON_TICKETS)}
-          ${item(`/admin/${tenant.id}/analitica`, "Analítica", "analitica", ICON_ANALITICA)}
+          ${item(`/admin`, "Resumen", "resumen", ICON_RESUMEN)}
+          ${item(`/admin/conversaciones`, "Conversaciones", "conversaciones", ICON_CONVERSACIONES)}
+          ${item(`/admin/leads`, "Leads", "leads", ICON_LEADS)}
+          ${item(`/admin/tickets`, "Tickets", "tickets", ICON_TICKETS)}
+          ${item(`/admin/analitica`, "Analítica", "analitica", ICON_ANALITICA)}
         </ul>
       </div>
       <div class="laneline"></div>
       <div class="navgroup">
         <p class="navgroup__label">Agente</p>
         <ul class="navgroup__items">
-          ${item(`/admin/${tenant.id}/flujo`, "Flujo", "flujo", ICON_FLUJO)}
-          ${item(`/admin/${tenant.id}/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)}
-          ${item(`/admin/${tenant.id}/configuracion`, "Configuración", "configuracion", ICON_CONFIGURACION)}
+          ${item(`/admin/flujo`, "Flujo", "flujo", ICON_FLUJO)}
+          ${item(`/admin/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)}
+          ${item(`/admin/configuracion`, "Configuración", "configuracion", ICON_CONFIGURACION)}
         </ul>
       </div>
       <div class="laneline"></div>
       <div class="navgroup">
         <p class="navgroup__label">Catálogo</p>
         <ul class="navgroup__items">
-          ${item(`/admin/${tenant.id}/productos`, "Productos", "productos", ICON_PRODUCTOS)}
-          ${item(`/admin/${tenant.id}/pedidos`, "Pedidos", "pedidos", ICON_PEDIDOS)}
+          ${item(`/admin/productos`, "Productos", "productos", ICON_PRODUCTOS)}
+          ${item(`/admin/pedidos`, "Pedidos", "pedidos", ICON_PEDIDOS)}
         </ul>
       </div>
       ${
@@ -302,7 +343,7 @@ function navRail(tenant: TenantSummary, active: ActiveSection, isMaster: boolean
       <div class="navgroup">
         <p class="navgroup__label">Equipo</p>
         <ul class="navgroup__items">
-          ${item(`/admin/${tenant.id}/colaboradores`, "Colaboradores", "colaboradores", ICON_COLABORADORES)}
+          ${item(`/admin/colaboradores`, "Colaboradores", "colaboradores", ICON_COLABORADORES)}
         </ul>
       </div>`
           : ""
@@ -312,18 +353,19 @@ function navRail(tenant: TenantSummary, active: ActiveSection, isMaster: boolean
       <span class="pulse" aria-hidden="true"></span>
       <span class="navitem__label">${escapeHtml(canal)}</span>
     </div>
+    ${railProfile}
   </aside>`;
 }
 
 function layout(
   title: string,
-  tenant: TenantSummary | null,
+  settings: SettingsSummary | null,
   body: string,
   active: ActiveSection = null,
-  isMaster = false,
+  admin?: AdminRecord,
 ): string {
-  const heading = tenant ? `${brandName(tenant)} — ${title}` : title;
-  const rail = tenant ? navRail(tenant, active, isMaster) : "";
+  const heading = settings ? `${brandName(settings)} — ${title}` : title;
+  const rail = settings && admin ? navRail(settings, active, admin) : "";
 
   return `<!doctype html>
 <html lang="es">
@@ -339,7 +381,7 @@ ${STYLE_BLOCK}
   </style>
 </head>
 <body>
-  <div class="shell${tenant ? "" : " shell--bare"}">
+  <div class="shell${settings ? "" : " shell--bare"}">
     ${rail}
     <main>
       ${body}
@@ -404,7 +446,7 @@ h1, h2 { text-wrap: balance; margin: 0; }
 .tabular { font-variant-numeric: tabular-nums; }
 :root { --rail-width: 264px; }
 .shell { display: grid; grid-template-columns: var(--rail-width) 1fr; min-height: 100vh; }
-.shell--bare { grid-template-columns: 1fr; }
+.shell--bare { grid-template-columns: 1fr; min-height: 100vh; align-items: center; }
 @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } }
 body.rail-collapsed .shell { grid-template-columns: 60px 1fr; }
 .rail {
@@ -436,10 +478,32 @@ body.rail-collapsed .rail__toggle svg { transform: rotate(180deg); }
 .navitem--active .dot { background: var(--ignition); }
 .navitem--active .navicon { color: var(--ignition); }
 .laneline { height: 0; border-top: 1px dashed var(--border); margin: 2px 4px; }
+/* Avatar reutilizado en 3 contextos: rail (30px), fila de tabla de
+   Colaboradores (26px, ver .avatar--sm) y el selector grande del propio
+   Perfil (64px, ver .avatarpicker). Un solo par de clases en vez de tres
+   variantes con nombres distintos. */
+.avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.avatar--initial { display: flex; align-items: center; justify-content: center; background: var(--chrome-soft); color: var(--chrome); font-weight: 700; font-family: var(--font-display); font-size: 13px; }
+.avatar--sm { width: 26px; height: 26px; font-size: 11px; }
+.avatarrow { display: flex; align-items: center; gap: 9px; }
 .rail__status { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-inset); font-size: 12px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--chrome); box-shadow: 0 0 0 0 var(--chrome-soft); animation: pulse 2.4s ease-out infinite; flex-shrink: 0; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--chrome-soft); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+/* Menú de cuenta (pie del rail): un botón, no un link directo — abre un
+   popover con "Editar perfil" / "Cerrar sesión" en vez de navegar de
+   entrada, para no obligar a pasar por la página de Perfil solo para
+   salir. */
+.railprofile-wrap { position: relative; }
+.railprofile { width: 100%; border: none; background: transparent; font: inherit; text-align: left; }
+.railprofile-menu { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 20; display: none; flex-direction: column; gap: 2px; padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.railprofile-menu.open { display: flex; }
+.railprofile-menu form { display: contents; }
+.railprofile-menu__item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: none; border-radius: 7px; background: transparent; color: var(--ink); font: inherit; font-size: 13px; text-align: left; text-decoration: none; cursor: pointer; }
+.railprofile-menu__item:hover { background: var(--panel-inset); }
+.railprofile-menu__item svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--ink-faint); }
+.railprofile-menu__item--danger { color: var(--redline); }
+.railprofile-menu__item--danger svg { color: var(--redline); }
 body.rail-collapsed .navitem__label,
 body.rail-collapsed .brand__role,
 body.rail-collapsed .navgroup__label { display: none; }
@@ -470,9 +534,16 @@ main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .shell--bare main { max-width: 640px; margin: 0 auto; }
 @media (max-width: 860px) { main { padding: 24px 18px 48px; } }
 @media (max-width: 560px) { main { padding: 18px 14px 40px; } }
+/* Marca de encendido del login (ver renderLoginPage): mismo gesto que
+   "arrancar" el tablero — un solo acento decorativo, no se repite en
+   ningún otro lado del login para no sobrecargar una pantalla que ya es,
+   a propósito, la más simple del panel. */
+.loginmark { width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--panel-inset); border: 1px solid var(--border); color: var(--ignition); margin-bottom: 16px; box-shadow: 0 0 26px -6px var(--ignition-glow); }
+.loginmark svg { width: 21px; height: 21px; }
 .pagehead { margin-bottom: 28px; }
 .pagehead__row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600; padding: 9px 15px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); color: var(--ink); text-decoration: none; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.btn svg { width: 14px; height: 14px; flex-shrink: 0; }
 .btn:hover { border-color: var(--border-strong); background: var(--panel-inset); }
 .linklike { color: var(--chrome); text-decoration: none; font-weight: 600; font-size: 12.5px; white-space: nowrap; }
 .linklike:hover { text-decoration: underline; }
@@ -499,6 +570,7 @@ main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .kpi__arc-fill.below-target { stroke: var(--redline); }
 section.block { margin-bottom: 34px; }
 .blockhead { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; gap: 12px; }
+.blockhead--end { justify-content: flex-end; }
 .blockhead h2 { font-family: var(--font-display); font-weight: 700; font-size: 17px; }
 .blockhead .hint { font-size: 12px; color: var(--ink-faint); font-family: var(--font-mono); }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
@@ -588,7 +660,7 @@ table.resizing { cursor: col-resize; user-select: none; }
 .field { margin-bottom: 20px; }
 .field:last-of-type { margin-bottom: 0; }
 .field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
-.field select, .field input[type="password"] {
+.field select, .field input[type="password"], .field input[type="text"], .field input[type="email"] {
   width: 100%; max-width: 440px; font: inherit; font-size: 13.5px; background: var(--panel-inset);
   border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; color: var(--ink);
   transition: border-color 140ms ease, background 140ms ease;
@@ -599,8 +671,28 @@ table.resizing { cursor: col-resize; user-select: none; }
   background-repeat: no-repeat; background-position: right 12px center; background-size: 12px;
   text-overflow: ellipsis;
 }
-.field select:hover, .field input[type="password"]:hover { border-color: var(--border-strong); }
-.field select:focus-visible, .field input[type="password"]:focus-visible { border-color: var(--chrome); background: var(--panel); }
+.field select:hover, .field input[type="password"]:hover, .field input[type="text"]:hover, .field input[type="email"]:hover { border-color: var(--border-strong); }
+.field select:focus-visible, .field input[type="password"]:focus-visible, .field input[type="text"]:focus-visible, .field input[type="email"]:focus-visible { border-color: var(--chrome); background: var(--panel); }
+/* Prefijo de país + número suelto (Colaboradores/Perfil, ver
+   buildWhatsappPhone/splitWhatsappPhone): el select y el input comparten
+   el mismo ancho máximo de 440px que el resto de los campos, no cada uno
+   por separado. */
+.phonerow { display: flex; gap: 8px; max-width: 440px; }
+.phonerow select { flex: 0 0 168px; width: auto; }
+.phonerow input { flex: 1; width: auto; min-width: 0; }
+/* Validación en tiempo real (username/correo/contraseña, ver
+   data-validate en el JS): la "luz" reutiliza literalmente los colores de
+   estado del tablero (--go/--redline) que ya usa el resto del panel (ver
+   .chip--go/.chip--redline) en vez de inventar una paleta de validación
+   aparte — mismo lenguaje visual, un semáforo más en el tablero. */
+.fieldcheck { position: relative; max-width: 440px; }
+.fieldcheck input { padding-right: 34px !important; }
+.fieldcheck__light { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); transition: background 160ms ease, box-shadow 160ms ease; pointer-events: none; }
+.fieldcheck__light--ok { background: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
+.fieldcheck__light--bad { background: var(--redline); box-shadow: 0 0 0 3px var(--redline-soft); }
+.fieldcheck__msg { margin: 6px 0 0; font-size: 11.5px; color: var(--ink-faint); transition: color 140ms ease; }
+.fieldcheck__msg--ok { color: var(--go); }
+.fieldcheck__msg--bad { color: var(--redline); }
 .currency-form { display: flex; align-items: center; gap: 8px; }
 .currency-form label { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
 .currency-form select {
@@ -619,8 +711,22 @@ table.resizing { cursor: col-resize; user-select: none; }
 .btn--primary:hover { filter: brightness(1.08); border-color: var(--chrome); background: var(--chrome); }
 .btn--ghost { background: transparent; }
 .btn--ghost:hover { background: var(--panel-inset); }
+/* Color = la acción que el botón va a ejecutar, no el estado actual (ver
+   estadoForm en renderColaboradoresPage) — mismo lenguaje de --go/--redline
+   que ya usan los chips Activo/Inactivo. */
+.btn--danger { background: var(--redline); border-color: var(--redline); color: var(--bg); font-weight: 700; }
+.btn--danger:hover { filter: brightness(1.08); }
+.btn--go { background: var(--go); border-color: var(--go); color: var(--bg); font-weight: 700; }
+.btn--go:hover { filter: brightness(1.08); }
+.btn--icon { width: 34px; height: 34px; padding: 0; justify-content: center; flex-shrink: 0; }
+.btn--icon svg { width: 15px; height: 15px; }
 .btn--sm { padding: 6px 11px; font-size: 11.5px; }
 .permform { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* Columna "Acciones" de Colaboradores: agrupa el botón Guardar de
+   permisos (conectado por atributo form="..." a un <form> en la columna
+   de Notificaciones, ver renderColaboradoresPage) + Activar/Desactivar,
+   para que todos los botones de la fila queden juntos al final. */
+.rowactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .permcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
@@ -686,6 +792,18 @@ td .emptystate { padding: 34px 20px; }
 .flowtools { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--panel-inset); }
 .flowtools__label { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; margin-bottom: 9px; }
 .flowtools__label svg { width: 12px; height: 12px; }
+dialog.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
+dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
+/* Avatar grande y clickeable del Perfil (a diferencia del <input type=file>
+   crudo de antes): el círculo entero es el disparador, el archivo real
+   queda oculto (ver data-avatar-input) — patrón más reconocible que un
+   botón "Choose file" nativo suelto en medio del form. */
+.avatarpicker { position: relative; display: inline-flex; width: 72px; height: 72px; border: none; padding: 0; background: none; cursor: pointer; border-radius: 50%; }
+.avatarpicker .avatar { width: 72px; height: 72px; font-size: 22px; border: 1px solid var(--border); }
+.avatarpicker__badge { position: absolute; right: -2px; bottom: -2px; width: 24px; height: 24px; border-radius: 50%; background: var(--chrome); color: var(--bg); display: flex; align-items: center; justify-content: center; border: 2px solid var(--panel); }
+.avatarpicker__badge svg { width: 12px; height: 12px; }
+.avatarpicker:hover .avatar { filter: brightness(0.92); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 `;
 
 const CLIENT_SCRIPT = `
@@ -1065,36 +1183,182 @@ const CLIENT_SCRIPT = `
       );
     });
   });
+
+  /* ---------- diálogos modales (ej. "+ Agregar colaborador" en Colaboradores) ---------- */
+  document.querySelectorAll("[data-open-dialog]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var dialog = document.getElementById(btn.getAttribute("data-open-dialog"));
+      if (dialog) dialog.showModal();
+    });
+  });
+  document.querySelectorAll("[data-close-dialog]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var dialog = document.getElementById(btn.getAttribute("data-close-dialog"));
+      if (dialog) dialog.close();
+    });
+  });
+
+  /* ---------- avatar del Perfil: círculo clickeable -> input file oculto -> data URL ---------- */
+  var avatarTrigger = document.querySelector("[data-avatar-trigger]");
+  var avatarInput = document.querySelector("[data-avatar-input]");
+  if (avatarTrigger && avatarInput) {
+    avatarTrigger.addEventListener("click", function () { avatarInput.click(); });
+  }
+  if (avatarInput) {
+    avatarInput.addEventListener("change", function () {
+      var file = avatarInput.files && avatarInput.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var hidden = document.querySelector("[data-avatar-hidden]");
+        if (hidden) hidden.value = reader.result;
+        // El preview puede ser un <span> (iniciales, sin avatar todavía) o
+        // un <img> (ya tenía uno) — se reemplaza siempre por un <img>
+        // fresco en vez de asumir cuál de los dos es, para no fallar
+        // seteando ".src" sobre un <span>.
+        var preview = document.querySelector("[data-avatar-preview]");
+        if (preview) {
+          var img = document.createElement("img");
+          img.className = "avatar";
+          img.alt = "";
+          img.setAttribute("data-avatar-preview", "");
+          img.src = reader.result;
+          preview.replaceWith(img);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /* ---------- Reporte del asistente: "Cada cuántos días" solo se ve con frecuencia "Personalizado" ---------- */
+  var frecuenciaGrid = document.querySelector("[data-frecuencia-grid]");
+  var diasWrap = document.querySelector("[data-dias-personalizados-wrap]");
+  if (frecuenciaGrid && diasWrap) {
+    frecuenciaGrid.querySelectorAll('input[name="frecuencia"]').forEach(function (radio) {
+      radio.addEventListener("change", function () {
+        diasWrap.style.display = radio.value === "personalizado" && radio.checked ? "" : "none";
+      });
+    });
+  }
+
+  /* ---------- menú de cuenta (rail): abrir/cerrar, click afuera, Escape ---------- */
+  var profileToggle = document.querySelector("[data-profile-menu-toggle]");
+  var profileMenu = document.querySelector("[data-profile-menu]");
+  if (profileToggle && profileMenu) {
+    var closeProfileMenu = function () {
+      profileMenu.classList.remove("open");
+      profileToggle.setAttribute("aria-expanded", "false");
+    };
+    profileToggle.addEventListener("click", function (evt) {
+      evt.stopPropagation();
+      var isOpen = profileMenu.classList.toggle("open");
+      profileToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    });
+    document.addEventListener("click", function (evt) {
+      if (!profileMenu.contains(evt.target) && evt.target !== profileToggle) closeProfileMenu();
+    });
+    document.addEventListener("keydown", function (evt) {
+      if (evt.key === "Escape") closeProfileMenu();
+    });
+  }
+
+  /* ---------- validación en tiempo real: usuario / correo / contraseña ----------
+     La "luz" de cada campo reutiliza los mismos colores de estado que ya
+     usa el resto del tablero (--go/--redline, ver .chip--go/.chip--redline)
+     en vez de una paleta de validación aparte — un semáforo más. Valida
+     solo formato (las mismas reglas que ya aplica el servidor en
+     adminPanel.ts) — no confirma disponibilidad real de username/correo,
+     eso lo sigue resolviendo el submit. */
+  var VALIDATORS = {
+    username: function (v) {
+      if (v === "") return { state: "empty", msg: "5 a 32 caracteres: minúsculas, números, punto, guion o guion bajo." };
+      if (!/^[a-z0-9._-]{5,32}$/.test(v)) return { state: "bad", msg: "Solo minúsculas, números, punto, guion o guion bajo (5 a 32 caracteres)." };
+      return { state: "ok", msg: "Formato correcto." };
+    },
+    email: function (v) {
+      if (v === "") return { state: "empty", msg: "Necesitamos un correo para el login y las notificaciones." };
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return { state: "bad", msg: "Ese correo no tiene un formato válido." };
+      return { state: "ok", msg: "Formato correcto." };
+    },
+    password: function (v) {
+      if (v === "") return { state: "empty", msg: "Mínimo 8 caracteres." };
+      if (v.length < 8) return { state: "bad", msg: "Todavía le faltan " + (8 - v.length) + " caracteres." };
+      return { state: "ok", msg: "Contraseña válida." };
+    },
+  };
+  document.querySelectorAll("[data-validate]").forEach(function (input) {
+    var kind = input.getAttribute("data-validate");
+    var validator = VALIDATORS[kind];
+    if (!validator) return;
+    var wrap = input.closest(".field");
+    var light = wrap ? wrap.querySelector("[data-fieldcheck-light]") : null;
+    var msg = wrap ? wrap.querySelector("[data-fieldcheck-msg]") : null;
+    function setState(state, text) {
+      if (light) {
+        light.classList.remove("fieldcheck__light--ok", "fieldcheck__light--bad");
+        if (state === "ok") light.classList.add("fieldcheck__light--ok");
+        if (state === "bad") light.classList.add("fieldcheck__light--bad");
+      }
+      if (msg) {
+        msg.textContent = text;
+        msg.classList.remove("fieldcheck__msg--ok", "fieldcheck__msg--bad");
+        if (state === "ok") msg.classList.add("fieldcheck__msg--ok");
+        if (state === "bad") msg.classList.add("fieldcheck__msg--bad");
+      }
+    }
+    function run() {
+      var result = validator(input.value.trim());
+      setState(result.state, result.msg);
+      return result;
+    }
+    input.addEventListener("input", run);
+    if (kind === "username") {
+      // Al salir del campo (no en cada tecla) se consulta además si el
+      // usuario ya está en uso (GET /admin/username-disponible) — solo
+      // tiene sentido preguntarlo si el formato ya es válido. checkToken
+      // descarta la respuesta si el campo ya cambió de nuevo mientras la
+      // consulta estaba en vuelo (blur -> foco -> blur rápido).
+      var checkToken = 0;
+      input.addEventListener("blur", function () {
+        var result = run();
+        if (result.state !== "ok") return;
+        var value = input.value.trim().toLowerCase();
+        var myToken = ++checkToken;
+        setState("empty", "Comprobando disponibilidad…");
+        var excludeSelf = input.hasAttribute("data-exclude-self") ? "&excludeSelf=1" : "";
+        fetch("/admin/username-disponible?username=" + encodeURIComponent(value) + excludeSelf)
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (myToken !== checkToken) return;
+            if (data.taken) setState("bad", "Ese usuario ya está en uso.");
+            else setState("ok", "Usuario disponible.");
+          })
+          .catch(function () {
+            if (myToken !== checkToken) return;
+            setState("empty", "No se pudo comprobar disponibilidad — se valida igual al guardar.");
+          });
+      });
+    } else {
+      input.addEventListener("blur", run);
+    }
+    run();
+  });
 })();
 `;
 
 /**
- * `GET /admin` sin tenantId — antes listaba todos los tenants de la
- * plataforma (útil para saltar entre paneles de distintos clientes), pero
- * eso es un dato de la plataforma completa, no de un tenant puntual, y
- * ADR-025 no diseñó ningún rol de "operador de plataforma" que pueda
- * verlo con login real. Se deja como página neutra sin datos — cada
- * colaborador entra directo por `/admin/:tenantId/login` (Fase 13).
+ * `GET /login` — formulario de login combinado (Fase 13 v2, ver ADR-032):
+ * un solo campo `identifier` que matchea username o correo (ver
+ * findAdminByUsernameOrEmail). Ruta bare, no anidada bajo `/admin`, para
+ * poder servirla sin pasar por el hook de auth de ese prefijo. Reutiliza
+ * `layout()` con `tenant: null` (shell bare) para no exponer el riel de
+ * navegación a alguien todavía sin sesión. `GET /admin` ya no necesita una
+ * página raíz separada — es directamente el resumen (renderOverviewPage),
+ * protegido por el hook de auth de server.ts, que redirige acá si no hay
+ * sesión.
  */
-export async function renderAdminRootPage(): Promise<string> {
-  const body = `
-    <div class="pagehead">
-      <p class="eyebrow">agent-sale / admin</p>
-      <h1>Panel de administración</h1>
-      <p>Iniciá sesión desde la URL de tu negocio: <span class="mono">/admin/&lt;tenant-id&gt;/login</span>.</p>
-    </div>
-  `;
-  return layout("agent-sale", null, body);
-}
-
-/**
- * `GET /admin/:tenantId/login` — formulario de login (Fase 13, ver
- * src/admin/auth/session.ts y ADR-025). Reutiliza `layout()` con
- * `tenant: null` (shell bare) para no exponer el riel de navegación a
- * alguien todavía sin sesión.
- */
-export async function renderLoginPage(tenantId: string, error?: string): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderLoginPage(error?: string): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
@@ -1105,21 +1369,22 @@ export async function renderLoginPage(tenantId: string, error?: string): Promise
 
   const body = `
     <div class="pagehead">
+      <div class="loginmark" aria-hidden="true">${ICON_IGNITION}</div>
       <p class="eyebrow">${escapeHtml(brandName(tenant))}</p>
       <h1>Iniciar sesión</h1>
     </div>
     ${errorBanner}
     <div class="panel connection">
-      <form method="POST" action="/admin/${tenant.id}/login">
+      <form method="POST" action="/login">
         <div class="field">
-          <label for="email">Correo</label>
-          <input type="email" id="email" name="email" required autofocus>
+          <label for="identifier">Usuario o correo</label>
+          <input type="text" id="identifier" name="identifier" required autofocus autocomplete="username">
         </div>
         <div class="field">
           <label for="password">Contraseña</label>
-          <input type="password" id="password" name="password" required>
+          <input type="password" id="password" name="password" required autocomplete="current-password">
         </div>
-        <div class="formfoot"><button type="submit" class="btn btn--primary">Entrar</button></div>
+        <div class="formfoot"><button type="submit" class="btn btn--primary">${ICON_IGNITION}Entrar</button></div>
       </form>
     </div>
   `;
@@ -1171,13 +1436,13 @@ function trendChip(current: number, previous: number): string {
  * Home del tenant en el panel (ver docs/fase-11-panel-admin-dashboard/
  * overview-kpis.md, Fase 11.1).
  */
-export async function renderOverviewPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderOverviewPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const { kpis, resuelto, actividad, recientes } = await withTenant(tenantId, async (client) => {
+  const { kpis, resuelto, actividad, recientes } = await withTransaction(async (client) => {
     const kpisResult = await client.query<OverviewKpiRow>(
       `SELECT
         count(*) filter (where m.created_at >= now() - interval '24 hours') AS mensajes_24h,
@@ -1317,7 +1582,7 @@ export async function renderOverviewPage(tenantId: string, isMaster: boolean): P
     </section>
   `;
 
-  return layout("Resumen", tenant, body, "resumen", isMaster);
+  return layout("Resumen", tenant, body, "resumen", admin);
 }
 
 type ConversacionesEstado = "todas" | "abiertas" | "escaladas" | "cerradas";
@@ -1369,12 +1634,11 @@ interface ConversacionDetalleRow {
  * externo) y el filtro de tab en `?estado=`.
  */
 export async function renderConversacionesPage(
-  tenantId: string,
   estadoParam: string | undefined,
   selectedId: string | undefined,
-  isMaster: boolean,
+  admin: AdminRecord,
 ): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
@@ -1382,7 +1646,7 @@ export async function renderConversacionesPage(
     ? (estadoParam as ConversacionesEstado)
     : "todas";
 
-  const { lista, detalle, mensajes } = await withTenant(tenantId, async (client) => {
+  const { lista, detalle, mensajes } = await withTransaction(async (client) => {
     const listaResult = await client.query<ConversacionListRow>(
       `SELECT conv.id, conv.status, c.name AS customer_name, c.phone_number,
               m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
@@ -1427,7 +1691,7 @@ export async function renderConversacionesPage(
 
   const tabsHtml = CONVERSACIONES_TABS.map(
     (tab) =>
-      `<a class="tab${tab.key === estado ? " tab--active" : ""}" href="/admin/${tenant.id}/conversaciones?estado=${tab.key}">${escapeHtml(tab.label)}</a>`,
+      `<a class="tab${tab.key === estado ? " tab--active" : ""}" href="/admin/conversaciones?estado=${tab.key}">${escapeHtml(tab.label)}</a>`,
   ).join("\n");
 
   const listaHtml = lista
@@ -1440,7 +1704,7 @@ export async function renderConversacionesPage(
         .filter(Boolean)
         .join("");
       return `<li>
-        <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/${tenant.id}/conversaciones?estado=${estado}&c=${row.id}">
+        <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/conversaciones?estado=${estado}&c=${row.id}">
           <div class="convitem__row">
             <span class="convitem__who">${escapeHtml(who)}</span>
             <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
@@ -1485,7 +1749,7 @@ export async function renderConversacionesPage(
     </div>
   `;
 
-  return layout("Conversaciones", tenant, body, "conversaciones", isMaster);
+  return layout("Conversaciones", tenant, body, "conversaciones", admin);
 }
 
 type LeadEstado = "con_pedido" | "escalada" | "con_cotizacion" | "sin_actividad_comercial";
@@ -1546,8 +1810,8 @@ interface LeadRow {
   estado: LeadEstado;
 }
 
-async function fetchLeads(tenantId: string): Promise<LeadRow[]> {
-  return withTenant(tenantId, async (client) => {
+async function fetchLeads(): Promise<LeadRow[]> {
+  return withTransaction(async (client) => {
     const result = await client.query<LeadRow>(LEADS_QUERY);
     return result.rows;
   });
@@ -1559,12 +1823,12 @@ async function fetchLeads(tenantId: string): Promise<LeadRow[]> {
  * datos ya existentes, no de un resumen generado por LLM — evita el costo
  * recurrente que mapeo-funcionalidades.md marca fuera de alcance.
  */
-export async function renderLeadsPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderLeadsPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
-  const rows = await fetchLeads(tenantId);
+  const rows = await fetchLeads();
 
   const tableRows = rows
     .map((row) => {
@@ -1590,7 +1854,7 @@ export async function renderLeadsPage(tenantId: string, isMaster: boolean): Prom
           <h1>Leads</h1>
           <p>${rows.length} clientes, clasificados por su avance en el funnel comercial.</p>
         </div>
-        <a class="btn" href="/admin/${tenant.id}/leads.csv">Exportar CSV</a>
+        <a class="btn" href="/admin/leads.csv">Exportar CSV</a>
       </div>
     </div>
     <div class="panel tablewrap" data-table data-page-size="20">
@@ -1613,16 +1877,16 @@ export async function renderLeadsPage(tenantId: string, isMaster: boolean): Prom
     </div>
   `;
 
-  return layout(`Leads (${rows.length})`, tenant, body, "leads", isMaster);
+  return layout(`Leads (${rows.length})`, tenant, body, "leads", admin);
 }
 
 /** Mismo dato que renderLeadsPage, serializado a mano igual que el resto del panel arma HTML a mano (sin dependencia nueva). */
-export async function exportLeadsCsv(tenantId: string): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function exportLeadsCsv(): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
-  const rows = await fetchLeads(tenantId);
+  const rows = await fetchLeads();
   return toCsv(
     ["nombre", "telefono", "ultimo_mensaje", "estado", "cliente_desde"],
     rows.map((row) => [
@@ -1686,13 +1950,13 @@ interface TicketRow {
  * accesible por token individual (GET /asesor/:token, src/advisor/
  * handoffView.ts). No reemplaza ese flujo, es solo de supervisión.
  */
-export async function renderTicketsPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderTicketsPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const rows = await withTenant(tenantId, async (client) => {
+  const rows = await withTransaction(async (client) => {
     const result = await client.query<TicketRow>(
       `SELECT h.id, h.conversation_id, h.reason, h.status, h.created_at, h.resolved_at, h.summary,
               ha.name AS assigned_to_name, c.name AS customer_name, c.phone_number
@@ -1726,7 +1990,7 @@ export async function renderTicketsPage(tenantId: string, isMaster: boolean): Pr
         <td>${escapeHtml(row.assigned_to_name ?? "Sin asignar")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td>${escapeHtml(row.summary ?? "")}</td>
-        <td><a class="linklike" href="/admin/${tenant.id}/conversaciones?estado=escaladas&c=${row.conversation_id}">Ver conversación →</a></td>
+        <td><a class="linklike" href="/admin/conversaciones?estado=escaladas&c=${row.conversation_id}">Ver conversación →</a></td>
       </tr>`;
     })
     .join("\n");
@@ -1758,7 +2022,7 @@ export async function renderTicketsPage(tenantId: string, isMaster: boolean): Pr
     </div>
   `;
 
-  return layout(`Tickets (${rows.length})`, tenant, body, "tickets", isMaster);
+  return layout(`Tickets (${rows.length})`, tenant, body, "tickets", admin);
 }
 
 // Nombres reales de src/orchestrator/toolDefinitions.ts — no los nodos
@@ -1832,11 +2096,10 @@ interface PagosEnLineaRow {
  * mostrar un número inventado.
  */
 export async function renderAnaliticaPage(
-  tenantId: string,
   monedaParam: string | undefined,
-  isMaster: boolean,
+  admin: AdminRecord,
 ): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
@@ -1847,7 +2110,7 @@ export async function renderAnaliticaPage(
   const moneda: Currency = tasaNoDisponible ? "USD" : monedaPedida;
   const toDisplay = (usd: number): number => convertFromUsd(usd, moneda, rates) ?? usd;
 
-  const { costoMes, tendencia, costoPorResultado, satisfaccion, distribucion, reviews, pagosEnLinea } = await withTenant(tenantId, async (client) => {
+  const { costoMes, tendencia, costoPorResultado, satisfaccion, distribucion, reviews, pagosEnLinea } = await withTransaction(async (client) => {
     const costoMesResult = await client.query<CostoMesRow>(
       `SELECT
         coalesce(sum(input_tokens), 0) AS tokens_entrada,
@@ -2072,7 +2335,7 @@ export async function renderAnaliticaPage(
     </section>
   `;
 
-  return layout("Analítica", tenant, body, "analitica", isMaster);
+  return layout("Analítica", tenant, body, "analitica", admin);
 }
 
 /**
@@ -2082,13 +2345,13 @@ export async function renderAnaliticaPage(
  * ("radiografía honesta, no un editor"). Los contadores por tool se
  * derivan de messages.tool_calls, sin tabla nueva.
  */
-export async function renderFlujoPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderFlujoPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const counts = await withTenant(tenantId, async (client) => {
+  const counts = await withTransaction(async (client) => {
     const result = await client.query<ToolCountRow>(
       `SELECT block ->> 'name' AS tool, count(*) AS llamadas_30d
        FROM messages m, jsonb_array_elements(m.tool_calls) AS block
@@ -2110,7 +2373,7 @@ export async function renderFlujoPage(tenantId: string, isMaster: boolean): Prom
   // Configuración), así que se resuelve igual que resolveLlmProviderForTenant
   // (sin instanciar el provider ni gastar la llamada real al LLM, esto es
   // solo texto informativo).
-  const llmConfigFlujo = await getLlmConfig(tenantId);
+  const llmConfigFlujo = await getLlmConfig();
   const flujoProviderKey =
     llmConfigFlujo.provider && isProviderKey(llmConfigFlujo.provider) ? llmConfigFlujo.provider : null;
   const modelo = flujoProviderKey
@@ -2152,7 +2415,7 @@ export async function renderFlujoPage(tenantId: string, isMaster: boolean): Prom
     <p class="flowfoot">Llamadas por tool en los últimos 30 días.</p>
   `;
 
-  return layout("Flujo del agente", tenant, body, "flujo", isMaster);
+  return layout("Flujo del agente", tenant, body, "flujo", admin);
 }
 
 /**
@@ -2165,8 +2428,8 @@ export async function renderFlujoPage(tenantId: string, isMaster: boolean): Prom
  * canal con credenciales realmente opcionales en el futuro sea agregar
  * una entrada a esta lista, no rediseñar la página.
  */
-export async function renderConexionesPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderConexionesPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
@@ -2212,16 +2475,16 @@ export async function renderConexionesPage(tenantId: string, isMaster: boolean):
     </div>
   `;
 
-  return layout("Conexiones", tenant, body, "conexiones", isMaster);
+  return layout("Conexiones", tenant, body, "conexiones", admin);
 }
 
-export async function renderProductosPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderProductosPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const rows = await withTenant(tenantId, async (client) => {
+  const rows = await withTransaction(async (client) => {
     const result = await client.query<ProductoRow>(
       `SELECT p.sku, p.name, p.category, p.price, p.description, p.image_url,
               COALESCE(i.stock_quantity, 0) AS stock
@@ -2281,16 +2544,16 @@ export async function renderProductosPage(tenantId: string, isMaster: boolean): 
     </div>
   `;
 
-  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", isMaster);
+  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", admin);
 }
 
-export async function renderPedidosPage(tenantId: string, isMaster: boolean): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+export async function renderPedidosPage(admin: AdminRecord): Promise<string | null> {
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const rows = await withTenant(tenantId, async (client) => {
+  const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at,
               c.phone_number, c.name AS customer_name,
@@ -2364,27 +2627,27 @@ export async function renderPedidosPage(tenantId: string, isMaster: boolean): Pr
     </div>
   `;
 
-  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", isMaster);
+  return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", admin);
 }
 
 /**
  * Colaboradores (Fase 13, ver ADR-025) — solo visible/accionable para un
  * admin `role='master'`; el hook de auth de server.ts no filtra esto (solo
- * exige sesión válida para el tenant), así que el propio route handler de
- * `GET /admin/:tenantId/colaboradores` debe rechazar a un no-master antes
+ * exige sesión válida), así que el propio route handler de
+ * `GET /admin/colaboradores` debe rechazar a un no-master antes
  * de llamar a esta función (ver server.ts).
  */
 export async function renderColaboradoresPage(
-  tenantId: string,
-  currentAdminId: string,
+  admin: AdminRecord,
   query: { error?: string; guardado?: string },
 ): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+  const currentAdminId = admin.id;
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const admins = await listAdmins(tenantId);
+  const admins = await listAdmins();
 
   const banner = query.error
     ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
@@ -2402,40 +2665,58 @@ export async function renderColaboradoresPage(
     `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(label)}</label>`;
 
   const rows = admins
-    .map((admin) => {
-      const isSelf = admin.id === currentAdminId;
-      const isMasterRow = admin.role === "master";
-      const roleLabel = isMasterRow ? "Master" : "Colaborador";
-      const estadoChip = admin.active
+    .map((row) => {
+      const isSelf = row.id === currentAdminId;
+      const isMasterRow = row.role === "master";
+      const rowAvatar = row.avatarData
+        ? `<img src="${escapeHtml(row.avatarData)}" class="avatar avatar--sm" alt="">`
+        : `<span class="avatar avatar--sm avatar--initial">${escapeHtml(row.username.charAt(0).toUpperCase())}</span>`;
+      const roleChip = isMasterRow
+        ? '<span class="chip chip--amber">Master</span>'
+        : '<span class="chip chip--muted">Colaborador</span>';
+      const estadoChip = row.active
         ? '<span class="chip chip--go">Activo</span>'
         : '<span class="chip chip--redline">Inactivo</span>';
 
       // Un master siempre tiene todos los permisos implícitos (ver
       // resolveEffectivePermissions en adminsDirectory.ts) — los checkbox
       // se muestran tildados y deshabilitados para no sugerir que se
-      // pueden editar sin efecto real.
+      // pueden editar sin efecto real. El botón "Guardar" NO vive adentro
+      // de este <form> — se conecta por el atributo `form="..."` desde la
+      // columna de Acciones, para que todos los botones de la fila queden
+      // juntos en la última columna (pedido explícito) sin que HTML exija
+      // que el submit esté anidado dentro del <form>.
+      const permisosFormId = `permisos-${row.id}`;
       const permisosForm = `
-        <form method="POST" action="/admin/${tenant.id}/colaboradores/${admin.id}/permisos" class="permform">
-          ${permisoCheckbox(admin.id, "recibeReporteDiario", "Reporte diario", admin.permissions.recibeReporteDiario, isMasterRow)}
-          ${permisoCheckbox(admin.id, "recibeTickets", "Tickets nuevos", admin.permissions.recibeTickets, isMasterRow)}
-          ${permisoCheckbox(admin.id, "recibeNotificacionPagos", "Pagos aprobados", admin.permissions.recibeNotificacionPagos, isMasterRow)}
-          ${isMasterRow ? "" : '<button type="submit" class="btn btn--ghost btn--sm">Guardar</button>'}
+        <form id="${permisosFormId}" method="POST" action="/admin/colaboradores/${row.id}/permisos" class="permform">
+          ${permisoCheckbox(row.id, "recibeReporteDiario", "Reporte del asistente", row.permissions.recibeReporteDiario, isMasterRow)}
+          ${permisoCheckbox(row.id, "recibeTickets", "Tickets nuevos", row.permissions.recibeTickets, isMasterRow)}
+          ${permisoCheckbox(row.id, "recibeNotificacionPagos", "Pagos aprobados", row.permissions.recibeNotificacionPagos, isMasterRow)}
         </form>
       `;
+      const guardarPermisosBtn = isMasterRow
+        ? ""
+        : `<button type="submit" form="${permisosFormId}" class="btn btn--primary btn--sm">Guardar</button>`;
 
-      const estadoForm = isSelf
+      // El color del botón sigue la acción que va a EJECUTAR, no el estado
+      // actual de la fila (que ya lo dice el chip de al lado): "Desactivar"
+      // en rojo porque es la acción destructiva, "Activar" en verde porque
+      // habilita de nuevo — mismo criterio semántico que --go/--redline en
+      // el resto del tablero.
+      const estadoAction = isSelf
         ? '<span class="hint">Vos</span>'
-        : `<form method="POST" action="/admin/${tenant.id}/colaboradores/${admin.id}/${admin.active ? "desactivar" : "activar"}">
-             <button type="submit" class="btn btn--ghost btn--sm">${admin.active ? "Desactivar" : "Activar"}</button>
+        : `<form method="POST" action="/admin/colaboradores/${row.id}/${row.active ? "desactivar" : "activar"}">
+             <button type="submit" class="btn ${row.active ? "btn--danger" : "btn--go"} btn--sm">${row.active ? "Desactivar" : "Activar"}</button>
            </form>`;
 
       return `<tr>
-        <td>${escapeHtml(admin.email)}</td>
-        <td class="mono">${admin.phone ? escapeHtml(admin.phone) : '<span class="hint">Sin teléfono</span>'}</td>
-        <td>${escapeHtml(roleLabel)}</td>
+        <td><div class="avatarrow">${rowAvatar}<span>${escapeHtml(row.username)}</span></div></td>
+        <td>${escapeHtml(row.email)}</td>
+        <td class="mono">${row.phone ? escapeHtml(row.phone) : '<span class="hint">Sin teléfono</span>'}</td>
+        <td>${roleChip}</td>
         <td>${estadoChip}</td>
         <td>${permisosForm}</td>
-        <td>${estadoForm}</td>
+        <td><div class="rowactions">${guardarPermisosBtn}${estadoAction}</div></td>
       </tr>`;
     })
     .join("\n");
@@ -2448,60 +2729,132 @@ export async function renderColaboradoresPage(
     </div>
     ${banner}
     <div class="panel tablewrap">
+      <div class="blockhead blockhead--end">
+        <button type="button" data-open-dialog="nuevo-colaborador-dialog" class="btn btn--primary btn--icon" aria-label="Agregar colaborador" title="Agregar colaborador">${ICON_PLUS}</button>
+      </div>
       <table>
-        <thead><tr><th>Correo</th><th>Teléfono</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th></th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="6">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el formulario de abajo.")}</td></tr>`}</tbody>
+        <thead><tr><th>Usuario</th><th>Correo</th><th>Teléfono</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
     </div>
-    <section class="block" aria-label="Nuevo colaborador">
+    <dialog id="nuevo-colaborador-dialog" class="modal">
       <div class="blockhead"><h2>Nuevo colaborador</h2></div>
-      <div class="panel connection">
-        <form method="POST" action="/admin/${tenant.id}/colaboradores">
-          <div class="field">
-            <label for="email">Correo</label>
-            <input type="email" id="email" name="email" required>
+      <form method="POST" action="/admin/colaboradores">
+        <div class="field">
+          <label for="nuevo-username">Usuario</label>
+          <div class="fieldcheck">
+            <input type="text" id="nuevo-username" name="username" required pattern="[a-z0-9._-]{5,32}" placeholder="ana.perez" data-validate="username">
+            <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
           </div>
-          <div class="field">
-            <label for="password">Contraseña</label>
-            <input type="password" id="password" name="password" required minlength="8">
+          <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+        </div>
+        <div class="field">
+          <label for="email">Correo</label>
+          <div class="fieldcheck">
+            <input type="email" id="email" name="email" required data-validate="email">
+            <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
           </div>
-          <div class="field">
-            <label for="phone">Teléfono (WhatsApp)</label>
-            <input type="text" id="phone" name="phone" placeholder="whatsapp:+573001234567">
-            <p class="hint">Para las notificaciones que le actives abajo. Se puede dejar vacío y cargar después.</p>
+          <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <div class="fieldcheck">
+            <input type="password" id="password" name="password" required minlength="8" data-validate="password">
+            <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
           </div>
-          <div class="field">
-            <label id="role-label">Rol</label>
-            <div class="choicegrid" role="radiogroup" aria-labelledby="role-label">
-              <label class="choice">
-                <input type="radio" name="role" value="colaborador" checked>
-                <span class="choice__card">
-                  <span class="choice__title">Colaborador</span>
-                  <span class="choice__desc">Ve el panel, recibe solo las notificaciones que le marques.</span>
-                </span>
-              </label>
-              <label class="choice">
-                <input type="radio" name="role" value="master">
-                <span class="choice__card">
-                  <span class="choice__title">Master</span>
-                  <span class="choice__desc">Todos los permisos, puede gestionar colaboradores.</span>
-                </span>
-              </label>
-            </div>
+          <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+        </div>
+        <div class="field">
+          <label for="phone-number">Teléfono (WhatsApp)</label>
+          <div class="phonerow">
+            <select id="phone-prefix" name="phonePrefix" aria-label="País" autocomplete="off">${phoneCountryOptions(DEFAULT_PHONE_COUNTRY_CODE)}</select>
+            <input type="text" id="phone-number" name="phoneNumber" inputmode="numeric" placeholder="3001234567">
           </div>
-          <div class="formfoot"><button type="submit" class="btn btn--primary">Crear colaborador</button></div>
-        </form>
-      </div>
-    </section>
+          <p class="hint">Para las notificaciones que le actives abajo. Se puede dejar vacío y cargar después.</p>
+        </div>
+        <div class="field">
+          <label id="role-label">Rol</label>
+          <div class="choicegrid" role="radiogroup" aria-labelledby="role-label">
+            <label class="choice">
+              <input type="radio" name="role" value="colaborador" checked>
+              <span class="choice__card">
+                <span class="choice__title">Colaborador</span>
+                <span class="choice__desc">Ve el panel, recibe solo las notificaciones que le marques.</span>
+              </span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="role" value="master">
+              <span class="choice__card">
+                <span class="choice__title">Master</span>
+                <span class="choice__desc">Todos los permisos, puede gestionar colaboradores.</span>
+              </span>
+            </label>
+          </div>
+        </div>
+        <div class="formfoot">
+          <button type="submit" class="btn btn--primary">Crear colaborador</button>
+          <button type="button" data-close-dialog="nuevo-colaborador-dialog" class="btn btn--ghost">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
   `;
 
-  return layout("Colaboradores", tenant, body, "colaboradores", true);
+  return layout("Colaboradores", tenant, body, "colaboradores", admin);
+}
+
+// username: minúsculas, números, punto/guión/guión bajo, 5-32 caracteres —
+// habilita el login combinado (ver adminsDirectory.ts
+// findAdminByUsernameOrEmail) además del correo.
+const USERNAME_RE = /^[a-z0-9._-]{5,32}$/;
+
+/**
+ * Mensaje específico según qué UNIQUE violó (username/email/phone, ver
+ * migrations/0036 y 0037) — genérico si no fue un unique_violation (23505)
+ * o no se pudo determinar cuál constraint. `context` cambia la redacción
+ * entre "creando un colaborador" (crearColaborador, ve el master) y
+ * "editando el propio perfil" (guardarPerfil, ve cualquier admin) sin
+ * duplicar la lógica de mapeo de constraint → mensaje.
+ */
+function uniqueViolationMessage(error: unknown, context: "colaborador" | "perfil" = "colaborador"): string {
+  const pgError = error instanceof Error ? (error as { code?: string; constraint?: string }) : undefined;
+  if (pgError?.code !== "23505") {
+    return context === "perfil" ? "No se pudo guardar el perfil." : "No se pudo crear el colaborador.";
+  }
+  if (context === "perfil") {
+    if (pgError.constraint === "admins_username_key") {
+      return "Ese nombre de usuario ya está en uso.";
+    }
+    if (pgError.constraint === "admins_phone_key") {
+      return "Ese teléfono ya está en uso por otra cuenta.";
+    }
+    return "Ese correo ya está en uso por otra cuenta.";
+  }
+  if (pgError.constraint === "admins_username_key") {
+    return "Ya existe un colaborador con ese nombre de usuario.";
+  }
+  if (pgError.constraint === "admins_phone_key") {
+    return "Ya existe un colaborador con ese teléfono.";
+  }
+  return "Ya existe un colaborador con ese correo.";
 }
 
 export async function crearColaborador(
-  tenantId: string,
-  input: { email: string; password: string; role: string; phone: string },
+  input: {
+    username: string;
+    email: string;
+    password: string;
+    role: string;
+    phonePrefix: string;
+    phoneNumber: string;
+  },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const username = input.username.trim().toLowerCase();
+  if (!USERNAME_RE.test(username)) {
+    return {
+      ok: false,
+      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
+    };
+  }
   const email = input.email.trim().toLowerCase();
   if (!email) {
     return { ok: false, error: "El correo es obligatorio." };
@@ -2512,42 +2865,163 @@ export async function crearColaborador(
   if (!isAdminRole(input.role)) {
     return { ok: false, error: "Rol no válido." };
   }
-  const phone = input.phone.trim();
-  if (phone !== "" && !WHATSAPP_PHONE_RE.test(phone)) {
-    return {
-      ok: false,
-      error: 'Teléfono con formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.',
-    };
+  const rawNumber = input.phoneNumber.trim();
+  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
+    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
   }
+  const phone = buildWhatsappPhone(input.phonePrefix, rawNumber);
 
   const passwordHash = await hashPassword(input.password);
   try {
-    await createAdmin(tenantId, email, passwordHash, input.role, phone === "" ? null : phone);
+    await createAdmin(username, email, passwordHash, input.role, phone);
   } catch (error) {
-    // UNIQUE (tenant_id, email) — ver migrations/0033_admins.cjs.
-    const message =
-      error instanceof Error && "code" in error && (error as { code?: string }).code === "23505"
-        ? "Ya existe un colaborador con ese correo."
-        : "No se pudo crear el colaborador.";
-    return { ok: false, error: message };
+    return { ok: false, error: uniqueViolationMessage(error) };
   }
   return { ok: true };
 }
 
-export async function activarColaborador(tenantId: string, adminId: string): Promise<void> {
-  await setAdminActive(tenantId, adminId, true);
+/**
+ * Perfil propio (Fase 13 v2, ver ADR-032): cualquier admin — master o
+ * colaborador por igual — edita acá su username/correo/teléfono/avatar y
+ * cierra sesión. A diferencia de Colaboradores (solo master), esta ruta no
+ * tiene ningún gate de rol — ver el hook de auth de server.ts.
+ */
+export async function renderPerfilPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Cambios guardados.</div>`
+      : "";
+
+  const avatarValue = admin.avatarData ?? "";
+
+  // El avatar entero es el disparador del <input type=file> oculto (ver
+  // data-avatar-trigger en CLIENT_SCRIPT) — sin avatarData todavía se
+  // muestran las iniciales, mismo criterio que el rail y la tabla de
+  // Colaboradores. "Cerrar sesión" ya no vive acá: se movió al menú de
+  // cuenta del rail (pedido explícito) para no tener que entrar al Perfil
+  // solo para salir.
+  const avatarPreview = avatarValue
+    ? `<img data-avatar-preview src="${escapeHtml(avatarValue)}" alt="" class="avatar">`
+    : `<span data-avatar-preview class="avatar avatar--initial">${escapeHtml(admin.username.charAt(0).toUpperCase())}</span>`;
+
+  const { prefix: phonePrefix, number: phoneNumber } = splitWhatsappPhone(admin.phone);
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Cuenta</p>
+      <h1>Perfil</h1>
+      <p>Tus datos de acceso a ${escapeHtml(brandName(tenant))}.</p>
+    </div>
+    ${banner}
+    <div class="panel connection">
+      <form method="POST" action="/admin/perfil">
+        <div class="field">
+          <label>Avatar</label>
+          <button type="button" class="avatarpicker" data-avatar-trigger aria-label="Cambiar avatar">
+            ${avatarPreview}
+            <span class="avatarpicker__badge" aria-hidden="true">${ICON_EDIT}</span>
+          </button>
+          <input type="file" id="avatar-file" accept="image/*" data-avatar-input class="sr-only">
+          <input type="hidden" name="avatarData" id="avatar-hidden" data-avatar-hidden value="${escapeHtml(avatarValue)}">
+          <p class="hint">Tocá el avatar para cambiarlo — menos de 300 KB. Si no elegís uno nuevo, se mantiene el actual.</p>
+        </div>
+        <div class="field">
+          <label for="perfil-username">Usuario</label>
+          <div class="fieldcheck">
+            <input type="text" id="perfil-username" name="username" required pattern="[a-z0-9._-]{5,32}" value="${escapeHtml(admin.username)}" data-validate="username" data-exclude-self="1">
+            <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
+          </div>
+          <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+        </div>
+        <div class="field">
+          <label for="perfil-email">Correo</label>
+          <div class="fieldcheck">
+            <input type="email" id="perfil-email" name="email" required value="${escapeHtml(admin.email)}" data-validate="email">
+            <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
+          </div>
+          <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+        </div>
+        <div class="field">
+          <label for="perfil-phone-number">Teléfono (WhatsApp)</label>
+          <div class="phonerow">
+            <select id="perfil-phone-prefix" name="phonePrefix" aria-label="País" autocomplete="off">${phoneCountryOptions(phonePrefix)}</select>
+            <input type="text" id="perfil-phone-number" name="phoneNumber" inputmode="numeric" placeholder="3001234567" value="${escapeHtml(phoneNumber)}">
+          </div>
+        </div>
+        <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar cambios</button></div>
+      </form>
+    </div>
+  `;
+
+  return layout("Perfil", tenant, body, "perfil", admin);
 }
 
-export async function desactivarColaborador(tenantId: string, adminId: string): Promise<void> {
-  await setAdminActive(tenantId, adminId, false);
+// Ceiling defensivo para avatarData (Fase 13 v2): ~300 KB de imagen cruda
+// infla a ~400 KB de string data-URL una vez codificada en base64 (factor
+// ~4/3) — evita que alguien mande un archivo gigante y lo dejemos crecer
+// sin límite en la columna text de admins.avatar_data.
+const AVATAR_MAX_LENGTH = 400_000;
+
+export async function guardarPerfil(
+  admin: AdminRecord,
+  input: { username: string; email: string; phonePrefix: string; phoneNumber: string; avatarData: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const username = input.username.trim().toLowerCase();
+  if (!USERNAME_RE.test(username)) {
+    return {
+      ok: false,
+      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
+    };
+  }
+  const email = input.email.trim().toLowerCase();
+  if (!email) {
+    return { ok: false, error: "El correo es obligatorio." };
+  }
+  const rawNumber = input.phoneNumber.trim();
+  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
+    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
+  }
+  const phone = buildWhatsappPhone(input.phonePrefix, rawNumber);
+  const avatarData = input.avatarData === "" ? null : input.avatarData;
+  if (avatarData !== null) {
+    if (!avatarData.startsWith("data:image/")) {
+      return { ok: false, error: "Avatar inválido." };
+    }
+    if (avatarData.length > AVATAR_MAX_LENGTH) {
+      return { ok: false, error: "La imagen es muy pesada, usá una de menos de 300 KB." };
+    }
+  }
+
+  try {
+    await updateAdminProfile(admin.id, { username, email, phone, avatarData });
+  } catch (error) {
+    return { ok: false, error: uniqueViolationMessage(error, "perfil") };
+  }
+  return { ok: true };
+}
+
+export async function activarColaborador(adminId: string): Promise<void> {
+  await setAdminActive(adminId, true);
+}
+
+export async function desactivarColaborador(adminId: string): Promise<void> {
+  await setAdminActive(adminId, false);
 }
 
 export async function guardarPermisosColaborador(
-  tenantId: string,
   adminId: string,
   permissions: AdminPermissions,
 ): Promise<void> {
-  await updateAdminPermissions(tenantId, adminId, permissions);
+  await updateAdminPermissions(adminId, permissions);
 }
 
 /** Serializado para <script type="application/json"> — ver CLIENT_SCRIPT, filtro de Modelo según Proveedor. */
@@ -2568,19 +3042,28 @@ function llmCatalogForClient(): Record<ProviderKey, { models: { id: string; labe
  * un redirect 303 (mismo patrón que /asesor/:token/tomar).
  */
 export async function renderConfiguracionPage(
-  tenantId: string,
   query: { error?: string; guardado?: string },
-  isMaster: boolean,
+  admin: AdminRecord,
 ): Promise<string | null> {
-  const tenant = await getTenant(tenantId);
+  const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
-  const llmConfig = await getLlmConfig(tenantId);
-  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
-  const reportRecipient = await getReportRecipient(tenantId);
-  const reviewLink = await getReviewLink(tenantId);
-  const wompiConfig = await getWompiConfig(tenantId);
+  const llmConfig = await getLlmConfig();
+  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
+  const reportRecipient = await getReportRecipient();
+  const reportFrequencyDays = await getReportFrequencyDays();
+  const reportFrequencyPreset =
+    reportFrequencyDays === 1
+      ? "diario"
+      : reportFrequencyDays === 7
+        ? "semanal"
+        : reportFrequencyDays === 30
+          ? "mensual"
+          : "personalizado";
+  const reportFrequencyCustomValue = reportFrequencyPreset === "personalizado" ? reportFrequencyDays : 14;
+  const reviewLink = await getReviewLink();
+  const wompiConfig = await getWompiConfig();
   const maskedWompiKey = wompiConfig.privateKey ? `••••${wompiConfig.privateKey.slice(-4)}` : null;
   const maskedEventsSecret = wompiConfig.eventsSecret ? `••••${wompiConfig.eventsSecret.slice(-4)}` : null;
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
@@ -2621,7 +3104,7 @@ export async function renderConfiguracionPage(
           <span class="connection__badge ${tenant.bot_paused ? "connection__badge--off" : "connection__badge--on"}">${tenant.bot_paused ? "Pausado" : '<span class="pulse"></span>Activo'}</span>
         </div>
         <p>${tenant.bot_paused ? "Los mensajes entrantes se guardan en el historial, pero el agente no responde automáticamente." : "El agente responde automáticamente a los mensajes entrantes por WhatsApp."}</p>
-        <form method="POST" action="/admin/${tenant.id}/configuracion/${tenant.bot_paused ? "reactivar" : "pausar"}"${tenant.bot_paused ? "" : ` data-confirm="¿Pausar el bot de ${escapeHtml(brandName(tenant)).replace(/"/g, "&quot;")}? Los mensajes entrantes se seguirán guardando, pero no se responderá automáticamente hasta reactivarlo."`}>
+        <form method="POST" action="/admin/configuracion/${tenant.bot_paused ? "reactivar" : "pausar"}"${tenant.bot_paused ? "" : ` data-confirm="¿Pausar el bot de ${escapeHtml(brandName(tenant)).replace(/"/g, "&quot;")}? Los mensajes entrantes se seguirán guardando, pero no se responderá automáticamente hasta reactivarlo."`}>
           <div class="formfoot"><button type="submit" class="btn">${tenant.bot_paused ? "Reactivar bot" : "Pausar bot"}</button></div>
         </form>
       </div>
@@ -2629,7 +3112,7 @@ export async function renderConfiguracionPage(
     <section class="block block--narrow" aria-label="Modelo de IA">
       <div class="blockhead"><h2>Modelo de IA</h2><span class="hint">BYOK</span></div>
       <div class="panel connection">
-        <form method="POST" action="/admin/${tenant.id}/configuracion/modelo-ia">
+        <form method="POST" action="/admin/configuracion/modelo-ia">
           <div class="field">
             <label for="llm-provider">Proveedor</label>
             <select id="llm-provider" name="provider" data-provider-select>
@@ -2663,7 +3146,7 @@ export async function renderConfiguracionPage(
     <section class="block block--narrow" aria-label="Voz y estilo del agente">
       <div class="blockhead"><h2>Voz y estilo del agente</h2></div>
       <div class="panel connection">
-        <form method="POST" action="/admin/${tenant.id}/configuracion/comportamiento">
+        <form method="POST" action="/admin/configuracion/comportamiento">
           <div class="field">
             <label id="tono-label">Tono</label>
             <div class="choicegrid" role="radiogroup" aria-labelledby="tono-label">
@@ -2694,14 +3177,27 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Reporte diario">
-      <div class="blockhead"><h2>Reporte diario</h2></div>
+    <section class="block block--narrow" aria-label="Reporte del asistente">
+      <div class="blockhead"><h2>Reporte del asistente</h2></div>
       <div class="panel connection">
-        <form method="POST" action="/admin/${tenant.id}/configuracion/reporte-diario">
+        <form method="POST" action="/admin/configuracion/reporte-diario">
           <div class="field">
             <label for="reporte-telefono">WhatsApp que recibe el resumen</label>
             <input type="text" id="reporte-telefono" name="telefono" value="${escapeHtml(reportRecipient ?? "")}" placeholder="whatsapp:+573001234567">
-            <p class="hint">Todos los días a las 8:00 a. m. (hora Colombia) se manda un resumen de mensajes, clientes, conversaciones cerradas y pedidos del día anterior. Dejar vacío para no recibirlo.</p>
+            <p class="hint">A las 8:00 a. m. (hora Colombia) se manda un resumen de mensajes, clientes, conversaciones cerradas y pedidos. Dejar vacío para no recibirlo.</p>
+          </div>
+          <div class="field">
+            <label id="frecuencia-label">Frecuencia</label>
+            <div class="choicegrid" role="radiogroup" aria-labelledby="frecuencia-label" data-frecuencia-grid>
+              ${choiceCard("frecuencia", "diario", reportFrequencyPreset, ICON_CALENDARIO, "Diario", "Todos los días.")}
+              ${choiceCard("frecuencia", "semanal", reportFrequencyPreset, ICON_CALENDARIO, "Semanal", "Una vez por semana.")}
+              ${choiceCard("frecuencia", "mensual", reportFrequencyPreset, ICON_CALENDARIO, "Mensual", "Una vez al mes.")}
+              ${choiceCard("frecuencia", "personalizado", reportFrequencyPreset, ICON_PERSONALIZADO, "Personalizado", "Elegís cada cuántos días.")}
+            </div>
+          </div>
+          <div class="field" data-dias-personalizados-wrap${reportFrequencyPreset === "personalizado" ? "" : ' style="display:none"'}>
+            <label for="dias-personalizados">Cada cuántos días</label>
+            <input type="number" id="dias-personalizados" name="diasPersonalizados" min="2" max="365" value="${reportFrequencyCustomValue}">
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
         </form>
@@ -2710,7 +3206,7 @@ export async function renderConfiguracionPage(
     <section class="block block--narrow" aria-label="Encuestas y reseñas">
       <div class="blockhead"><h2>Encuestas y reseñas</h2></div>
       <div class="panel connection">
-        <form method="POST" action="/admin/${tenant.id}/configuracion/resenas">
+        <form method="POST" action="/admin/configuracion/resenas">
           <div class="field">
             <label for="review-link">Link para dejar una reseña</label>
             <input type="text" id="review-link" name="link" value="${escapeHtml(reviewLink ?? "")}" placeholder="https://g.page/r/.../review">
@@ -2723,7 +3219,7 @@ export async function renderConfiguracionPage(
     <section class="block block--narrow" aria-label="Cobros en línea">
       <div class="blockhead"><h2>Cobros en línea</h2><span class="hint">BYOK — Wompi</span></div>
       <div class="panel connection">
-        <form method="POST" action="/admin/${tenant.id}/configuracion/cobros">
+        <form method="POST" action="/admin/configuracion/cobros">
           <div class="field">
             <label for="wompi-private-key">Llave privada</label>
             <input type="password" id="wompi-private-key" name="privateKey" autocomplete="off" placeholder="prv_test_... o prv_prod_...">
@@ -2748,15 +3244,15 @@ export async function renderConfiguracionPage(
     </section>
   `;
 
-  return layout("Configuración", tenant, body, "configuracion", isMaster);
+  return layout("Configuración", tenant, body, "configuracion", admin);
 }
 
-export async function pausarBot(tenantId: string): Promise<void> {
-  await setBotPaused(tenantId, true);
+export async function pausarBot(): Promise<void> {
+  await setBotPaused(true);
 }
 
-export async function reactivarBot(tenantId: string): Promise<void> {
-  await setBotPaused(tenantId, false);
+export async function reactivarBot(): Promise<void> {
+  await setBotPaused(false);
 }
 
 /**
@@ -2765,7 +3261,6 @@ export async function reactivarBot(tenantId: string): Promise<void> {
  * contra una API externa, se guarda directo.
  */
 export async function guardarComportamiento(
-  tenantId: string,
   input: { tono: string; estiloMensajes: string; velocidadRespuesta: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!isTono(input.tono)) {
@@ -2777,7 +3272,7 @@ export async function guardarComportamiento(
   if (!isVelocidadRespuesta(input.velocidadRespuesta)) {
     return { ok: false, error: "Velocidad de respuesta no válida." };
   }
-  await saveBehaviorConfig(tenantId, {
+  await saveBehaviorConfig({
     tono: input.tono,
     estiloMensajes: input.estiloMensajes,
     velocidadRespuesta: input.velocidadRespuesta,
@@ -2789,25 +3284,100 @@ export async function guardarComportamiento(
 // exige la API de Twilio para from/to (ver src/gateway/sendMessage.ts).
 const WHATSAPP_PHONE_RE = /^whatsapp:\+\d{6,15}$/;
 
+// Prefijos de país para el campo de teléfono de Colaboradores/Perfil (Fase
+// 13 v2): el usuario elige el país en un select y escribe solo el número
+// local — el whatsapp:+<prefijo><número> se arma acá adentro, no se escribe
+// a mano. Lista corta con los países más relevantes para el piloto (LatAm +
+// España/EE.UU.), no pretende ser exhaustiva.
+const PHONE_COUNTRY_CODES: { code: string; label: string }[] = [
+  { code: "57", label: "Colombia (+57)" },
+  { code: "1", label: "EE. UU. / Canadá (+1)" },
+  { code: "52", label: "México (+52)" },
+  { code: "54", label: "Argentina (+54)" },
+  { code: "56", label: "Chile (+56)" },
+  { code: "51", label: "Perú (+51)" },
+  { code: "593", label: "Ecuador (+593)" },
+  { code: "58", label: "Venezuela (+58)" },
+  { code: "34", label: "España (+34)" },
+];
+const DEFAULT_PHONE_COUNTRY_CODE = "57";
+
+function phoneCountryOptions(selectedCode: string): string {
+  return PHONE_COUNTRY_CODES.map(
+    (c) => `<option value="${c.code}" ${c.code === selectedCode ? "selected" : ""}>${escapeHtml(c.label)}</option>`,
+  ).join("");
+}
+
+/**
+ * Arma `whatsapp:+<prefijo><número>` a partir del selector de país + el
+ * número suelto — `number` vacío da `null` (deja de tener teléfono
+ * cargado). Los no-dígitos del número (espacios/guiones) se descartan acá,
+ * no hace falta que el usuario los evite.
+ */
+function buildWhatsappPhone(prefix: string, rawNumber: string): string | null {
+  const digits = rawNumber.replace(/\D/g, "");
+  if (digits === "") {
+    return null;
+  }
+  return `whatsapp:+${prefix}${digits}`;
+}
+
+/**
+ * Para prefill del form de Perfil: separa un `whatsapp:+<dígitos>` ya
+ * guardado en el prefijo de país conocido más largo que matchee (para no
+ * confundir "1" con "593") + el resto como número local. Si no matchea
+ * ningún prefijo conocido (número legado con otro código), cae a Colombia
+ * con todos los dígitos en el campo de número — mejor esfuerzo, no rompe
+ * nada: el usuario puede corregir el país y el número se reconstruye igual
+ * al guardar.
+ */
+function splitWhatsappPhone(phone: string | null): { prefix: string; number: string } {
+  if (!phone) {
+    return { prefix: DEFAULT_PHONE_COUNTRY_CODE, number: "" };
+  }
+  const digits = phone.replace(/^whatsapp:\+/, "");
+  const sortedCodes = [...PHONE_COUNTRY_CODES].sort((a, b) => b.code.length - a.code.length);
+  const match = sortedCodes.find((c) => digits.startsWith(c.code));
+  if (match) {
+    return { prefix: match.code, number: digits.slice(match.code.length) };
+  }
+  return { prefix: DEFAULT_PHONE_COUNTRY_CODE, number: digits };
+}
+
 /**
  * Reporte diario (Fase 12.2, ver ADR-018) — a diferencia de "Probar y
  * guardar" del modelo de IA, acá no hay nada que validar contra una API
  * externa, solo el formato del teléfono. Vacío limpia el campo (deja de
  * recibir reporte, ver src/jobs/dailyReport.ts).
  */
+// Diario/semanal/mensual son atajos con un número de días fijo — el valor
+// real que se guarda (report_frequency_days) es siempre un entero, ver
+// migrations/0038_settings_reporte_frecuencia.cjs.
+const REPORT_FREQUENCY_PRESET_DAYS: Record<string, number> = { diario: 1, semanal: 7, mensual: 30 };
+
 export async function guardarReporteDiario(
-  tenantId: string,
-  input: { telefono: string },
+  input: { telefono: string; frecuencia: string; diasPersonalizados: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const trimmed = input.telefono.trim();
-  if (trimmed === "") {
-    await saveReportRecipient(tenantId, null);
-    return { ok: true };
-  }
-  if (!WHATSAPP_PHONE_RE.test(trimmed)) {
+  if (trimmed !== "" && !WHATSAPP_PHONE_RE.test(trimmed)) {
     return { ok: false, error: 'Formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.' };
   }
-  await saveReportRecipient(tenantId, trimmed);
+
+  let frequencyDays: number;
+  if (input.frecuencia === "personalizado") {
+    const parsed = Number.parseInt(input.diasPersonalizados, 10);
+    if (!Number.isInteger(parsed) || parsed < 2 || parsed > 365) {
+      return { ok: false, error: "La frecuencia personalizada debe ser un número entre 2 y 365 días." };
+    }
+    frequencyDays = parsed;
+  } else if (input.frecuencia in REPORT_FREQUENCY_PRESET_DAYS) {
+    frequencyDays = REPORT_FREQUENCY_PRESET_DAYS[input.frecuencia]!;
+  } else {
+    return { ok: false, error: "Frecuencia no válida." };
+  }
+
+  await saveReportRecipient(trimmed === "" ? null : trimmed);
+  await saveReportFrequencyDays(frequencyDays);
   return { ok: true };
 }
 
@@ -2818,11 +3388,10 @@ export async function guardarReporteDiario(
  * pena una lista cerrada de dominios permitidos.
  */
 export async function guardarReviewLink(
-  tenantId: string,
   input: { link: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const trimmed = input.link.trim();
-  await saveReviewLink(tenantId, trimmed === "" ? null : trimmed);
+  await saveReviewLink(trimmed === "" ? null : trimmed);
   return { ok: true };
 }
 
@@ -2833,11 +3402,10 @@ export async function guardarReviewLink(
  * prueba porque es el mismo código que ya corría antes de la Fase 11.4).
  */
 export async function guardarModeloIa(
-  tenantId: string,
   input: { provider: string; model: string; apiKey: string; routingMode: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (input.provider === "") {
-    await clearLlmConfig(tenantId);
+    await clearLlmConfig();
     return { ok: true };
   }
 
@@ -2858,7 +3426,7 @@ export async function guardarModeloIa(
         ? input.model
         : entry.defaultModel;
 
-  const existing = await getLlmConfig(tenantId);
+  const existing = await getLlmConfig();
   const trimmedKey = input.apiKey.trim();
   // Campo vacío: si el proveedor no cambió, se conserva la key ya guardada
   // (el <input type="password"> nunca se re-popula con el valor
@@ -2874,7 +3442,7 @@ export async function guardarModeloIa(
     return { ok: false, error: message };
   }
 
-  await saveLlmConfig(tenantId, { provider: input.provider, model, apiKey, routingMode });
+  await saveLlmConfig({ provider: input.provider, model, apiKey, routingMode });
   return { ok: true };
 }
 
@@ -2892,10 +3460,9 @@ export async function guardarModeloIa(
  * desencriptado).
  */
 export async function guardarCobros(
-  tenantId: string,
   input: { privateKey: string; eventsSecret: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const existing = await getWompiConfig(tenantId);
+  const existing = await getWompiConfig();
   const privateKey = input.privateKey.trim() || existing.privateKey;
   const eventsSecret = input.eventsSecret.trim() || existing.eventsSecret;
 
@@ -2911,6 +3478,6 @@ export async function guardarCobros(
     return { ok: false, error: message };
   }
 
-  await saveWompiConfig(tenantId, { privateKey, eventsSecret });
+  await saveWompiConfig({ privateKey, eventsSecret });
   return { ok: true };
 }

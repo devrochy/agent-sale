@@ -8,7 +8,7 @@ Este plan es el resultado de la discusión previa sobre riesgos, cambios de arqu
 
 - **No construir el gateway de WhatsApp desde cero** — integrar un BSP existente (Gupshup, 360dialog, Twilio) sobre la API oficial de Meta.
 - **Monolito modular** al inicio (no microservicios/Kubernetes desde el día 1).
-- **Multi-tenancy con Row Level Security en Postgres desde la primera tabla**, no como añadido posterior.
+- **Un solo negocio** (ForMotos) — no multi-tenant. La plataforma se diseñó originalmente multi-tenant con Row Level Security (ver [ADR-004](docs/fase-1-arquitectura/adrs/ADR-004-multi-tenancy-rls.md)); esa decisión fue revertida en [ADR-032](docs/fase-1-arquitectura/adrs/ADR-032-retiro-multi-tenancy.md) al no haber ningún segundo cliente real ni comprometido.
 - **Tool calling con validación estricta**: el LLM propone, las tools deciden contra datos reales (sin alucinaciones de precio/stock).
 - **pgvector dentro de Postgres** para recomendaciones, en vez de una vector DB separada.
 - **Cola simple** (Redis Streams/SQS) en vez de Kafka, hasta que el volumen lo justifique.
@@ -76,7 +76,7 @@ Este documento **no incluye código ni pasos de implementación** — es la plan
 
 **Estimación:** 2 semanas.
 
-**Definición de terminado:** Un tenant de prueba no puede ver datos de otro tenant (verificado con test de aislamiento); el pipeline despliega a staging automáticamente en cada merge a main.
+**Definición de terminado:** Un tenant de prueba no puede ver datos de otro tenant (verificado con test de aislamiento); el pipeline despliega a staging automáticamente en cada merge a main. *(Histórico — [ADR-032](docs/fase-1-arquitectura/adrs/ADR-032-retiro-multi-tenancy.md) retiró RLS/multi-tenancy; el test de aislamiento que validaba esto ya no existe.)*
 
 ---
 
@@ -224,6 +224,8 @@ Este documento **no incluye código ni pasos de implementación** — es la plan
 ---
 
 ## Fase 10 — Preparación para Escala y Lanzamiento Multi-tenant
+
+*(Histórico, nunca ejecutada — [ADR-032](docs/fase-1-arquitectura/adrs/ADR-032-retiro-multi-tenancy.md) retiró multi-tenancy: la parte de "incorporación repetible de nuevos tenants" queda sin objeto, no se va a ejecutar. La parte de prueba de carga a escala sigue siendo una preocupación válida a futuro para un solo negocio de alto volumen, si llegara a hacer falta — se replantearía como su propia fase si ese momento llega, no reusando este objetivo mixto.)*
 
 **Objetivo:** Confirmar que la plataforma soporta miles de conversaciones simultáneas y habilitar la incorporación repetible de nuevos tenants.
 

@@ -1,6 +1,6 @@
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { resolveHandoffToken } from "../shared/db/index.js";
-import { withTenant } from "../shared/db/withTenant.js";
+import { withTransaction } from "../shared/db/withTransaction.js";
 
 interface HandoffRow {
   reason: string;
@@ -140,7 +140,7 @@ export async function renderHandoffView(token: string): Promise<HandoffViewResul
     return { status: 404 };
   }
 
-  const data = await withTenant(lookup.tenantId, async (client) => {
+  const data = await withTransaction(async (client) => {
     const handoffResult = await client.query<HandoffRow>(
       `SELECT reason, status, summary, created_at, resolved_at, conversation_id
        FROM handoff_queue WHERE id = $1`,
@@ -198,7 +198,7 @@ export async function tomarConversacion(token: string): Promise<HandoffActionRes
     return { status: 404 };
   }
 
-  const updated = await withTenant(lookup.tenantId, async (client) => {
+  const updated = await withTransaction(async (client) => {
     const result = await client.query(
       `UPDATE handoff_queue SET status = 'en_atencion', assigned_to = $1
        WHERE id = $2 AND status = 'queued'
@@ -223,7 +223,7 @@ export async function resolverConversacion(token: string): Promise<HandoffAction
     return { status: 404 };
   }
 
-  const closedConversationId = await withTenant(lookup.tenantId, async (client) => {
+  const closedConversationId = await withTransaction(async (client) => {
     const result = await client.query<{ conversation_id: string }>(
       `UPDATE handoff_queue SET status = 'resuelto', resolved_at = now()
        WHERE id = $1 AND status = 'en_atencion'
@@ -252,7 +252,7 @@ export async function resolverConversacion(token: string): Promise<HandoffAction
   // Encuesta de satisfacción (Fase 12.2, ver satisfactionSurvey.ts):
   // best-effort, fuera de la transacción de arriba — un fallo al mandarla
   // no debe revertir el cierre, que ya quedó confirmado.
-  await sendSurveyOnClose(lookup.tenantId, closedConversationId);
+  await sendSurveyOnClose(closedConversationId);
 
   return { status: 200 };
 }

@@ -1,4 +1,4 @@
-import { withTenant } from "../../shared/db/index.js";
+import { withTransaction } from "../../shared/db/index.js";
 
 export interface RecomendarProductoInput {
   context?: string;
@@ -47,10 +47,9 @@ interface ProductRow {
  * fallback a medias.
  */
 export async function recomendarProducto(
-  tenantId: string,
   input: RecomendarProductoInput,
 ): Promise<{ recommendations: RecommendationOutput[] }> {
-  return withTenant(tenantId, async (client) => {
+  return withTransaction(async (client) => {
     if (!input.product_id) {
       return { recommendations: [] };
     }

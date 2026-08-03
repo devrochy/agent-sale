@@ -2,7 +2,7 @@ import type { Logger } from "pino";
 import { env } from "../config/env.js";
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { verifyDelivery } from "../jobs/verifyDelivery.js";
-import { createReviewToken, withTenant } from "../shared/db/index.js";
+import { createReviewToken, withTransaction } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { appendMessage } from "./memory.js";
 
@@ -23,10 +23,10 @@ const SURVEY_REPLY_WINDOW_HOURS = 48;
  * afectar el cierre en sí (que ya quedó confirmado en la base antes de
  * llamar a esta función).
  */
-export async function sendSurveyOnClose(tenantId: string, conversationId: string): Promise<void> {
-  const surveyLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
+export async function sendSurveyOnClose(conversationId: string): Promise<void> {
+  const surveyLogger = logger.child({ conversation_id: conversationId });
   try {
-    const phone = await withTenant(tenantId, async (client) => {
+    const phone = await withTransaction(async (client) => {
       const conversation = await client.query<{ customer_id: string }>(
         `SELECT customer_id FROM conversations WHERE id = $1`,
         [conversationId],
@@ -46,12 +46,12 @@ export async function sendSurveyOnClose(tenantId: string, conversationId: string
     }
 
     const sid = await sendWhatsAppMessage(phone, SURVEY_TEXT);
-    await withTenant(tenantId, (client) =>
+    await withTransaction((client) =>
       client.query(`UPDATE conversations SET survey_sent_at = now() WHERE id = $1`, [
         conversationId,
       ]),
     );
-    await appendMessage(tenantId, conversationId, "outbound", "agent", SURVEY_TEXT);
+    await appendMessage(conversationId, "outbound", "agent", SURVEY_TEXT);
     await verifyDelivery(sid, "Encuesta de satisfacción", surveyLogger);
   } catch (error) {
     surveyLogger.warn({ error }, "No se pudo enviar la encuesta de satisfacción");
@@ -62,8 +62,8 @@ interface PendingSurveyRow {
   conversation_id: string;
 }
 
-async function findPendingSurvey(tenantId: string, customerPhone: string): Promise<string | null> {
-  return withTenant(tenantId, async (client) => {
+async function findPendingSurvey(customerPhone: string): Promise<string | null> {
+  return withTransaction(async (client) => {
     const result = await client.query<PendingSurveyRow>(
       `SELECT c.id AS conversation_id
        FROM conversations c
@@ -91,8 +91,8 @@ function parseRating(text: string): number | null {
  * El link va a nuestra propia página de reseña (src/reviews/reviewView.ts),
  * nunca directo a una plataforma externa — así el texto que escribe el
  * cliente queda en agent-sale, disponible para análisis, y no depende de
- * si el tenant configuró `tenants.review_link` (ese link externo pasa a
- * ser un paso posterior *dentro* de la página, opcional).
+ * si se configuró `settings.review_link` (ese link externo pasa a ser un
+ * paso posterior *dentro* de la página, opcional).
  */
 function buildThankYouText(score: number, reviewFormLink: string | null): string {
   if (score >= 4 && reviewFormLink) {
@@ -120,12 +120,11 @@ function buildReviewFormLink(token: string): string {
  * futuros no relacionados como si fueran la respuesta de la encuesta.
  */
 export async function tryCaptureSurveyReply(
-  tenantId: string,
   customerPhone: string,
   body: string,
   parentLogger: Logger,
 ): Promise<void> {
-  const conversationId = await findPendingSurvey(tenantId, customerPhone);
+  const conversationId = await findPendingSurvey(customerPhone);
   if (!conversationId) {
     return;
   }
@@ -134,7 +133,7 @@ export async function tryCaptureSurveyReply(
   const score = parseRating(body);
 
   try {
-    await withTenant(tenantId, (client) =>
+    await withTransaction((client) =>
       client.query(
         `UPDATE conversations SET survey_reply_processed_at = now()${score !== null ? ", satisfaction_score = $2" : ""} WHERE id = $1`,
         score !== null ? [conversationId, score] : [conversationId],
@@ -151,10 +150,10 @@ export async function tryCaptureSurveyReply(
 
   try {
     const reviewFormLink =
-      score >= 4 ? buildReviewFormLink(await createReviewToken(tenantId, conversationId)) : null;
+      score >= 4 ? buildReviewFormLink(await createReviewToken(conversationId)) : null;
     const text = buildThankYouText(score, reviewFormLink);
     const sid = await sendWhatsAppMessage(customerPhone, text);
-    await appendMessage(tenantId, conversationId, "outbound", "agent", text);
+    await appendMessage(conversationId, "outbound", "agent", text);
     await verifyDelivery(sid, "Agradecimiento de encuesta", surveyLogger);
   } catch (error) {
     surveyLogger.warn({ error }, "No se pudo enviar el agradecimiento de la encuesta");

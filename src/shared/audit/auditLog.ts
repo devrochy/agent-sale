@@ -1,4 +1,4 @@
-import { withTenant } from "../db/index.js";
+import { withTransaction } from "../db/index.js";
 
 /**
  * Registra lo que una tool realmente hizo (ver
@@ -7,19 +7,17 @@ import { withTenant } from "../db/index.js";
  * (ver migrations/0009_audit_log.cjs, trigger de inmutabilidad).
  */
 export async function recordAudit(
-  tenantId: string,
   conversationId: string | null,
   actor: string,
   action: string,
   input: unknown,
   output: unknown,
 ): Promise<void> {
-  await withTenant(tenantId, (client) =>
+  await withTransaction((client) =>
     client.query(
-      `INSERT INTO audit_log (tenant_id, conversation_id, actor, action, input, output)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO audit_log (conversation_id, actor, action, input, output)
+       VALUES ($1, $2, $3, $4, $5)`,
       [
-        tenantId,
         conversationId,
         actor,
         action,

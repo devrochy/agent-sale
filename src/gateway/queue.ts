@@ -4,7 +4,6 @@ export const INBOUND_STREAM = "whatsapp:inbound";
 
 export interface InboundMessage {
   messageSid: string;
-  tenantId: string;
   customerPhone: string;
   customerName?: string;
   body: string;
@@ -24,8 +23,6 @@ export async function enqueueInboundMessage(message: InboundMessage): Promise<st
     "*",
     "message_sid",
     message.messageSid,
-    "tenant_id",
-    message.tenantId,
     "customer_phone",
     message.customerPhone,
     "customer_name",

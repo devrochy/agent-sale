@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/orchestrator/llm/index.js", () => ({
-  resolveLlmProviderForTenant: vi.fn(),
+  resolveLlmProvider: vi.fn(),
 }));
 vi.mock("../../../src/orchestrator/toolExecutor.js", () => ({
   executeTool: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock("../../../src/shared/audit/auditLog.js", () => ({
 }));
 
 import { escalarHumano } from "../../../src/domains/escalation/escalarHumano.js";
-import { resolveLlmProviderForTenant } from "../../../src/orchestrator/llm/index.js";
+import { resolveLlmProvider } from "../../../src/orchestrator/llm/index.js";
 import type { TurnResponse } from "../../../src/orchestrator/llm/types.js";
 import { runTurn } from "../../../src/orchestrator/loop.js";
 import {
@@ -41,9 +41,9 @@ import { recordAudit } from "../../../src/shared/audit/auditLog.js";
 
 const USAGE = { inputTokens: 10, outputTokens: 10 };
 
-// Simula la resolución del proveedor de LLM por tenant (Fase 11.4, ver
-// ADR-020) — todos los tests siguen mockeando "la llamada al LLM" a
-// través de este único `converse` compartido, igual que antes mockeaban
+// Simula la resolución del proveedor de LLM (Fase 11.4, ver ADR-020) —
+// todos los tests siguen mockeando "la llamada al LLM" a través de este
+// único `converse` compartido, igual que antes mockeaban
 // `llmProvider.converse` directo.
 const mockConverse = vi.fn();
 
@@ -54,7 +54,7 @@ function endTurn(text: string): TurnResponse {
 describe("runTurn — guardrail de precios", () => {
   beforeEach(() => {
     mockConverse.mockReset();
-    vi.mocked(resolveLlmProviderForTenant).mockReset();
+    vi.mocked(resolveLlmProvider).mockReset();
     vi.mocked(executeTool).mockReset();
     vi.mocked(escalarHumano).mockReset();
     vi.mocked(resolveConversation).mockReset();
@@ -65,7 +65,7 @@ describe("runTurn — guardrail de precios", () => {
     vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
-    vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
+    vi.mocked(resolveLlmProvider).mockResolvedValue({
       provider: { converse: mockConverse },
       model: "test-model",
       providerKey: "env-default",
@@ -94,7 +94,7 @@ describe("runTurn — guardrail de precios", () => {
       })
       .mockResolvedValueOnce(endTurn("El total de tu cotización es $117.000"));
 
-    const result = await runTurn("tenant-1", "+573000000000", "hola", "sid-1");
+    const result = await runTurn("+573000000000", "hola", "sid-1");
 
     expect(result.responseText).toBe("El total de tu cotización es $117.000");
     expect(mockConverse).toHaveBeenCalledTimes(2);
@@ -109,16 +109,15 @@ describe("runTurn — guardrail de precios", () => {
       assigned_to: null,
     });
 
-    const result = await runTurn("tenant-1", "+573000000000", "hola", "sid-1");
+    const result = await runTurn("+573000000000", "hola", "sid-1");
 
     // 1 intento inicial + 1 reintento del guardrail = 2 llamadas al LLM.
     expect(mockConverse).toHaveBeenCalledTimes(2);
-    expect(escalarHumano).toHaveBeenCalledWith("tenant-1", "conv-1", {
+    expect(escalarHumano).toHaveBeenCalledWith("conv-1", {
       reason: "guardrail_precio",
       summary: expect.any(String),
     });
     expect(recordAudit).toHaveBeenCalledWith(
-      "tenant-1",
       "conv-1",
       "orchestrator",
       "guardrail_precio_incidente",
@@ -154,7 +153,7 @@ describe("runTurn — guardrail de precios", () => {
     ]);
     mockConverse.mockResolvedValue(endTurn("Los guantes de cuero touring están en $95.000 cada par."));
 
-    const result = await runTurn("tenant-1", "+573000000000", "y esos guantes?", "sid-2");
+    const result = await runTurn("+573000000000", "y esos guantes?", "sid-2");
 
     expect(result.responseText).toBe("Los guantes de cuero touring están en $95.000 cada par.");
     expect(escalarHumano).not.toHaveBeenCalled();
@@ -164,7 +163,7 @@ describe("runTurn — guardrail de precios", () => {
 describe("runTurn — guardrail de stock (Fase 12.1)", () => {
   beforeEach(() => {
     mockConverse.mockReset();
-    vi.mocked(resolveLlmProviderForTenant).mockReset();
+    vi.mocked(resolveLlmProvider).mockReset();
     vi.mocked(executeTool).mockReset();
     vi.mocked(escalarHumano).mockReset();
     vi.mocked(resolveConversation).mockReset();
@@ -175,7 +174,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
-    vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
+    vi.mocked(resolveLlmProvider).mockResolvedValue({
       provider: { converse: mockConverse },
       model: "test-model",
       providerKey: "env-default",
@@ -204,7 +203,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
       })
       .mockResolvedValueOnce(endTurn("El casco cuesta $300.000. Quedan 12."));
 
-    const result = await runTurn("tenant-1", "+573000000000", "tienen cascos?", "sid-5");
+    const result = await runTurn("+573000000000", "tienen cascos?", "sid-5");
 
     expect(result.responseText).toBe("El casco cuesta $300.000. Quedan 12.");
     expect(escalarHumano).not.toHaveBeenCalled();
@@ -229,16 +228,15 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
       assigned_to: null,
     });
 
-    const result = await runTurn("tenant-1", "+573000000000", "tienen cascos?", "sid-6");
+    const result = await runTurn("+573000000000", "tienen cascos?", "sid-6");
 
     // 1 tool_use + 1 intento inicial + 1 reintento del guardrail = 3 llamadas al LLM.
     expect(mockConverse).toHaveBeenCalledTimes(3);
-    expect(escalarHumano).toHaveBeenCalledWith("tenant-1", "conv-1", {
+    expect(escalarHumano).toHaveBeenCalledWith("conv-1", {
       reason: "guardrail_stock",
       summary: expect.any(String),
     });
     expect(recordAudit).toHaveBeenCalledWith(
-      "tenant-1",
       "conv-1",
       "orchestrator",
       "guardrail_stock_incidente",
@@ -252,7 +250,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
 describe("runTurn — regla de monto alto", () => {
   beforeEach(() => {
     mockConverse.mockReset();
-    vi.mocked(resolveLlmProviderForTenant).mockReset();
+    vi.mocked(resolveLlmProvider).mockReset();
     vi.mocked(executeTool).mockReset();
     vi.mocked(escalarHumano).mockReset();
     vi.mocked(resolveConversation).mockReset();
@@ -263,7 +261,7 @@ describe("runTurn — regla de monto alto", () => {
     vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
-    vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
+    vi.mocked(resolveLlmProvider).mockResolvedValue({
       provider: { converse: mockConverse },
       model: "test-model",
       providerKey: "env-default",
@@ -292,7 +290,7 @@ describe("runTurn — regla de monto alto", () => {
       })
       .mockResolvedValueOnce(endTurn("Tu cotización es de $1.500.000. ¿Vemos si aplica alguna promo?"));
 
-    const result = await runTurn("tenant-1", "+573000000000", "cotiza 2 cascos", "sid-3");
+    const result = await runTurn("+573000000000", "cotiza 2 cascos", "sid-3");
 
     expect(result.responseText).toContain("1.500.000");
     expect(escalarHumano).not.toHaveBeenCalled();
@@ -315,9 +313,9 @@ describe("runTurn — regla de monto alto", () => {
       assigned_to: null,
     });
 
-    await runTurn("tenant-1", "+573000000000", "confirmo el pedido", "sid-4");
+    await runTurn("+573000000000", "confirmo el pedido", "sid-4");
 
-    expect(escalarHumano).toHaveBeenCalledWith("tenant-1", "conv-1", {
+    expect(escalarHumano).toHaveBeenCalledWith("conv-1", {
       reason: "monto_alto",
       summary: expect.any(String),
     });
@@ -327,7 +325,7 @@ describe("runTurn — regla de monto alto", () => {
 describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
   beforeEach(() => {
     mockConverse.mockReset();
-    vi.mocked(resolveLlmProviderForTenant).mockReset();
+    vi.mocked(resolveLlmProvider).mockReset();
     vi.mocked(executeTool).mockReset();
     vi.mocked(escalarHumano).mockReset();
     vi.mocked(resolveConversation).mockReset();
@@ -339,7 +337,7 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
     vi.mocked(getBehaviorConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
-    vi.mocked(resolveLlmProviderForTenant).mockResolvedValue({
+    vi.mocked(resolveLlmProvider).mockResolvedValue({
       provider: { converse: mockConverse },
       model: "test-model",
       providerKey: "env-default",
@@ -379,14 +377,14 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
         endTurn("Perfecto, tu pedido queda pendiente hasta que pagues el link."),
       );
 
-    const result = await runTurn("tenant-1", "+573000000000", "pago en línea por favor", "sid-5");
+    const result = await runTurn("+573000000000", "pago en línea por favor", "sid-5");
 
     const expectedText =
       "Perfecto, tu pedido queda pendiente hasta que pagues el link.\n\nhttps://checkout.wompi.co/l/abc123";
     expect(result.responseText).toBe(expectedText);
     // La transcripción persistida se corrige para coincidir con lo que
     // realmente se manda por WhatsApp — ver updateMessageContent.
-    expect(updateMessageContent).toHaveBeenCalledWith("tenant-1", "msg-agent-1", expectedText);
+    expect(updateMessageContent).toHaveBeenCalledWith("msg-agent-1", expectedText);
   });
 
   it("no agrega nada al texto si crear_pedido no devuelve payment_link_url (métodos de pago existentes)", async () => {
@@ -403,7 +401,7 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
       })
       .mockResolvedValueOnce(endTurn("Tu pedido quedó confirmado."));
 
-    const result = await runTurn("tenant-1", "+573000000000", "pago con transferencia", "sid-6");
+    const result = await runTurn("+573000000000", "pago con transferencia", "sid-6");
 
     expect(result.responseText).toBe("Tu pedido quedó confirmado.");
     expect(updateMessageContent).not.toHaveBeenCalled();

@@ -1,4 +1,4 @@
-import { withTenant } from "../../shared/db/index.js";
+import { withTransaction } from "../../shared/db/index.js";
 
 export interface AplicarPromocionInput {
   quote_id: string;
@@ -65,11 +65,8 @@ function round2(value: number): number {
  * válida por esto (guardrail_precio) cada vez que el cliente pedía una
  * promoción sobre una cotización ya generada.
  */
-export async function aplicarPromocion(
-  tenantId: string,
-  input: AplicarPromocionInput,
-): Promise<AplicarPromocionOutput> {
-  return withTenant(tenantId, async (client) => {
+export async function aplicarPromocion(input: AplicarPromocionInput): Promise<AplicarPromocionOutput> {
+  return withTransaction(async (client) => {
     const quoteResult = await client.query<{ id: string; subtotal: string }>(
       `SELECT id, subtotal FROM quotes WHERE id = $1`,
       [input.quote_id],
@@ -182,9 +179,9 @@ export async function aplicarPromocion(
         [best.freeItemSku],
       );
       await client.query(
-        `INSERT INTO quote_items (tenant_id, quote_id, product_id, quantity, unit_price)
-         VALUES ($1, $2, $3, 1, 0)`,
-        [tenantId, input.quote_id, freeProduct.rows[0]!.id],
+        `INSERT INTO quote_items (quote_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, 1, 0)`,
+        [input.quote_id, freeProduct.rows[0]!.id],
       );
     }
 

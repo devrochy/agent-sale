@@ -1,5 +1,5 @@
 import { env } from "../../config/env.js";
-import { getLlmConfig } from "../../shared/db/tenantsDirectory.js";
+import { getLlmConfig } from "../../shared/db/settingsDirectory.js";
 import { AnthropicProvider } from "./anthropicProvider.js";
 import { isProviderKey, PROVIDER_CATALOG, type ProviderKey } from "./catalog.js";
 import { classifyDifficulty, pickModelByDifficulty, type DifficultySignal } from "./difficultyRouting.js";
@@ -20,7 +20,7 @@ export interface ResolvedLlmProvider {
  * Mismo proveedor/modelo que se usaba antes de la Fase 11.4 — el default
  * de plataforma vía env (ADR-010). Se instancia por llamada (no
  * singleton) para que exista un único código path sin importar si vino
- * de acá o de la config del tenant (ver resolveLlmProviderForTenant).
+ * de acá o de la config guardada (ver resolveLlmProvider).
  */
 function buildPlatformDefaultProvider(): ResolvedLlmProvider {
   if (env.llmProvider === "openai_compatible") {
@@ -47,22 +47,19 @@ function systemApiKeyFor(providerKey: ProviderKey): string | null {
 }
 
 /**
- * Resuelve qué proveedor/modelo usar para un tenant en este turno (Fase
- * 11.4, ver docs/fase-11-panel-admin-dashboard/adrs/
- * ADR-020-proveedor-modelo-configurable-byok.md). Sin config del tenant
+ * Resuelve qué proveedor/modelo usar en este turno (Fase 11.4, ver
+ * docs/fase-11-panel-admin-dashboard/adrs/
+ * ADR-020-proveedor-modelo-configurable-byok.md). Sin config guardada
  * (`llm_provider` NULL, el caso normal), el comportamiento es idéntico al
- * de antes de esta fase — cero regresión para tenants sin config.
+ * de antes de esta fase — cero regresión sin config.
  *
- * `difficultySignal` solo se usa si el tenant tiene `routingMode:
- * "auto_dificultad"` ("Cerebro del bot", ver ADR-023) — el caller
- * (loop.ts) lo arma a partir del mensaje del cliente y el estado de la
- * conversación; si se omite, se asume el caso menos exigente (sin señal).
+ * `difficultySignal` solo se usa si `routingMode: "auto_dificultad"`
+ * ("Cerebro del bot", ver ADR-023) está activo — el caller (loop.ts) lo
+ * arma a partir del mensaje del cliente y el estado de la conversación;
+ * si se omite, se asume el caso menos exigente (sin señal).
  */
-export async function resolveLlmProviderForTenant(
-  tenantId: string,
-  difficultySignal?: DifficultySignal,
-): Promise<ResolvedLlmProvider> {
-  const config = await getLlmConfig(tenantId);
+export async function resolveLlmProvider(difficultySignal?: DifficultySignal): Promise<ResolvedLlmProvider> {
+  const config = await getLlmConfig();
 
   if (!config.provider || !isProviderKey(config.provider)) {
     return buildPlatformDefaultProvider();
@@ -79,7 +76,7 @@ export async function resolveLlmProviderForTenant(
 
   if (!apiKey) {
     throw new Error(
-      `El tenant ${tenantId} eligió el proveedor "${entry.label}" pero no tiene una API key propia guardada ni hay una key de sistema configurada para ese proveedor.`,
+      `Se eligió el proveedor "${entry.label}" pero no hay una API key propia guardada ni una key de sistema configurada para ese proveedor.`,
     );
   }
 

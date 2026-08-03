@@ -13,20 +13,20 @@ const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 const app = await buildServer();
 
-let tenantConLink: string;
-let tenantSinLink: string;
+const REVIEW_LINK = "https://ejemplo.com/review";
+let settingsId: string;
 let phoneCounter = 0;
 
-async function seedConversationWithScore(tenantId: string, score: number | null): Promise<string> {
+async function seedConversationWithScore(score: number | null): Promise<string> {
   phoneCounter += 1;
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, $2) RETURNING id`,
-    [tenantId, `whatsapp:+57303000${String(phoneCounter).padStart(4, "0")}`],
+    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    [`whatsapp:+57303000${String(phoneCounter).padStart(4, "0")}`],
   );
   const conversation = await adminPool.query<{ id: string }>(
-    `INSERT INTO conversations (tenant_id, customer_id, status, closed_at, satisfaction_score)
-     VALUES ($1, $2, 'closed', now(), $3) RETURNING id`,
-    [tenantId, customer.rows[0]!.id, score],
+    `INSERT INTO conversations (customer_id, status, closed_at, satisfaction_score)
+     VALUES ($1, 'closed', now(), $2) RETURNING id`,
+    [customer.rows[0]!.id, score],
   );
   return conversation.rows[0]!.id;
 }
@@ -34,23 +34,38 @@ async function seedConversationWithScore(tenantId: string, score: number | null)
 beforeAll(async () => {
   await app.ready();
 
-  const a = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name, review_link) VALUES ('Review View Test Con Link', 'https://ejemplo.com/review') RETURNING id`,
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name, review_link) VALUES ('Review View Test', $1) RETURNING id`,
+    [REVIEW_LINK],
   );
-  tenantConLink = a.rows[0]!.id;
-  const b = await adminPool.query<{ id: string }>(
-    `INSERT INTO tenants (name) VALUES ('Review View Test Sin Link') RETURNING id`,
-  );
-  tenantSinLink = b.rows[0]!.id;
+  settingsId = settings.rows[0]!.id;
 });
 
 afterAll(async () => {
-  const tenants = [tenantConLink, tenantSinLink];
-  await adminPool.query(`DELETE FROM reviews WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM review_tokens WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM conversations WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM customers WHERE tenant_id = ANY($1)`, [tenants]);
-  await adminPool.query(`DELETE FROM tenants WHERE id = ANY($1)`, [tenants]);
+  // Todos los clientes de este archivo usan el prefijo whatsapp:+57303000
+  // (ver seedConversationWithScore) — patrón exclusivo de este archivo, no
+  // colisiona con los números de otros test files.
+  const phonePattern = "whatsapp:+57303000%";
+  await adminPool.query(
+    `DELETE FROM reviews WHERE conversation_id IN (
+       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
+       WHERE cu.phone_number LIKE $1
+     )`,
+    [phonePattern],
+  );
+  await adminPool.query(
+    `DELETE FROM review_tokens WHERE conversation_id IN (
+       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
+       WHERE cu.phone_number LIKE $1
+     )`,
+    [phonePattern],
+  );
+  await adminPool.query(
+    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number LIKE $1)`,
+    [phonePattern],
+  );
+  await adminPool.query(`DELETE FROM customers WHERE phone_number LIKE $1`, [phonePattern]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await app.close();
   await adminPool.end();
   await appPool.end();
@@ -63,8 +78,8 @@ describe("renderReviewForm", () => {
   });
 
   it("muestra el form si no hay reseña previa", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
 
     const result = await renderReviewForm(token);
 
@@ -76,8 +91,8 @@ describe("renderReviewForm", () => {
 
 describe("submitReview", () => {
   it("guarda la reseña con el score copiado de la conversación", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
 
     const result = await submitReview(token, "Excelente atención, muy rápidos.");
 
@@ -91,8 +106,8 @@ describe("submitReview", () => {
   });
 
   it("texto vacío no guarda nada y vuelve a mostrar el form con el error", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
 
     const result = await submitReview(token, "   ");
 
@@ -105,8 +120,8 @@ describe("submitReview", () => {
   });
 
   it("una segunda visita ya no muestra el form (idempotente)", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
     await submitReview(token, "Primera reseña");
 
     const second = await renderReviewForm(token);
@@ -117,8 +132,8 @@ describe("submitReview", () => {
   });
 
   it("un segundo envío no duplica la reseña (constraint única en conversation_id)", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
     await submitReview(token, "Primera reseña");
 
     await submitReview(token, "Segundo intento");
@@ -134,24 +149,32 @@ describe("submitReview", () => {
 
 describe("shareReviewPublicly", () => {
   it("sin review_link configurado devuelve 404", async () => {
-    const conversationId = await seedConversationWithScore(tenantSinLink, 5);
-    const token = await createReviewToken(tenantSinLink, conversationId);
-    await submitReview(token, "Buena experiencia");
+    await adminPool.query(`UPDATE settings SET review_link = NULL WHERE id = $1`, [settingsId]);
+    try {
+      const conversationId = await seedConversationWithScore(5);
+      const token = await createReviewToken(conversationId);
+      await submitReview(token, "Buena experiencia");
 
-    const result = await shareReviewPublicly(token);
+      const result = await shareReviewPublicly(token);
 
-    expect(result.status).toBe(404);
+      expect(result.status).toBe(404);
+    } finally {
+      await adminPool.query(`UPDATE settings SET review_link = $1 WHERE id = $2`, [
+        REVIEW_LINK,
+        settingsId,
+      ]);
+    }
   });
 
   it("con review_link configurado redirige y marca shared_publicly", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
     await submitReview(token, "Buena experiencia");
 
     const result = await shareReviewPublicly(token);
 
     expect(result.status).toBe(302);
-    expect(result.redirectUrl).toBe("https://ejemplo.com/review");
+    expect(result.redirectUrl).toBe(REVIEW_LINK);
     const row = await adminPool.query<{ shared_publicly: boolean }>(
       `SELECT shared_publicly FROM reviews WHERE conversation_id = $1`,
       [conversationId],
@@ -162,8 +185,8 @@ describe("shareReviewPublicly", () => {
 
 describe("rutas HTTP /resena", () => {
   it("GET /resena/:token responde 200 con el form", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
 
     const response = await app.inject({ method: "GET", url: `/resena/${token}` });
 
@@ -177,8 +200,8 @@ describe("rutas HTTP /resena", () => {
   });
 
   it("POST /resena/:token guarda la reseña", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
 
     const response = await app.inject({
       method: "POST",
@@ -196,13 +219,13 @@ describe("rutas HTTP /resena", () => {
   });
 
   it("GET /resena/:token/compartir redirige (302) cuando hay link configurado", async () => {
-    const conversationId = await seedConversationWithScore(tenantConLink, 5);
-    const token = await createReviewToken(tenantConLink, conversationId);
+    const conversationId = await seedConversationWithScore(5);
+    const token = await createReviewToken(conversationId);
     await submitReview(token, "Buena experiencia");
 
     const response = await app.inject({ method: "GET", url: `/resena/${token}/compartir` });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("https://ejemplo.com/review");
+    expect(response.headers.location).toBe(REVIEW_LINK);
   });
 });

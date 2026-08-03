@@ -1,21 +1,20 @@
 export { pool } from "./pool.js";
-export { withTenant } from "./withTenant.js";
+export { withTransaction } from "./withTransaction.js";
 export {
-  findTenantIdByWhatsappNumber,
   getBehaviorConfig,
   getEscalationConfig,
   getLlmConfig,
+  getReportFrequencyDays,
+  getReportLastSentAt,
   getReportRecipient,
   getReviewLink,
-  getTenant,
+  getSettings,
   getWompiConfig,
-  listTenants,
+  markReportSent,
   saveWompiConfig,
-} from "./tenantsDirectory.js";
-export type { TenantLlmConfig, TenantSummary, TenantWompiConfig } from "./tenantsDirectory.js";
+} from "./settingsDirectory.js";
+export type { LlmConfig, SettingsSummary, WompiConfig } from "./settingsDirectory.js";
 export { createHandoffToken, resolveHandoffToken } from "./handoffTokenDirectory.js";
 export type { HandoffTokenLookup } from "./handoffTokenDirectory.js";
 export { createReviewToken, resolveReviewToken } from "./reviewTokenDirectory.js";
-export type { ReviewTokenLookup } from "./reviewTokenDirectory.js";
 export { createWompiPaymentLink, resolveWompiPaymentLink } from "./wompiPaymentLinkDirectory.js";
-export type { WompiPaymentLinkLookup } from "./wompiPaymentLinkDirectory.js";

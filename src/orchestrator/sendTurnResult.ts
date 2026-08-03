@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import { splitForBubbles } from "../gateway/messageSplitter.js";
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
-import { getBehaviorConfig } from "../shared/db/tenantsDirectory.js";
+import { getBehaviorConfig } from "../shared/db/settingsDirectory.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import type { TurnResult } from "./loop.js";
 
@@ -13,7 +13,7 @@ const BUBBLE_SEND_DELAY_MS = 700;
 
 /**
  * Envía el resultado de un turno como una o varias burbujas de WhatsApp,
- * según el estilo de mensajes del tenant. Compartido entre `consumer.ts`
+ * según el estilo de mensajes configurado. Compartido entre `consumer.ts`
  * (turno inmediato) y `debounceScheduler.ts` (turno diferido, ver
  * ADR-022) — el envío es idéntico en ambos casos, solo cambia de dónde
  * viene el `TurnResult`.
@@ -25,7 +25,6 @@ const BUBBLE_SEND_DELAY_MS = 700;
  * pasa y el campo simplemente no se loguea.
  */
 export async function sendTurnBubbles(
-  tenantId: string,
   customerPhone: string,
   result: TurnResult,
   entryLogger: Logger,
@@ -43,7 +42,7 @@ export async function sendTurnBubbles(
     { event: "orchestrator.respuesta_lista" },
     "Respuesta lista, enviando por Twilio",
   );
-  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig(tenantId));
+  const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
   const bubbles = splitForBubbles(result.responseText, behaviorConfig.estiloMensajes);
 
   for (let index = 0; index < bubbles.length; index++) {

@@ -1,4 +1,4 @@
-import { withTenant } from "../../shared/db/withTenant.js";
+import { withTransaction } from "../../shared/db/withTransaction.js";
 
 export type AdminRole = "master" | "colaborador";
 
@@ -14,9 +14,12 @@ export interface AdminPermissions {
 
 export interface AdminRecord {
   id: string;
+  username: string;
   email: string;
-  /** Número de WhatsApp para notificaciones (migrations/0034) — null si el admin no lo cargó, ese caso simplemente no recibe WhatsApp (mismo criterio que tenants.report_recipient_phone). */
+  /** Número de WhatsApp para notificaciones (migrations/0034) — null si el admin no lo cargó, ese caso simplemente no recibe WhatsApp (mismo criterio que settings.report_recipient_phone). */
   phone: string | null;
+  /** Data URL base64 (migrations/0037) — null si no cargó avatar, en cuyo caso el panel muestra iniciales. */
+  avatarData: string | null;
   role: AdminRole;
   active: boolean;
   createdAt: Date;
@@ -26,8 +29,10 @@ export interface AdminRecord {
 
 interface AdminRow {
   id: string;
+  username: string;
   email: string;
   phone: string | null;
+  avatar_data: string | null;
   password_hash: string;
   role: AdminRole;
   active: boolean;
@@ -38,7 +43,7 @@ interface AdminRow {
 }
 
 const ADMIN_JOIN_COLUMNS = `
-  a.id, a.email, a.phone, a.password_hash, a.role, a.active, a.created_at,
+  a.id, a.username, a.email, a.phone, a.avatar_data, a.password_hash, a.role, a.active, a.created_at,
   p.recibe_reporte_diario, p.recibe_tickets, p.recibe_notificacion_pagos
 `;
 const ADMIN_JOIN_FROM = `FROM admins a JOIN admin_permissions p ON p.admin_id = a.id`;
@@ -58,8 +63,10 @@ function resolveEffectivePermissions(role: AdminRole, row: AdminRow): AdminPermi
 function mapAdminRow(row: AdminRow): AdminRecord {
   return {
     id: row.id,
+    username: row.username,
     email: row.email,
     phone: row.phone,
+    avatarData: row.avatar_data,
     role: row.role,
     active: row.active,
     createdAt: row.created_at,
@@ -67,14 +74,14 @@ function mapAdminRow(row: AdminRow): AdminRecord {
   };
 }
 
-export async function findAdminByEmail(
-  tenantId: string,
-  email: string,
+/** Login combinado (Fase 13 v2, ver ADR-032): `identifier` matchea username O correo, no hay selector ni dos formularios. */
+export async function findAdminByUsernameOrEmail(
+  identifier: string,
 ): Promise<(AdminRecord & { passwordHash: string }) | null> {
-  return withTenant(tenantId, async (client) => {
+  return withTransaction(async (client) => {
     const result = await client.query<AdminRow>(
-      `SELECT ${ADMIN_JOIN_COLUMNS} ${ADMIN_JOIN_FROM} WHERE a.email = $1`,
-      [email],
+      `SELECT ${ADMIN_JOIN_COLUMNS} ${ADMIN_JOIN_FROM} WHERE a.username = $1 OR a.email = $1`,
+      [identifier],
     );
     const row = result.rows[0];
     if (!row) {
@@ -84,8 +91,27 @@ export async function findAdminByEmail(
   });
 }
 
-export async function getAdminById(tenantId: string, adminId: string): Promise<AdminRecord | null> {
-  return withTenant(tenantId, async (client) => {
+/**
+ * Chequeo de disponibilidad en vivo (Fase 13 v2, ver /admin/username-disponible
+ * en server.ts) — usado al salir del campo username tanto en el alta de un
+ * colaborador como en la edición del propio Perfil. `excludeAdminId` solo se
+ * pasa (no-null) desde el form de Perfil: excluye al propio admin logueado
+ * de la búsqueda para que su username ACTUAL no se reporte como "en uso".
+ * Desde el alta de un colaborador se pasa `null` — ahí no hay que excluir a
+ * nadie, si el master (por accidente o autocompletado del navegador) escribe
+ * su propio username tiene que verse como ocupado igual que cualquier otro.
+ */
+export async function isUsernameTaken(username: string, excludeAdminId: string | null): Promise<boolean> {
+  return withTransaction(async (client) => {
+    const result = excludeAdminId
+      ? await client.query(`SELECT 1 FROM admins WHERE username = $1 AND id != $2`, [username, excludeAdminId])
+      : await client.query(`SELECT 1 FROM admins WHERE username = $1`, [username]);
+    return (result.rowCount ?? 0) > 0;
+  });
+}
+
+export async function getAdminById(adminId: string): Promise<AdminRecord | null> {
+  return withTransaction(async (client) => {
     const result = await client.query<AdminRow>(
       `SELECT ${ADMIN_JOIN_COLUMNS} ${ADMIN_JOIN_FROM} WHERE a.id = $1`,
       [adminId],
@@ -95,8 +121,8 @@ export async function getAdminById(tenantId: string, adminId: string): Promise<A
   });
 }
 
-export async function listAdmins(tenantId: string): Promise<AdminRecord[]> {
-  return withTenant(tenantId, async (client) => {
+export async function listAdmins(): Promise<AdminRecord[]> {
+  return withTransaction(async (client) => {
     const result = await client.query<AdminRow>(
       `SELECT ${ADMIN_JOIN_COLUMNS} ${ADMIN_JOIN_FROM} ORDER BY a.created_at`,
     );
@@ -106,10 +132,9 @@ export async function listAdmins(tenantId: string): Promise<AdminRecord[]> {
 
 /** Para notificaciones (Fase 13, ver dailyReport.ts / notificación de pago de ADR-024): admins activos con el permiso efectivo marcado. */
 export async function listActiveAdminsWithPermission(
-  tenantId: string,
   permission: keyof AdminPermissions,
 ): Promise<AdminRecord[]> {
-  const admins = await listAdmins(tenantId);
+  const admins = await listAdmins();
   return admins.filter((admin) => admin.active && admin.permissions[permission]);
 }
 
@@ -117,19 +142,17 @@ export async function listActiveAdminsWithPermission(
  * A quién mandarle una notificación por WhatsApp para un permiso dado:
  * admins activos con ese permiso Y teléfono cargado (uno puede tener el
  * permiso marcado pero no haber cargado su número — ese no recibe nada).
- * Si la lista queda vacía, cae al teléfono legado del tenant
- * (`report_recipient_phone`/similar) — ver ADR-025, "puede mantenerse
- * como fallback si ningún administrador tiene el permiso marcado". No es
- * un "además de" — es "solo si nadie más lo recibiría", para no
- * duplicar el envío una vez que el tenant ya tiene colaboradores
- * configurados.
+ * Si la lista queda vacía, cae al teléfono legado (`report_recipient_phone`,
+ * ver ADR-025: "puede mantenerse como fallback si ningún administrador
+ * tiene el permiso marcado"). No es un "además de" — es "solo si nadie
+ * más lo recibiría", para no duplicar el envío una vez que ya hay
+ * colaboradores configurados.
  */
 export async function resolveNotificationRecipients(
-  tenantId: string,
   permission: keyof AdminPermissions,
   fallbackPhone: string | null,
 ): Promise<string[]> {
-  const admins = await listActiveAdminsWithPermission(tenantId, permission);
+  const admins = await listActiveAdminsWithPermission(permission);
   const phones = [...new Set(admins.map((admin) => admin.phone).filter((p): p is string => Boolean(p)))];
   if (phones.length > 0) {
     return phones;
@@ -137,45 +160,57 @@ export async function resolveNotificationRecipients(
   return fallbackPhone ? [fallbackPhone] : [];
 }
 
-/** Crea el admin y su fila 1:1 de permisos (todos en false por default) en la misma transacción — ver migrations/0033_admins.cjs. `phone` opcional (migrations/0034_admins_phone.cjs) — sin él, este admin no recibe notificaciones por WhatsApp aunque tenga el permiso marcado. */
+/** Crea el admin y su fila 1:1 de permisos (todos en false por default) en la misma transacción — ver migrations/0033_admins.cjs. `phone` opcional (migrations/0034_admins_phone.cjs) — sin él, este admin no recibe notificaciones por WhatsApp aunque tenga el permiso marcado. `username` obligatorio y único (migrations/0037) — junto con `email` y `phone` (si se carga), es lo que habilita el login combinado (ver findAdminByUsernameOrEmail). */
 export async function createAdmin(
-  tenantId: string,
+  username: string,
   email: string,
   passwordHash: string,
   role: AdminRole,
   phone: string | null,
 ): Promise<string> {
-  return withTenant(tenantId, async (client) => {
+  return withTransaction(async (client) => {
     const result = await client.query<{ id: string }>(
-      `INSERT INTO admins (tenant_id, email, password_hash, role, phone) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [tenantId, email, passwordHash, role, phone],
+      `INSERT INTO admins (username, email, password_hash, role, phone) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [username, email, passwordHash, role, phone],
     );
     const adminId = result.rows[0]!.id;
-    await client.query(`INSERT INTO admin_permissions (admin_id, tenant_id) VALUES ($1, $2)`, [
-      adminId,
-      tenantId,
-    ]);
+    await client.query(`INSERT INTO admin_permissions (admin_id) VALUES ($1)`, [adminId]);
     return adminId;
   });
 }
 
-export async function setAdminActive(
-  tenantId: string,
+/**
+ * Auto-edición de perfil (Fase 13 v2, ver ADR-032): cualquier admin —
+ * master o colaborador por igual — puede editar sus propios username,
+ * correo, teléfono y avatar desde `/admin/perfil`. Reemplaza los 4 campos
+ * completos (mismo criterio "sin merge" que `saveBehaviorConfig`) — no
+ * toca `role`/`active`/permisos, esos siguen siendo exclusivos del master
+ * vía `setAdminActive`/`updateAdminPermissions`.
+ */
+export async function updateAdminProfile(
   adminId: string,
-  active: boolean,
+  profile: { username: string; email: string; phone: string | null; avatarData: string | null },
 ): Promise<void> {
-  await withTenant(tenantId, async (client) => {
+  await withTransaction(async (client) => {
+    await client.query(
+      `UPDATE admins SET username = $1, email = $2, phone = $3, avatar_data = $4 WHERE id = $5`,
+      [profile.username, profile.email, profile.phone, profile.avatarData, adminId],
+    );
+  });
+}
+
+export async function setAdminActive(adminId: string, active: boolean): Promise<void> {
+  await withTransaction(async (client) => {
     await client.query(`UPDATE admins SET active = $1 WHERE id = $2`, [active, adminId]);
   });
 }
 
 /** No tiene efecto visible si el admin es 'master' (ver resolveEffectivePermissions) — se permite igual para no bifurcar la UI de Colaboradores. */
 export async function updateAdminPermissions(
-  tenantId: string,
   adminId: string,
   permissions: AdminPermissions,
 ): Promise<void> {
-  await withTenant(tenantId, async (client) => {
+  await withTransaction(async (client) => {
     await client.query(
       `UPDATE admin_permissions
        SET recibe_reporte_diario = $1, recibe_tickets = $2, recibe_notificacion_pagos = $3

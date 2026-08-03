@@ -35,14 +35,13 @@ type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>;
  * de confirmarlo y recién después decidir escalar.
  */
 export async function executeTool(
-  tenantId: string,
   conversationId: string,
   customerId: string,
   messageSid: string,
   montoAltoThreshold: number,
   toolUse: ToolUseBlock,
 ): Promise<ToolResultBlock> {
-  const toolLogger = logger.child({ tenant_id: tenantId, conversation_id: conversationId });
+  const toolLogger = logger.child({ conversation_id: conversationId });
   const startedAt = Date.now();
   toolLogger.info(
     { event: "orchestrator.tool_iniciada", tool: toolUse.name },
@@ -53,38 +52,32 @@ export async function executeTool(
     let output: unknown;
     switch (toolUse.name) {
       case "consultar_inventario":
-        output = await consultarInventario(tenantId, toolUse.input as ConsultarInventarioInput);
+        output = await consultarInventario(toolUse.input as ConsultarInventarioInput);
         break;
       case "generar_cotizacion":
         output = await generarCotizacion(
-          tenantId,
           conversationId,
           customerId,
           toolUse.input as GenerarCotizacionInput,
         );
         break;
       case "aplicar_promocion":
-        output = await aplicarPromocion(tenantId, toolUse.input as AplicarPromocionInput);
+        output = await aplicarPromocion(toolUse.input as AplicarPromocionInput);
         break;
       case "crear_pedido":
-        output = await crearPedido(
-          tenantId,
-          messageSid,
-          toolUse.input as CrearPedidoInput,
-          montoAltoThreshold,
-        );
+        output = await crearPedido(messageSid, toolUse.input as CrearPedidoInput, montoAltoThreshold);
         break;
       case "recomendar_producto":
-        output = await recomendarProducto(tenantId, toolUse.input as RecomendarProductoInput);
+        output = await recomendarProducto(toolUse.input as RecomendarProductoInput);
         break;
       case "escalar_a_humano":
-        output = await escalarHumano(tenantId, conversationId, toolUse.input as EscalarHumanoInput);
+        output = await escalarHumano(conversationId, toolUse.input as EscalarHumanoInput);
         break;
       default:
         throw new Error(`Tool desconocida: ${toolUse.name}`);
     }
 
-    await recordAudit(tenantId, conversationId, "tool", toolUse.name, toolUse.input, output);
+    await recordAudit(conversationId, "tool", toolUse.name, toolUse.input, output);
     toolLogger.info(
       { event: "orchestrator.tool_completada", tool: toolUse.name, latency_ms: Date.now() - startedAt },
       "Ejecución de tool completada",
@@ -97,7 +90,7 @@ export async function executeTool(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await recordAudit(tenantId, conversationId, "tool", toolUse.name, toolUse.input, {
+    await recordAudit(conversationId, "tool", toolUse.name, toolUse.input, {
       error: message,
     });
     toolLogger.warn(
