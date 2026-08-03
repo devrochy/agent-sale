@@ -710,6 +710,66 @@ describe("panel admin", () => {
         headers: { cookie: colaboradorCookie },
       });
       expect(colaboradores.statusCode).toBe(403);
+
+      // El bloqueo cubre las acciones (POST), no solo la vista (GET) —
+      // un colaborador no puede crear otro admin aunque sepa la URL.
+      const intentoCrear = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({
+          email: "intruso@formotos-test.com",
+          password: "clave-cualquiera",
+          role: "master",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: colaboradorCookie },
+      });
+      expect(intentoCrear.statusCode).toBe(403);
+      const buscaIntruso = await adminPool.query(
+        `SELECT 1 FROM admins WHERE tenant_id = $1 AND email = 'intruso@formotos-test.com'`,
+        [tenantA],
+      );
+      expect(buscaIntruso.rowCount).toBe(0);
+    });
+
+    it("una sesión expirada se trata igual que una inválida", async () => {
+      const email = "sesion-expirada@formotos-test.com";
+      const password = "clave-sesion-expirada";
+      await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/colaboradores`,
+        payload: new URLSearchParams({ email, password, role: "colaborador" }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+
+      const login = await app.inject({
+        method: "POST",
+        url: `/admin/${tenantA}/login`,
+        payload: new URLSearchParams({ email, password }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      const cookie = cookieValueFrom(login.headers["set-cookie"]);
+      const token = cookie.split("=")[1]!.split(";")[0]!;
+
+      // Todavía válida.
+      const antes = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}`,
+        headers: { cookie },
+      });
+      expect(antes.statusCode).toBe(200);
+
+      await adminPool.query(
+        `UPDATE admin_sessions SET expires_at = now() - interval '1 minute' WHERE token = $1`,
+        [decodeURIComponent(token)],
+      );
+
+      const despues = await app.inject({
+        method: "GET",
+        url: `/admin/${tenantA}`,
+        headers: { cookie },
+      });
+      expect(despues.statusCode).toBe(303);
+      expect(despues.headers.location).toBe(`/admin/${tenantA}/login`);
     });
 
     it("desactivar un colaborador le bloquea el login de inmediato", async () => {
