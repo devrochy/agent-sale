@@ -1,3 +1,4 @@
+import { resolveNotificationRecipients } from "../admin/auth/adminsDirectory.js";
 import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import { getReportRecipient, getTenant, listTenants, withTenant } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
@@ -76,13 +77,26 @@ function formatReportText(brand: string, row: DailyReportRow): string {
   );
 }
 
-/** `null` si el tenant no configuró `report_recipient_phone` (ver migrations/0024) o no existe — no es un error, ese tenant simplemente no recibe reporte. */
+/**
+ * `null` si no hay a quién mandárselo o el tenant no existe — no es un
+ * error, ese tenant simplemente no recibe reporte. Destinatarios (Fase
+ * 13, ver ADR-025): admins activos con `recibeReporteDiario` y teléfono
+ * cargado; si no hay ninguno, cae a `report_recipient_phone` (ver
+ * migrations/0024) por compatibilidad con tenants sin colaboradores
+ * configurados todavía.
+ */
 export async function buildDailyReportText(tenantId: string): Promise<string | null> {
-  const [recipient, tenant] = await Promise.all([
-    getReportRecipient(tenantId),
-    getTenant(tenantId),
-  ]);
-  if (!recipient || !tenant) {
+  const tenant = await getTenant(tenantId);
+  if (!tenant) {
+    return null;
+  }
+  const fallbackPhone = await getReportRecipient(tenantId);
+  const recipients = await resolveNotificationRecipients(
+    tenantId,
+    "recibeReporteDiario",
+    fallbackPhone,
+  );
+  if (recipients.length === 0) {
     return null;
   }
   const row = await buildDailyReportRow(tenantId);
@@ -91,27 +105,43 @@ export async function buildDailyReportText(tenantId: string): Promise<string | n
 
 /**
  * Itera todos los tenants y manda el Reporte diario a quien lo tenga
- * configurado — un tenant que falla (sin destinatario, error de query, o
- * error de envío por WhatsApp) no debe frenar el reporte de los demás,
- * mismo criterio best-effort que `escalarHumano.ts` para notificaciones
- * proactivas. Se llama tanto desde el cron (src/jobs/scheduler.ts) como
- * manualmente en QA, sin depender de horario.
+ * configurado (uno o más destinatarios por tenant, ver
+ * `buildDailyReportText`) — un tenant que falla (sin destinatario, error
+ * de query, o error de envío por WhatsApp de UN destinatario) no debe
+ * frenar el reporte de los demás, mismo criterio best-effort que
+ * `escalarHumano.ts` para notificaciones proactivas. Se llama tanto desde
+ * el cron (src/jobs/scheduler.ts) como manualmente en QA, sin depender de
+ * horario.
  */
 export async function sendDailyReports(): Promise<void> {
   const tenants = await listTenants();
   for (const tenant of tenants) {
     const jobLogger = logger.child({ tenant_id: tenant.id, event: "jobs.reporte_diario" });
     try {
-      const recipient = await getReportRecipient(tenant.id);
-      if (!recipient) {
+      const fallbackPhone = await getReportRecipient(tenant.id);
+      const recipients = await resolveNotificationRecipients(
+        tenant.id,
+        "recibeReporteDiario",
+        fallbackPhone,
+      );
+      if (recipients.length === 0) {
         continue;
       }
       const text = await buildDailyReportText(tenant.id);
       if (!text) {
         continue;
       }
-      const sid = await sendWhatsAppMessage(recipient, text);
-      await verifyDelivery(sid, "Reporte diario", jobLogger);
+      for (const recipient of recipients) {
+        try {
+          const sid = await sendWhatsAppMessage(recipient, text);
+          await verifyDelivery(sid, "Reporte diario", jobLogger);
+        } catch (error) {
+          jobLogger.warn(
+            { error, recipient },
+            "No se pudo enviar el reporte diario a este destinatario — se sigue con el resto",
+          );
+        }
+      }
     } catch (error) {
       jobLogger.warn({ error }, "No se pudo enviar el reporte diario de este tenant");
     }

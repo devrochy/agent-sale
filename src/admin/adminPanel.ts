@@ -2431,6 +2431,7 @@ export async function renderColaboradoresPage(
 
       return `<tr>
         <td>${escapeHtml(admin.email)}</td>
+        <td class="mono">${admin.phone ? escapeHtml(admin.phone) : '<span class="hint">Sin teléfono</span>'}</td>
         <td>${escapeHtml(roleLabel)}</td>
         <td>${estadoChip}</td>
         <td>${permisosForm}</td>
@@ -2448,8 +2449,8 @@ export async function renderColaboradoresPage(
     ${banner}
     <div class="panel tablewrap">
       <table>
-        <thead><tr><th>Correo</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th></th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el formulario de abajo.")}</td></tr>`}</tbody>
+        <thead><tr><th>Correo</th><th>Teléfono</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el formulario de abajo.")}</td></tr>`}</tbody>
       </table>
     </div>
     <section class="block" aria-label="Nuevo colaborador">
@@ -2463,6 +2464,11 @@ export async function renderColaboradoresPage(
           <div class="field">
             <label for="password">Contraseña</label>
             <input type="password" id="password" name="password" required minlength="8">
+          </div>
+          <div class="field">
+            <label for="phone">Teléfono (WhatsApp)</label>
+            <input type="text" id="phone" name="phone" placeholder="whatsapp:+573001234567">
+            <p class="hint">Para las notificaciones que le actives abajo. Se puede dejar vacío y cargar después.</p>
           </div>
           <div class="field">
             <label id="role-label">Rol</label>
@@ -2494,7 +2500,7 @@ export async function renderColaboradoresPage(
 
 export async function crearColaborador(
   tenantId: string,
-  input: { email: string; password: string; role: string },
+  input: { email: string; password: string; role: string; phone: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const email = input.email.trim().toLowerCase();
   if (!email) {
@@ -2506,10 +2512,17 @@ export async function crearColaborador(
   if (!isAdminRole(input.role)) {
     return { ok: false, error: "Rol no válido." };
   }
+  const phone = input.phone.trim();
+  if (phone !== "" && !WHATSAPP_PHONE_RE.test(phone)) {
+    return {
+      ok: false,
+      error: 'Teléfono con formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.',
+    };
+  }
 
   const passwordHash = await hashPassword(input.password);
   try {
-    await createAdmin(tenantId, email, passwordHash, input.role);
+    await createAdmin(tenantId, email, passwordHash, input.role, phone === "" ? null : phone);
   } catch (error) {
     // UNIQUE (tenant_id, email) — ver migrations/0033_admins.cjs.
     const message =

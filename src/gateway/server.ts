@@ -271,15 +271,17 @@ export async function buildServer() {
 
   app.post("/admin/:tenantId/colaboradores", async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
-    const { email, password, role } = request.body as {
+    const { email, password, role, phone } = request.body as {
       email?: string;
       password?: string;
       role?: string;
+      phone?: string;
     };
     const result = await crearColaborador(tenantId, {
       email: email ?? "",
       password: password ?? "",
       role: role ?? "",
+      phone: phone ?? "",
     });
     const redirectUrl = result.ok
       ? `/admin/${tenantId}/colaboradores?guardado=1`

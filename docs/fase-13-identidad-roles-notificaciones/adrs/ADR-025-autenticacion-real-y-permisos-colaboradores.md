@@ -58,6 +58,12 @@ Esta ADR, tal como fue aceptada, solo cubría `/admin/:tenantId/*` — dejaba si
 
 **Decisión (confirmada por Rob al iniciar la implementación):** `GET /admin` deja de listar tenants — pasa a ser una página neutra sin datos, sin necesidad de sesión (no hay nada que proteger). Cada colaborador entra directo por `/admin/:tenantId/login`. Si en el futuro se necesita un picker multi-tenant para el equipo de agencia, es una decisión de producto aparte (un rol de plataforma no diseñado acá), no una reversión de esta.
 
+## Adenda (implementación): `admins.phone`
+
+El diseño original de esta ADR no incluía un teléfono en `admins` — pero las notificaciones que los permisos (`recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`) controlan son por WhatsApp, igual que el resto de la mensajería proactiva del proyecto (`dailyReport.ts`, ADR-024). Sin un teléfono, esos permisos no tenían a dónde mandar nada.
+
+**Decisión:** columna `admins.phone text` nullable (migración `0034_admins_phone.cjs`), mismo formato `whatsapp:+<número>` que ya usa `tenants.report_recipient_phone`. Un admin sin teléfono cargado simplemente no recibe WhatsApp aunque tenga el permiso marcado — no es un error, mismo criterio que el resto de los campos de contacto opcionales del proyecto.
+
 ## Consecuencias
 
 - Todas las rutas `/admin/:tenantId/*` requieren sesión válida; ninguna queda bajo Basic Auth tras el despliegue de esta fase. `GET /admin` (bare) tampoco usa Basic Auth — ver adenda arriba.

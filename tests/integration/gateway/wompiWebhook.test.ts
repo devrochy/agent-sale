@@ -6,6 +6,8 @@ vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
 }));
 
+import { createAdmin, updateAdminPermissions } from "../../../src/admin/auth/adminsDirectory.js";
+import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
@@ -186,5 +188,97 @@ describe("POST /webhooks/wompi", () => {
     expect(response.statusCode).toBe(200);
     expect(await paymentStatus()).toBe("pagado");
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /webhooks/wompi — notificación a admins con permiso (Fase 13)", () => {
+  let tenantId2: string;
+  let orderId2: string;
+  const PAYMENT_LINK_ID_2 = `link-webhook-test-admins-${Date.now()}`;
+
+  beforeAll(async () => {
+    const tenant = await adminPool.query<{ id: string }>(
+      `INSERT INTO tenants (name, report_recipient_phone) VALUES ('Wompi Webhook Admins Test', 'whatsapp:+573000000099') RETURNING id`,
+    );
+    tenantId2 = tenant.rows[0]!.id;
+    await saveWompiConfig(tenantId2, { privateKey: "prv_test_fake", eventsSecret: EVENTS_SECRET });
+
+    const passwordHash = await hashPassword("clave-de-prueba-admin-pagos");
+    const adminId = await createAdmin(
+      tenantId2,
+      "pagos@formotos-test.com",
+      passwordHash,
+      "colaborador",
+      "whatsapp:+573000000098",
+    );
+    await updateAdminPermissions(tenantId2, adminId, {
+      recibeReporteDiario: false,
+      recibeTickets: false,
+      recibeNotificacionPagos: true,
+    });
+
+    const customer = await adminPool.query<{ id: string }>(
+      `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, '3050000099') RETURNING id`,
+      [tenantId2],
+    );
+    const conversation = await adminPool.query<{ id: string }>(
+      `INSERT INTO conversations (tenant_id, customer_id) VALUES ($1, $2) RETURNING id`,
+      [tenantId2, customer.rows[0]!.id],
+    );
+    const quote = await adminPool.query<{ id: string }>(
+      `INSERT INTO quotes (tenant_id, conversation_id, customer_id, subtotal, total) VALUES ($1, $2, $3, 1000, 1000) RETURNING id`,
+      [tenantId2, conversation.rows[0]!.id, customer.rows[0]!.id],
+    );
+    const order = await adminPool.query<{ id: string }>(
+      `INSERT INTO orders (tenant_id, quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
+       VALUES ($1, $2, $3, $4, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $5, 1000, $6)
+       RETURNING id`,
+      [
+        tenantId2,
+        quote.rows[0]!.id,
+        conversation.rows[0]!.id,
+        customer.rows[0]!.id,
+        `idem-wompi-webhook-admins-${Date.now()}`,
+        PAYMENT_LINK_ID_2,
+      ],
+    );
+    orderId2 = order.rows[0]!.id;
+    await adminPool.query(
+      `INSERT INTO wompi_payment_links (payment_link_id, tenant_id, order_id) VALUES ($1, $2, $3)`,
+      [PAYMENT_LINK_ID_2, tenantId2, orderId2],
+    );
+  });
+
+  afterEach(() => {
+    vi.mocked(sendWhatsAppMessage).mockReset();
+  });
+
+  afterAll(async () => {
+    await adminPool.query(`DELETE FROM wompi_payment_links WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM orders WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM quotes WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM conversations WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM customers WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM admin_permissions WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM admins WHERE tenant_id = $1`, [tenantId2]);
+    await adminPool.query(`DELETE FROM tenants WHERE id = $1`, [tenantId2]);
+  });
+
+  it("notifica al teléfono del admin con recibeNotificacionPagos, no al report_recipient_phone legado", async () => {
+    const event = buildEvent("tx-approved-admin-1", "APPROVED", PAYMENT_LINK_ID_2);
+    const response = await post(event);
+
+    expect(response.statusCode).toBe(200);
+    // Un admin con el permiso existe → gana sobre report_recipient_phone
+    // (ver resolveNotificationRecipients: "solo si nadie más lo recibiría").
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+      "whatsapp:+573000000098",
+      expect.stringContaining(orderId2),
+    );
+    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(
+      "whatsapp:+573000000099",
+      expect.anything(),
+    );
   });
 });

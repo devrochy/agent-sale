@@ -15,6 +15,8 @@ export interface AdminPermissions {
 export interface AdminRecord {
   id: string;
   email: string;
+  /** Número de WhatsApp para notificaciones (migrations/0034) — null si el admin no lo cargó, ese caso simplemente no recibe WhatsApp (mismo criterio que tenants.report_recipient_phone). */
+  phone: string | null;
   role: AdminRole;
   active: boolean;
   createdAt: Date;
@@ -25,6 +27,7 @@ export interface AdminRecord {
 interface AdminRow {
   id: string;
   email: string;
+  phone: string | null;
   password_hash: string;
   role: AdminRole;
   active: boolean;
@@ -35,7 +38,7 @@ interface AdminRow {
 }
 
 const ADMIN_JOIN_COLUMNS = `
-  a.id, a.email, a.password_hash, a.role, a.active, a.created_at,
+  a.id, a.email, a.phone, a.password_hash, a.role, a.active, a.created_at,
   p.recibe_reporte_diario, p.recibe_tickets, p.recibe_notificacion_pagos
 `;
 const ADMIN_JOIN_FROM = `FROM admins a JOIN admin_permissions p ON p.admin_id = a.id`;
@@ -56,6 +59,7 @@ function mapAdminRow(row: AdminRow): AdminRecord {
   return {
     id: row.id,
     email: row.email,
+    phone: row.phone,
     role: row.role,
     active: row.active,
     createdAt: row.created_at,
@@ -109,17 +113,42 @@ export async function listActiveAdminsWithPermission(
   return admins.filter((admin) => admin.active && admin.permissions[permission]);
 }
 
-/** Crea el admin y su fila 1:1 de permisos (todos en false por default) en la misma transacción — ver migrations/0033_admins.cjs. */
+/**
+ * A quién mandarle una notificación por WhatsApp para un permiso dado:
+ * admins activos con ese permiso Y teléfono cargado (uno puede tener el
+ * permiso marcado pero no haber cargado su número — ese no recibe nada).
+ * Si la lista queda vacía, cae al teléfono legado del tenant
+ * (`report_recipient_phone`/similar) — ver ADR-025, "puede mantenerse
+ * como fallback si ningún administrador tiene el permiso marcado". No es
+ * un "además de" — es "solo si nadie más lo recibiría", para no
+ * duplicar el envío una vez que el tenant ya tiene colaboradores
+ * configurados.
+ */
+export async function resolveNotificationRecipients(
+  tenantId: string,
+  permission: keyof AdminPermissions,
+  fallbackPhone: string | null,
+): Promise<string[]> {
+  const admins = await listActiveAdminsWithPermission(tenantId, permission);
+  const phones = [...new Set(admins.map((admin) => admin.phone).filter((p): p is string => Boolean(p)))];
+  if (phones.length > 0) {
+    return phones;
+  }
+  return fallbackPhone ? [fallbackPhone] : [];
+}
+
+/** Crea el admin y su fila 1:1 de permisos (todos en false por default) en la misma transacción — ver migrations/0033_admins.cjs. `phone` opcional (migrations/0034_admins_phone.cjs) — sin él, este admin no recibe notificaciones por WhatsApp aunque tenga el permiso marcado. */
 export async function createAdmin(
   tenantId: string,
   email: string,
   passwordHash: string,
   role: AdminRole,
+  phone: string | null,
 ): Promise<string> {
   return withTenant(tenantId, async (client) => {
     const result = await client.query<{ id: string }>(
-      `INSERT INTO admins (tenant_id, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [tenantId, email, passwordHash, role],
+      `INSERT INTO admins (tenant_id, email, password_hash, role, phone) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [tenantId, email, passwordHash, role, phone],
     );
     const adminId = result.rows[0]!.id;
     await client.query(`INSERT INTO admin_permissions (admin_id, tenant_id) VALUES ($1, $2)`, [

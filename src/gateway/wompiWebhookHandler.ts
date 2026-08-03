@@ -1,3 +1,4 @@
+import { resolveNotificationRecipients } from "../admin/auth/adminsDirectory.js";
 import { verifyWompiChecksum } from "../payments/wompiSignature.js";
 import { getReportRecipient, getWompiConfig, resolveWompiPaymentLink, withTenant } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
@@ -104,16 +105,26 @@ export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookRes
 
   if (updatedTotal !== null) {
     wompiLogger.info({ event: "wompi.pago_confirmado" }, "Pago de Wompi confirmado, pedido marcado como pagado");
-    const recipient = await getReportRecipient(link.tenantId);
-    if (recipient) {
+    // Destinatarios (Fase 13, ver ADR-025): admins activos con
+    // `recibeNotificacionPagos` y teléfono cargado; si no hay ninguno,
+    // cae al `report_recipient_phone` legado (mismo criterio que
+    // dailyReport.ts).
+    const fallbackPhone = await getReportRecipient(link.tenantId);
+    const recipients = await resolveNotificationRecipients(
+      link.tenantId,
+      "recibeNotificacionPagos",
+      fallbackPhone,
+    );
+    for (const recipient of recipients) {
       try {
         await sendWhatsAppMessage(recipient, buildApprovalNotification(link.orderId, updatedTotal));
       } catch (error) {
         // Best-effort, igual que la notificación de escalarHumano.ts: el
-        // pedido ya quedó marcado como pagado aunque el aviso falle.
+        // pedido ya quedó marcado como pagado aunque el aviso falle. Un
+        // destinatario que falla no debe frenar al resto.
         wompiLogger.warn(
-          { error, event: "wompi.notificacion_fallida" },
-          "No se pudo notificar al operador el pago confirmado",
+          { error, event: "wompi.notificacion_fallida", recipient },
+          "No se pudo notificar a este destinatario el pago confirmado",
         );
       }
     }

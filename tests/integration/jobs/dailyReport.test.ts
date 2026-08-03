@@ -1,5 +1,7 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
+import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildDailyReportText } from "../../../src/jobs/dailyReport.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 
@@ -8,6 +10,7 @@ const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_U
 
 let tenantId: string;
 let tenantSinReporte: string;
+let tenantConAdminMaster: string;
 let convCerradaId: string;
 
 beforeAll(async () => {
@@ -35,6 +38,23 @@ beforeAll(async () => {
     `INSERT INTO tenants (name) VALUES ('Reporte Diario Test Sin Config') RETURNING id`,
   );
   tenantSinReporte = tenantSin.rows[0]!.id;
+
+  // Fase 13 (ver ADR-025): sin report_recipient_phone legado, pero con un
+  // admin master (permiso recibeReporteDiario implícito) y teléfono
+  // cargado — buildDailyReportText debe dejar de depender solo del campo
+  // legado del tenant.
+  const tenantAdmin = await adminPool.query<{ id: string }>(
+    `INSERT INTO tenants (name) VALUES ('Reporte Diario Test Con Admin') RETURNING id`,
+  );
+  tenantConAdminMaster = tenantAdmin.rows[0]!.id;
+  const passwordHash = await hashPassword("clave-de-prueba-reporte");
+  await createAdmin(
+    tenantConAdminMaster,
+    "master-reporte@formotos-test.com",
+    passwordHash,
+    "master",
+    "whatsapp:+573000000097",
+  );
 
   const customer = await adminPool.query<{ id: string }>(
     `INSERT INTO customers (tenant_id, phone_number) VALUES ($1, 'whatsapp:+573001112222') RETURNING id`,
@@ -101,13 +121,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const tenants = [tenantId, tenantSinReporte];
+  const tenants = [tenantId, tenantSinReporte, tenantConAdminMaster];
   await adminPool.query(`DELETE FROM orders WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM quotes WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM handoff_queue WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM messages WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM conversations WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM customers WHERE tenant_id = ANY($1)`, [tenants]);
+  await adminPool.query(`DELETE FROM admin_permissions WHERE tenant_id = ANY($1)`, [tenants]);
+  await adminPool.query(`DELETE FROM admins WHERE tenant_id = ANY($1)`, [tenants]);
   await adminPool.query(`DELETE FROM tenants WHERE id = ANY($1)`, [tenants]);
   await adminPool.end();
   await appPool.end();
@@ -128,6 +150,12 @@ describe("buildDailyReportText", () => {
   it("tenant sin report_recipient_phone configurado devuelve null, no un texto vacío", async () => {
     const text = await buildDailyReportText(tenantSinReporte);
     expect(text).toBeNull();
+  });
+
+  it("tenant con admin master (Fase 13) recibe reporte aunque no tenga report_recipient_phone legado", async () => {
+    const text = await buildDailyReportText(tenantConAdminMaster);
+    expect(text).not.toBeNull();
+    expect(text).toContain("Mensajes: 0");
   });
 
   it("tenant inexistente devuelve null", async () => {
