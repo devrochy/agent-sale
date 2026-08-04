@@ -30,4 +30,15 @@ Es, en palabras de la propia propuesta, "la parte de mayor cambio estructural" d
 
 Implementado en 2 PRs: [#54](https://github.com/devrochy/agent-sale/pull/54) (esquema + tools de dominio + tests) y [#55](https://github.com/devrochy/agent-sale/pull/55) (panel admin de aliados/categorías).
 
+## Extensión post-fase (fuera del alcance original)
+
+Al probar manualmente el panel quedó claro que faltaba algo que la propuesta original de la Fase 14 (`PROPUESTA_V2.md` §3.10.1) ya pedía y no se había construido, más un par de necesidades reales nuevas del negocio:
+
+- **Alta y edición completa de productos** desde `/admin/productos` — Fase 14 (PR #55) solo dejó *asignar* aliado/categoría a un producto ya existente, explícitamente fuera de su alcance en ese momento. Ahora la tabla lista por producto genérico (no por variante) y un modal permite crear/editar nombre, descripción, imagen, aliado, categoría y la lista completa de variantes (SKU/talla/color/precio/stock/activa).
+- **Edición rápida por doble clic** en Productos y Aliados — los campos simples de la tabla se ven como texto plano hasta que se hace doble clic, sin necesidad de abrir el modal para un cambio chico.
+- **"Ver productos" por aliado** (`/admin/aliados` → `/admin/productos?allyId=`) — esto es exactamente lo que pedía `PROPUESTA_V2.md` §3.10.1 ("permite listar productos por aliado") y había quedado sin construir en el PR #55.
+- **Carga masiva de productos por CSV** (`/admin/productos/importar`) — un admin sube, en nombre de un aliado, un archivo con columnas `sku,name,price,stock` (+ `talla,color,description` opcionales); actualiza precio/stock si el SKU ya existe, crea el producto si es nuevo. **Pendiente para un incremento futuro, no descartado**: un portal/login propio para que el aliado externo suba su archivo directamente, sin pasar por un admin del panel.
+
+Implementado en 2 PRs adicionales: [#56](https://github.com/devrochy/agent-sale/pull/56) (gestión completa de productos) y [#57](https://github.com/devrochy/agent-sale/pull/57) (importación masiva por CSV, sobre esa base).
+
 Siguiente paso: [Fase 15 — Datos de Cliente y Flujo de Pedidos Extendido](../fase-15-datos-cliente-flujo-pedidos/README.md), que depende de este esquema.
