@@ -13,10 +13,25 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
+// customer_data mínimo para llegar a status "confirmed" — ver ADR-033.
+// save_permanently: false por defecto para no ensuciar `customers` en los
+// tests que no lo ejercitan explícitamente.
+const customerData = {
+  address: "Calle 1 # 2-34",
+  id_document: "123456789",
+  full_name: "Cliente De Prueba",
+  save_permanently: false,
+};
+
 let conversationA: string;
 let customerA: string;
 let productA: string;
 let variantA: string;
+// Cliente aparte para el describe "datos de cliente" — necesita empezar
+// sin address/id_document/full_name guardados, algo que customerA ya no
+// garantiza una vez que otros tests de este archivo corren.
+let conversationB: string;
+let customerB: string;
 // La sección "pago_en_linea" necesita una fila de settings para
 // getWompiConfig/saveWompiConfig (settings es singleton — se siembra acá,
 // no en el beforeAll general, porque el resto de los tests de este
@@ -34,6 +49,16 @@ beforeAll(async () => {
   );
   conversationA = conversation.rows[0]!.id;
 
+  const customerBRow = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (phone_number) VALUES ('3040000002') RETURNING id`,
+  );
+  customerB = customerBRow.rows[0]!.id;
+  const conversationBRow = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerB],
+  );
+  conversationB = conversationBRow.rows[0]!.id;
+
   const product = await seedProduct(adminPool, {
     sku: "CASCO-PEDIDO",
     name: "Casco pedido",
@@ -50,23 +75,25 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await adminPool.query(
-    `DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
-    [conversationA],
-  );
-  await adminPool.query(
-    `DELETE FROM wompi_payment_links WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
-    [conversationA],
-  );
-  await adminPool.query(`DELETE FROM orders WHERE conversation_id = $1`, [conversationA]);
-  await adminPool.query(
-    `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
-    [conversationA],
-  );
-  await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationA]);
+  for (const conversationId of [conversationA, conversationB]) {
+    await adminPool.query(
+      `DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
+      [conversationId],
+    );
+    await adminPool.query(
+      `DELETE FROM wompi_payment_links WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
+      [conversationId],
+    );
+    await adminPool.query(`DELETE FROM orders WHERE conversation_id = $1`, [conversationId]);
+    await adminPool.query(
+      `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+      [conversationId],
+    );
+    await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationId]);
+    await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+  }
   await deleteProduct(adminPool, productA);
-  await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationA]);
-  await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerA]);
+  await adminPool.query(`DELETE FROM customers WHERE id IN ($1, $2)`, [customerA, customerB]);
   await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
@@ -84,6 +111,7 @@ describe("crearPedido", () => {
         quote_id: quote.quote_id,
         payment_method: "transferencia",
         delivery_method: "domicilio",
+        customer_data: customerData,
       },
       1000000,
     );
@@ -112,12 +140,22 @@ describe("crearPedido", () => {
 
     const first = await crearPedido(
       "sid-2",
-      { quote_id: quote.quote_id, payment_method: "tarjeta", delivery_method: "recoger_en_tienda" },
+      {
+        quote_id: quote.quote_id,
+        payment_method: "tarjeta",
+        delivery_method: "recoger_en_tienda",
+        customer_data: customerData,
+      },
       1000000,
     );
     const second = await crearPedido(
       "sid-2",
-      { quote_id: quote.quote_id, payment_method: "tarjeta", delivery_method: "recoger_en_tienda" },
+      {
+        quote_id: quote.quote_id,
+        payment_method: "tarjeta",
+        delivery_method: "recoger_en_tienda",
+        customer_data: customerData,
+      },
       1000000,
     );
 
@@ -149,6 +187,7 @@ describe("crearPedido", () => {
         quote_id: quote.quote_id,
         payment_method: "efectivo_contraentrega",
         delivery_method: "domicilio",
+        customer_data: customerData,
       },
       1000000,
     );
@@ -158,6 +197,7 @@ describe("crearPedido", () => {
         quote_id: quote.quote_id,
         payment_method: "efectivo_contraentrega",
         delivery_method: "domicilio",
+        customer_data: customerData,
       },
       1000000,
     );
@@ -227,7 +267,12 @@ describe("crearPedido", () => {
 
       const result = await crearPedido(
         "sid-wompi-no-config",
-        { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
+        {
+          quote_id: quote.quote_id,
+          payment_method: "pago_en_linea",
+          delivery_method: "domicilio",
+          customer_data: customerData,
+        },
         1000000,
       );
 
@@ -249,7 +294,12 @@ describe("crearPedido", () => {
 
       const result = await crearPedido(
         "sid-wompi-monto-minimo",
-        { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
+        {
+          quote_id: quote.quote_id,
+          payment_method: "pago_en_linea",
+          delivery_method: "domicilio",
+          customer_data: customerData,
+        },
         1000000,
       );
 
@@ -296,7 +346,12 @@ describe("crearPedido", () => {
 
         const result = await crearPedido(
           "sid-wompi-1",
-          { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
+          {
+            quote_id: quote.quote_id,
+            payment_method: "pago_en_linea",
+            delivery_method: "domicilio",
+            customer_data: customerData,
+          },
           1000000,
         );
 
@@ -331,7 +386,12 @@ describe("crearPedido", () => {
         await expect(
           crearPedido(
             "sid-wompi-2",
-            { quote_id: quote.quote_id, payment_method: "pago_en_linea", delivery_method: "domicilio" },
+            {
+              quote_id: quote.quote_id,
+              payment_method: "pago_en_linea",
+              delivery_method: "domicilio",
+              customer_data: customerData,
+            },
             1000000,
           ),
         ).rejects.toThrow(/401/);
@@ -340,6 +400,159 @@ describe("crearPedido", () => {
           quote.quote_id,
         ]);
         expect(Number(count.rows[0].count)).toBe(0);
+      });
+    });
+  });
+
+  describe("captura progresiva de datos de cliente (Fase 15, ver ADR-033)", () => {
+    it("cliente nuevo sin customer_data: 'faltan_datos_cliente' con missing_fields completo y existing_data null", async () => {
+      const quote = await generarCotizacion(conversationB, customerB, {
+        items: [{ variant_id: variantA, quantity: 1 }],
+      });
+
+      const result = await crearPedido(
+        "sid-datos-1",
+        { quote_id: quote.quote_id, payment_method: "transferencia", delivery_method: "domicilio" },
+        1000000,
+      );
+
+      // customerB ya existe como fila en `customers` (se crea al primer
+      // mensaje de WhatsApp, ver memory.ts) — "cliente nuevo" en la
+      // práctica significa esa fila sin address/id_document/full_name
+      // todavía, no la ausencia total de la fila (eso solo pasaría con un
+      // customer_id que no existiera, lo cual no ocurre en este flujo:
+      // quote.customer_id siempre referencia una fila real).
+      expect(result).toEqual({
+        order_id: null,
+        status: "faltan_datos_cliente",
+        total: 100000,
+        missing_fields: ["address", "id_document", "full_name"],
+        existing_data: { address: null, id_document: null, full_name: null, municipality: null, city: null },
+      });
+
+      const count = await adminPool.query(`SELECT COUNT(*) FROM orders WHERE quote_id = $1`, [
+        quote.quote_id,
+      ]);
+      expect(Number(count.rows[0].count)).toBe(0);
+    });
+
+    it("customer_data con save_permanently true persiste en customers y en el snapshot de orders", async () => {
+      const quote = await generarCotizacion(conversationB, customerB, {
+        items: [{ variant_id: variantA, quantity: 1 }],
+      });
+
+      const result = await crearPedido(
+        "sid-datos-2",
+        {
+          quote_id: quote.quote_id,
+          payment_method: "transferencia",
+          delivery_method: "domicilio",
+          customer_data: {
+            address: "Carrera 10 # 20-30",
+            id_document: "987654321",
+            full_name: "Cliente B De Prueba",
+            municipality: "Envigado",
+            city: "Medellín",
+            save_permanently: true,
+          },
+        },
+        1000000,
+      );
+
+      expect(result.status).toBe("confirmed");
+
+      const customer = await adminPool.query(
+        `SELECT address, id_document, full_name, municipality, city FROM customers WHERE id = $1`,
+        [customerB],
+      );
+      expect(customer.rows[0]).toEqual({
+        address: "Carrera 10 # 20-30",
+        id_document: "987654321",
+        full_name: "Cliente B De Prueba",
+        municipality: "Envigado",
+        city: "Medellín",
+      });
+
+      const order = await adminPool.query(
+        `SELECT delivery_address, delivery_id_document, delivery_full_name, delivery_municipality, delivery_city FROM orders WHERE id = $1`,
+        [result.order_id],
+      );
+      expect(order.rows[0]).toEqual({
+        delivery_address: "Carrera 10 # 20-30",
+        delivery_id_document: "987654321",
+        delivery_full_name: "Cliente B De Prueba",
+        delivery_municipality: "Envigado",
+        delivery_city: "Medellín",
+      });
+    });
+
+    it("cliente con datos ya guardados sin customer_data: 'faltan_datos_cliente' con existing_data poblado", async () => {
+      // Depende del test anterior (save_permanently true) para que customerB
+      // ya tenga datos guardados — mismo customerB, misma corrida.
+      const quote = await generarCotizacion(conversationB, customerB, {
+        items: [{ variant_id: variantA, quantity: 1 }],
+      });
+
+      const result = await crearPedido(
+        "sid-datos-3",
+        { quote_id: quote.quote_id, payment_method: "transferencia", delivery_method: "domicilio" },
+        1000000,
+      );
+
+      expect(result).toEqual({
+        order_id: null,
+        status: "faltan_datos_cliente",
+        total: 100000,
+        missing_fields: [],
+        existing_data: {
+          address: "Carrera 10 # 20-30",
+          id_document: "987654321",
+          full_name: "Cliente B De Prueba",
+          municipality: "Envigado",
+          city: "Medellín",
+        },
+      });
+    });
+
+    it("save_permanently false no toca customers pero sí guarda el snapshot en orders", async () => {
+      const quote = await generarCotizacion(conversationA, customerA, {
+        items: [{ variant_id: variantA, quantity: 1 }],
+      });
+
+      const result = await crearPedido(
+        "sid-datos-4",
+        {
+          quote_id: quote.quote_id,
+          payment_method: "transferencia",
+          delivery_method: "domicilio",
+          customer_data: {
+            address: "Dirección temporal solo para este pedido",
+            id_document: "111222333",
+            full_name: "Entrega Puntual",
+            save_permanently: false,
+          },
+        },
+        1000000,
+      );
+
+      expect(result.status).toBe("confirmed");
+
+      // customerA nunca pasó por save_permanently true en ningún test de
+      // este archivo — debe seguir sin datos de entrega guardados.
+      const customer = await adminPool.query(
+        `SELECT address, id_document, full_name FROM customers WHERE id = $1`,
+        [customerA],
+      );
+      expect(customer.rows[0]).toEqual({ address: null, id_document: null, full_name: null });
+
+      const order = await adminPool.query(
+        `SELECT delivery_address, delivery_id_document, delivery_full_name FROM orders WHERE id = $1`,
+        [result.order_id],
+      );
+      expect(order.rows[0]).toEqual({
+        delivery_address: "Dirección temporal solo para este pedido",
+        delivery_id_document: "111222333",
+        delivery_full_name: "Entrega Puntual",
       });
     });
   });
