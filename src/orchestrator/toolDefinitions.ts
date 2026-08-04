@@ -67,7 +67,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "aplicar_promocion",
     description:
-      "Evalúa las promociones activas del tenant contra una cotización existente y aplica automáticamente la de mayor beneficio para el cliente (nunca se combinan promociones). Llamar cuando el cliente pregunta por descuentos o promociones sobre una cotización ya generada.",
+      "Evalúa las promociones activas contra una cotización existente (por aliado, categoría, producto, variante, segmento de cliente o campaña de bienvenida, según cómo esté configurada cada una) y aplica automáticamente la de mayor beneficio para el cliente (nunca se combinan promociones). Llamar apenas se genera una cotización, aunque sea preliminar, para poder mencionar proactivamente un descuento si aplica — y también cuando el cliente pregunta por descuentos o promociones sobre una cotización ya generada.",
     inputSchema: {
       type: "object",
       properties: {
@@ -148,6 +148,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
       },
       required: ["order_id", "items"],
+    },
+  },
+  {
+    name: "consultar_estado_pedido",
+    description:
+      "Responde el estado real de un pedido ya hecho por el cliente, a partir de su número público (formato 'FM-0001'). Llamar cuando el cliente pregunte cómo va su pedido — nunca inventar ni asumir el estado. Si devuelve found:false, pedirle al cliente que confirme el número o avisarle que no se encontró.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        public_order_number: {
+          type: "string",
+          description: "Número público del pedido que menciona el cliente, ej. 'FM-0001' (acepta variantes como 'fm1' o 'FM 0001').",
+        },
+      },
+      required: ["public_order_number"],
     },
   },
   {

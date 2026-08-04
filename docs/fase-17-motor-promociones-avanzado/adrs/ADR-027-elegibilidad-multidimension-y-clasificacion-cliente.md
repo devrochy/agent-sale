@@ -1,7 +1,7 @@
 # ADR-027: Elegibilidad de promoción multi-dimensión y clasificación de cliente sin romper "no combinar"
 
 ## Estado
-Propuesta (pendiente de aceptación antes de iniciar implementación de la Fase 17).
+Aceptada e implementada.
 
 ## Contexto
 
@@ -41,13 +41,21 @@ Tabla nueva `promotion_redemptions` (`promotion_id`, `customer_id`, `order_id`, 
 
 ### Clasificación de cliente: derivada, no editable a mano
 
-`customers.segment` **no** es una columna editable — se calcula on-demand (o se cachea con recálculo periódico, a decidir en implementación según costo de la query) a partir de `COUNT(orders) WHERE customer_id = ... AND status = 'confirmed'`:
+`customers.segment` **no** es una columna editable — se calcula on-demand en cada llamada a `aplicar_promocion` a partir de `COUNT(orders) WHERE customer_id = ... AND status != 'expirado'` (corrección respecto al texto original de esta ADR: `orders.status` nunca tuvo el literal `'confirmed'` — desde Fase 15/16 solo vale `'abierto'` o `'expirado'`; un pedido expirado nunca se vendió de verdad, por eso se excluye en vez de exigir un valor puntual):
 
-- `nuevo`: 0 pedidos confirmados.
-- `recurrente`: 2+ pedidos confirmados (umbral configurable por tenant, mismo patrón `escalation_config`/jsonb con default).
-- `fiel`: umbral superior, a validar con datos reales del piloto antes de fijarlo en producción — mismo criterio que el umbral de "monto alto" de Fase 7, que Fase 9 dejó pendiente de validar con tráfico real en vez de un número de diseño.
+- `nuevo`: cliente sin `customer_id` (cotización sin cliente identificado), o con menos pedidos que el umbral de `recurrente`.
+- `recurrente`: `settings.customer_recurrente_min_pedidos` o más pedidos no expirados (default 2).
+- `fiel`: `settings.customer_fiel_min_pedidos` o más pedidos no expirados (default 5) — umbral aún a validar con datos reales del piloto antes de ajustarlo en producción, mismo criterio que el umbral de "monto alto" de Fase 7, que Fase 9 dejó pendiente de validar con tráfico real en vez de un número de diseño.
+
+Corrección respecto al texto original de esta ADR: no existe "configurable por tenant" — el retiro de multi-tenancy (ADR-032) reemplazó ese concepto por el `settings` singleton. Los dos umbrales viven como columnas de `settings` (`customer_recurrente_min_pedidos`, `customer_fiel_min_pedidos`), mismo patrón que `report_frequency_days` (`migrations/0038_settings_reporte_frecuencia.cjs`), no un jsonb de configuración.
 
 Este segmento se usa como una dimensión de elegibilidad más (`promotions.eligible_segments text[]`, ej. `{'nuevo'}` para una promoción de bienvenida), evaluado en el mismo paso de filtrado que las demás.
+
+### `quotes.applied_promotion_id` y el momento de registrar la redención
+
+`quotes` gana la columna `applied_promotion_id` (nullable, `REFERENCES promotions(id)`) — `aplicar_promocion` la setea a la promoción ganadora, o la limpia a `NULL` si ninguna aplica (importante para que una cotización re-cotizada no arrastre una promoción vieja de una llamada anterior).
+
+La fila de `promotion_redemptions` **no** se inserta en `aplicar_promocion.ts`, sino en `crearPedido.ts`, dentro de la misma transacción que confirma el pedido: si `quotes.applied_promotion_id` apunta a una promoción `campaña` con `rules.once_per_customer`, se inserta `promotion_redemptions (promotion_id, customer_id, order_id)` recién ahí. Cotizar no es comprar — si el cliente pide una cotización con la campaña aplicada y no llega a confirmar el pedido, la campaña debe seguir disponible para él.
 
 ### Comunicación proactiva sin violar el guardrail de precios
 
@@ -58,3 +66,4 @@ El orquestador (`systemPrompt.ts`, bloque compartido) gana una instrucción: al 
 - La regla "no se combinan promociones" de Fase 6 queda intacta y documentada como tal en esta ADR — cualquier futura revisión de esa regla requiere su propia ADR, no se reabre aquí en silencio.
 - `promotion_redemptions` es la única tabla verdaderamente nueva de esta fase; el resto son columnas de elegibilidad sobre `promotions` ya existente.
 - El umbral de "fiel" queda explícitamente pendiente de validación con datos reales — no se fija un número en esta ADR, evitando repetir el mismo tipo de pendiente que ya arrastra el umbral de "monto alto" desde la Fase 7.
+- La Definición de Terminado #3 del [README de esta fase](../README.md) ("mención proactiva en al menos un escenario del golden set de Fase 9") se satisface con un test determinístico en `tests/unit/orchestrator/loop.test.ts` (`provider.converse` mockeado simulando que el modelo llama `generar_cotizacion` y `aplicar_promocion` en el mismo turno sin que el cliente pida un descuento) en lugar del golden set real: Fase 9 (`docs/fase-9-piloto-controlado/`) sigue en estado "en diseño" — no existe el directorio `eval/` ni el script `eval:golden-set` que describe `eval-suite.md`. Cuando Fase 9 se implemente, ese escenario debería incorporarse al golden set real; esta ADR no lo da por validado contra tráfico o casos reales, solo contra el comportamiento simulado del proveedor.

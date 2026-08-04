@@ -12,6 +12,10 @@ import {
   type AgregarItemPedidoInput,
 } from "../domains/commerce/agregarItemPedido.js";
 import {
+  consultarEstadoPedido,
+  type ConsultarEstadoPedidoInput,
+} from "../domains/commerce/consultarEstadoPedido.js";
+import {
   generarCotizacion,
   type GenerarCotizacionInput,
 } from "../domains/commerce/generarCotizacion.js";
@@ -78,6 +82,9 @@ export async function executeTool(
           toolUse.input as AgregarItemPedidoInput,
           montoAltoThreshold,
         );
+        break;
+      case "consultar_estado_pedido":
+        output = await consultarEstadoPedido(customerId, toolUse.input as ConsultarEstadoPedidoInput);
         break;
       case "recomendar_producto":
         output = await recomendarProducto(toolUse.input as RecomendarProductoInput);

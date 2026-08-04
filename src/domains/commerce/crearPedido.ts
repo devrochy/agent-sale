@@ -35,6 +35,12 @@ export interface CrearPedidoOutput {
     | "wompi_monto_minimo"
     | "faltan_datos_cliente";
   total: number;
+  /**
+   * Número de pedido público (formato 'FM-0001', ver ADR-034) para que el
+   * cliente pregunte por su estado después con consultar_estado_pedido.
+   * Solo presente cuando order_id no es null.
+   */
+  public_order_number?: string;
   /** Solo presente cuando payment_method es 'pago_en_linea' y status 'confirmed' (ver ADR-024). */
   payment_link_url?: string;
   /** Solo presente cuando status es 'faltan_datos_cliente' (ver ADR-033). */
@@ -90,8 +96,8 @@ export async function crearPedido(
   const idempotencyKey = buildIdempotencyKey(input.quote_id, messageSid);
 
   const checked = await withTransaction(async (client) => {
-    const existing = await client.query<{ id: string; total: string }>(
-      `SELECT id, total FROM orders WHERE quote_id = $1`,
+    const existing = await client.query<{ id: string; total: string; public_order_number: string }>(
+      `SELECT id, total, public_order_number FROM orders WHERE quote_id = $1`,
       [input.quote_id],
     );
     if (existing.rows[0]) {
@@ -99,6 +105,7 @@ export async function crearPedido(
         kind: "duplicate" as const,
         order_id: existing.rows[0].id,
         total: Number(existing.rows[0].total),
+        publicOrderNumber: existing.rows[0].public_order_number,
       };
     }
 
@@ -107,7 +114,8 @@ export async function crearPedido(
       conversation_id: string;
       customer_id: string;
       total: string;
-    }>(`SELECT id, conversation_id, customer_id, total FROM quotes WHERE id = $1`, [
+      applied_promotion_id: string | null;
+    }>(`SELECT id, conversation_id, customer_id, total, applied_promotion_id FROM quotes WHERE id = $1`, [
       input.quote_id,
     ]);
     const quote = quoteResult.rows[0];
@@ -181,7 +189,12 @@ export async function crearPedido(
   });
 
   if (checked.kind === "duplicate") {
-    return { order_id: checked.order_id, status: "duplicate", total: checked.total };
+    return {
+      order_id: checked.order_id,
+      status: "duplicate",
+      total: checked.total,
+      public_order_number: checked.publicOrderNumber,
+    };
   }
   if (checked.kind === "monto_alto") {
     return { order_id: null, status: "monto_alto", total: checked.total };
@@ -227,11 +240,11 @@ export async function crearPedido(
     // del OUTPUT (contrato con el LLM, ver CrearPedidoOutput), no el valor
     // de esta columna — son conceptos distintos que hoy coinciden en texto
     // por herencia histórica, no por diseño.
-    const order = await client.query<{ id: string }>(
+    const order = await client.query<{ id: string; public_order_number: string }>(
       `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id, delivery_address, delivery_id_document, delivery_full_name, delivery_municipality, delivery_city)
        VALUES ($1, $2, $3, 'abierto', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (idempotency_key) DO NOTHING
-       RETURNING id`,
+       RETURNING id, public_order_number`,
       [
         input.quote_id,
         quote.conversation_id,
@@ -253,17 +266,19 @@ export async function crearPedido(
     if (!order.rows[0]) {
       // Carrera entre el SELECT y el INSERT (muy improbable en este
       // sistema, el loop del orquestador es secuencial por conversación).
-      const raced = await client.query<{ id: string; total: string }>(
-        `SELECT id, total FROM orders WHERE idempotency_key = $1`,
+      const raced = await client.query<{ id: string; total: string; public_order_number: string }>(
+        `SELECT id, total, public_order_number FROM orders WHERE idempotency_key = $1`,
         [idempotencyKey],
       );
       return {
         order_id: raced.rows[0]!.id,
         status: "duplicate" as const,
         total: Number(raced.rows[0]!.total),
+        public_order_number: raced.rows[0]!.public_order_number,
       };
     }
     const orderId = order.rows[0].id;
+    const publicOrderNumber = order.rows[0].public_order_number;
 
     await client.query(
       `INSERT INTO order_items (order_id, variant_id, quantity, unit_price)
@@ -289,7 +304,29 @@ export async function crearPedido(
       [orderId],
     );
 
-    return { order_id: orderId, status: "confirmed" as const, total };
+    // Cotizar no es comprar: la redención de una campaña `once_per_customer`
+    // (ver Fase 17, aplicarPromocion.ts) recién se registra acá, al
+    // confirmar el pedido — si el cliente cotiza con la campaña aplicada y
+    // no compra, la sigue teniendo disponible.
+    if (quote.applied_promotion_id) {
+      const promo = await client.query<{ type: string; rules: { once_per_customer?: boolean } }>(
+        `SELECT type, rules FROM promotions WHERE id = $1`,
+        [quote.applied_promotion_id],
+      );
+      if (promo.rows[0]?.type === "campaña" && promo.rows[0].rules.once_per_customer) {
+        await client.query(
+          `INSERT INTO promotion_redemptions (promotion_id, customer_id, order_id) VALUES ($1, $2, $3)`,
+          [quote.applied_promotion_id, quote.customer_id, orderId],
+        );
+      }
+    }
+
+    return {
+      order_id: orderId,
+      status: "confirmed" as const,
+      total,
+      public_order_number: publicOrderNumber,
+    };
   });
 
   // createWompiPaymentLink corre en una conexión propia (fuera de la

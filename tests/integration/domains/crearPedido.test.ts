@@ -1,5 +1,6 @@
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { aplicarPromocion } from "../../../src/domains/commerce/aplicarPromocion.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
@@ -553,6 +554,94 @@ describe("crearPedido", () => {
         delivery_address: "Dirección temporal solo para este pedido",
         delivery_id_document: "111222333",
         delivery_full_name: "Entrega Puntual",
+      });
+    });
+  });
+
+  describe("campaña once_per_customer (Fase 17, ver aplicarPromocion.ts)", () => {
+    let customerC: string;
+    let conversationC: string;
+    let productC: string;
+    let variantC: string;
+    let promotionId: string;
+
+    beforeAll(async () => {
+      const customer = await adminPool.query<{ id: string }>(
+        `INSERT INTO customers (phone_number) VALUES ('3040000003') RETURNING id`,
+      );
+      customerC = customer.rows[0]!.id;
+      const conversation = await adminPool.query<{ id: string }>(
+        `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+        [customerC],
+      );
+      conversationC = conversation.rows[0]!.id;
+
+      const product = await seedProduct(adminPool, {
+        sku: "CASCO-CAMPANA-PEDIDO",
+        name: "Casco campaña pedido",
+        price: 100000,
+        stock: 50,
+      });
+      productC = product.productId;
+      variantC = product.variantId;
+
+      const promo = await adminPool.query<{ id: string }>(
+        `INSERT INTO promotions (type, rules, active) VALUES ('campaña', $1, true) RETURNING id`,
+        [JSON.stringify({ kind: "campaña", label: "bienvenida", discount_pct: 15, once_per_customer: true })],
+      );
+      promotionId = promo.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM promotion_redemptions WHERE promotion_id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
+        [conversationC],
+      );
+      await adminPool.query(`DELETE FROM orders WHERE conversation_id = $1`, [conversationC]);
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
+      await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+        [conversationC],
+      );
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationC]);
+      await deleteProduct(adminPool, productC);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationC]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerC]);
+    });
+
+    it("confirmar un pedido con una campaña aplicada registra la redención", async () => {
+      const quote = await generarCotizacion(conversationC, customerC, {
+        items: [{ variant_id: variantC, quantity: 1 }],
+      });
+      const applied = await aplicarPromocion({ quote_id: quote.quote_id });
+      expect(applied.promotion_applied).toMatchObject({ id: promotionId, kind: "campaña" });
+
+      const result = await crearPedido(
+        "sid-campana-1",
+        {
+          quote_id: quote.quote_id,
+          payment_method: "transferencia",
+          delivery_method: "domicilio",
+          customer_data: customerData,
+        },
+        1000000,
+      );
+
+      expect(result.status).toBe("confirmed");
+
+      const redemption = await adminPool.query(
+        `SELECT promotion_id, customer_id, order_id FROM promotion_redemptions WHERE promotion_id = $1`,
+        [promotionId],
+      );
+      expect(redemption.rows).toHaveLength(1);
+      expect(redemption.rows[0]).toMatchObject({
+        promotion_id: promotionId,
+        customer_id: customerC,
+        order_id: result.order_id,
       });
     });
   });

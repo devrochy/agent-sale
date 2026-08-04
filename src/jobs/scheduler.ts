@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { logger } from "../shared/observability/logger.js";
 import { runCazadorDeVentas } from "./cazadorDeVentas.js";
+import { runCloseExpiredOrders } from "./closeExpiredOrders.js";
 import { sendDailyReports } from "./dailyReport.js";
 
 /**
@@ -41,6 +42,21 @@ export function startJobScheduler(): void {
         logger.error(
           { error, event: "jobs.cazador_ventas_fallido" },
           "Falló la corrida del Cazador de ventas",
+        );
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
+  cron.schedule(
+    "0 9 * * *",
+    async () => {
+      try {
+        await runCloseExpiredOrders();
+      } catch (error) {
+        logger.error(
+          { error, event: "jobs.cerrar_pedidos_vencidos_fallido" },
+          "Falló la corrida del cierre de pedidos vencidos",
         );
       }
     },

@@ -52,6 +52,7 @@ import {
 import { isUsernameTaken, type AdminRecord } from "../admin/auth/adminsDirectory.js";
 import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
 import { login, logout } from "../admin/auth/session.js";
+import { registrarGuia } from "../domains/commerce/registrarGuia.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
@@ -464,11 +465,25 @@ export async function buildServer() {
   });
 
   app.get("/admin/pedidos", async (request, reply) => {
-    const html = await renderPedidosPage(request.admin!);
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderPedidosPage(request.admin!, { error, guardado });
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/pedidos/:orderId/guia", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    const { trackingNumber, carrier } = request.body as { trackingNumber?: string; carrier?: string };
+    const result = await registrarGuia(orderId, {
+      trackingNumber: trackingNumber ?? "",
+      carrier: carrier ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/pedidos?guardado=1"
+      : `/admin/pedidos?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
   });
 
   app.post("/admin/productos", async (request, reply) => {

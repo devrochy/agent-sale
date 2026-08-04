@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import { withTransaction } from "../../shared/db/index.js";
 
 export interface AplicarPromocionInput {
@@ -5,13 +6,13 @@ export interface AplicarPromocionInput {
   // Aceptado por compatibilidad con el contrato funcional de la Fase 1,
   // pero sin efecto: docs/fase-6-dominio-comercial/motor-promociones.md no
   // define un sistema de códigos (promotions no tiene columna `code`) —
-  // la evaluación es siempre automática (temporada + volumen).
+  // la evaluación es siempre automática (temporada + volumen + campaña).
   promo_code?: string | null;
 }
 
 export interface AplicarPromocionOutput {
   quote_id: string;
-  promotion_applied: { id: string; kind: "temporada" | "volumen"; description: string } | null;
+  promotion_applied: { id: string; kind: "temporada" | "volumen" | "campaña"; description: string } | null;
   subtotal: number;
   discount: number;
   total: number;
@@ -32,30 +33,166 @@ interface SeasonRules {
   discount_pct: number;
 }
 
+interface CampaignRules {
+  kind: "campaña";
+  label: string;
+  discount_pct: number;
+  once_per_customer: boolean;
+}
+
 interface PromotionRow {
   id: string;
-  type: "temporada" | "volumen";
-  rules: VolumeRules | SeasonRules;
+  type: "temporada" | "volumen" | "campaña";
+  rules: VolumeRules | SeasonRules | CampaignRules;
+  ally_id: string | null;
+  category_id: string | null;
+  include_child_categories: boolean;
+  product_id: string | null;
+  variant_id: string | null;
+  eligible_segments: string[] | null;
 }
 
 interface BestPromotion {
   id: string;
-  kind: "temporada" | "volumen";
+  kind: "temporada" | "volumen" | "campaña";
   description: string;
   benefitValue: number;
   monetaryDiscount: number;
   freeItemSku?: string;
 }
 
+interface QuoteLineItem {
+  variant_id: string;
+  product_id: string;
+  ally_id: string | null;
+  category_id: string | null;
+  quantity: number;
+}
+
+type CustomerSegment = "nuevo" | "recurrente" | "fiel";
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
 /**
- * Tool aplicar_promocion (ver docs/fase-6-dominio-comercial/motor-promociones.md).
- * La tool evalúa, nunca el LLM: recorre promotions.rules, calcula el
- * beneficio real de cada promoción activa y aplica la de mayor beneficio
- * para el cliente — nunca se combinan/apilan promociones.
+ * Clasifica al cliente por cantidad de pedidos reales (no expirados) contra
+ * los umbrales configurados en `settings` (ver ADR-027, Fase 17). Un pedido
+ * `expirado` nunca se vendió de verdad, por eso no cuenta — no existe (ni
+ * existió) un literal `orders.status = 'confirmed'`, solo `'abierto'` y
+ * `'expirado'` (Fase 15/16).
+ */
+async function clasificarCliente(client: PoolClient, customerId: string | null): Promise<CustomerSegment> {
+  if (!customerId) {
+    return "nuevo";
+  }
+  const [countResult, thresholdsResult] = await Promise.all([
+    client.query<{ count: string }>(
+      `SELECT count(*) FROM orders WHERE customer_id = $1 AND status != 'expirado'`,
+      [customerId],
+    ),
+    client.query<{ customer_recurrente_min_pedidos: number; customer_fiel_min_pedidos: number }>(
+      `SELECT customer_recurrente_min_pedidos, customer_fiel_min_pedidos FROM settings`,
+    ),
+  ]);
+  const orderCount = Number(countResult.rows[0]!.count);
+  const thresholds = thresholdsResult.rows[0]!;
+  if (orderCount >= thresholds.customer_fiel_min_pedidos) {
+    return "fiel";
+  }
+  if (orderCount >= thresholds.customer_recurrente_min_pedidos) {
+    return "recurrente";
+  }
+  return "nuevo";
+}
+
+/**
+ * Devuelve el conjunto de ids de categoría elegibles para un candidato con
+ * `category_id` seteado: la propia categoría, más sus descendientes si
+ * `include_child_categories` (default true). Único uso de `WITH RECURSIVE`
+ * en el repo — recorre `product_categories.parent_id` (árbol de Fase 14).
+ */
+async function categoriaConDescendientes(
+  client: PoolClient,
+  categoryId: string,
+  includeChildren: boolean,
+): Promise<Set<string>> {
+  if (!includeChildren) {
+    return new Set([categoryId]);
+  }
+  const result = await client.query<{ id: string }>(
+    `WITH RECURSIVE descendants AS (
+       SELECT id FROM product_categories WHERE id = $1
+       UNION ALL
+       SELECT pc.id FROM product_categories pc JOIN descendants d ON pc.parent_id = d.id
+     )
+     SELECT id FROM descendants`,
+    [categoryId],
+  );
+  return new Set(result.rows.map((r) => r.id));
+}
+
+/**
+ * Determina si TODAS las líneas de la cotización cumplen cada dimensión de
+ * elegibilidad que el candidato tenga seteada (decisión de diseño Fase 17:
+ * si una sola línea no cumple, la promoción completa queda descartada — no
+ * hay descuento parcial por línea, preserva el "un solo beneficio sobre el
+ * total" ya aceptado en Fase 6).
+ */
+async function esElegible(
+  client: PoolClient,
+  promo: PromotionRow,
+  items: QuoteLineItem[],
+  segment: CustomerSegment,
+  customerId: string | null,
+): Promise<boolean> {
+  if (promo.ally_id && !items.every((i) => i.ally_id === promo.ally_id)) {
+    return false;
+  }
+  if (promo.product_id && !items.every((i) => i.product_id === promo.product_id)) {
+    return false;
+  }
+  if (promo.variant_id && !items.every((i) => i.variant_id === promo.variant_id)) {
+    return false;
+  }
+  if (promo.category_id) {
+    const eligibleCategoryIds = await categoriaConDescendientes(
+      client,
+      promo.category_id,
+      promo.include_child_categories,
+    );
+    if (!items.every((i) => i.category_id !== null && eligibleCategoryIds.has(i.category_id))) {
+      return false;
+    }
+  }
+  if (promo.eligible_segments && promo.eligible_segments.length > 0 && !promo.eligible_segments.includes(segment)) {
+    return false;
+  }
+  if (promo.type === "campaña") {
+    const rules = promo.rules as CampaignRules;
+    if (rules.once_per_customer) {
+      if (!customerId) {
+        return false;
+      }
+      const redeemed = await client.query(
+        `SELECT id FROM promotion_redemptions WHERE promotion_id = $1 AND customer_id = $2`,
+        [promo.id, customerId],
+      );
+      if (redeemed.rows.length > 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Tool aplicar_promocion (ver docs/fase-6-dominio-comercial/motor-promociones.md
+ * y docs/fase-17-motor-promociones-avanzado/adrs/ADR-027-elegibilidad-multidimension-y-clasificacion-cliente.md).
+ * La tool evalúa, nunca el LLM: filtra candidatos por elegibilidad
+ * (aliado/categoría/producto/variante/segmento/campaña ya redimida),
+ * calcula el beneficio real de cada promoción elegible y aplica la de
+ * mayor beneficio para el cliente — nunca se combinan/apilan promociones.
  *
  * Devuelve `subtotal` explícitamente (no solo `discount`/`total`) para que
  * el guardrail de precios (priceGuardrail.ts, que solo verifica montos
@@ -67,8 +204,8 @@ function round2(value: number): number {
  */
 export async function aplicarPromocion(input: AplicarPromocionInput): Promise<AplicarPromocionOutput> {
   return withTransaction(async (client) => {
-    const quoteResult = await client.query<{ id: string; subtotal: string }>(
-      `SELECT id, subtotal FROM quotes WHERE id = $1`,
+    const quoteResult = await client.query<{ id: string; subtotal: string; customer_id: string | null }>(
+      `SELECT id, subtotal, customer_id FROM quotes WHERE id = $1`,
       [input.quote_id],
     );
     const quote = quoteResult.rows[0];
@@ -77,28 +214,34 @@ export async function aplicarPromocion(input: AplicarPromocionInput): Promise<Ap
     }
     const subtotal = Number(quote.subtotal);
 
-    const totalQtyResult = await client.query<{ total_quantity: string }>(
-      `SELECT COALESCE(SUM(quantity), 0) AS total_quantity FROM quote_items WHERE quote_id = $1`,
+    const itemsResult = await client.query<QuoteLineItem & { quantity: string }>(
+      `SELECT qi.variant_id, pv.product_id, p.ally_id, p.category_id, qi.quantity
+       FROM quote_items qi
+       JOIN product_variants pv ON pv.id = qi.variant_id
+       JOIN products p ON p.id = pv.product_id
+       WHERE qi.quote_id = $1`,
       [input.quote_id],
     );
-    const totalQuantity = Number(totalQtyResult.rows[0]!.total_quantity);
+    const items: QuoteLineItem[] = itemsResult.rows.map((r) => ({ ...r, quantity: Number(r.quantity) }));
+    const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
+
+    const segment = await clasificarCliente(client, quote.customer_id);
 
     const promotionsResult = await client.query<PromotionRow>(
-      `SELECT id, type, rules FROM promotions
+      `SELECT id, type, rules, ally_id, category_id, include_child_categories, product_id, variant_id, eligible_segments
+       FROM promotions
        WHERE active = true
-         AND (
-           type = 'volumen'
-           OR (
-             type = 'temporada'
-             AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)
-             AND (valid_to IS NULL OR valid_to >= CURRENT_DATE)
-           )
-         )`,
+         AND (valid_from IS NULL OR valid_from <= CURRENT_DATE)
+         AND (valid_to IS NULL OR valid_to >= CURRENT_DATE)`,
     );
 
     let best: BestPromotion | null = null;
 
     for (const promo of promotionsResult.rows) {
+      if (!(await esElegible(client, promo, items, segment, quote.customer_id))) {
+        continue;
+      }
+
       if (promo.type === "volumen") {
         const rules = promo.rules as VolumeRules;
         const tier = rules.tiers.find(
@@ -143,7 +286,7 @@ export async function aplicarPromocion(input: AplicarPromocionInput): Promise<Ap
             };
           }
         }
-      } else {
+      } else if (promo.type === "temporada") {
         const rules = promo.rules as SeasonRules;
         const amount = round2((subtotal * rules.discount_pct) / 100);
         if (!best || amount > best.benefitValue) {
@@ -155,10 +298,23 @@ export async function aplicarPromocion(input: AplicarPromocionInput): Promise<Ap
             monetaryDiscount: amount,
           };
         }
+      } else {
+        const rules = promo.rules as CampaignRules;
+        const amount = round2((subtotal * rules.discount_pct) / 100);
+        if (!best || amount > best.benefitValue) {
+          best = {
+            id: promo.id,
+            kind: "campaña",
+            description: `${rules.label} (${rules.discount_pct}% de descuento)`,
+            benefitValue: amount,
+            monetaryDiscount: amount,
+          };
+        }
       }
     }
 
     if (!best) {
+      await client.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE id = $1`, [input.quote_id]);
       return {
         quote_id: input.quote_id,
         promotion_applied: null,
@@ -170,9 +326,10 @@ export async function aplicarPromocion(input: AplicarPromocionInput): Promise<Ap
 
     const total = round2(subtotal - best.monetaryDiscount);
 
-    await client.query(`UPDATE quotes SET discount = $1, total = $2 WHERE id = $3`, [
+    await client.query(`UPDATE quotes SET discount = $1, total = $2, applied_promotion_id = $3 WHERE id = $4`, [
       best.monetaryDiscount,
       total,
+      best.id,
       input.quote_id,
     ]);
 
