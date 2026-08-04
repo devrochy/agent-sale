@@ -34,13 +34,23 @@ import {
   createProduct,
   findVariantBySku,
   getProductDetail,
+  listAllVariantsForPicker,
   listProductsSummary,
   updateProduct,
   updateVariantStockAndPrice,
   type ProductDetail,
+  type ProductSummary,
   type VariantInput,
   type VariantUpdateInput,
 } from "../shared/db/productsDirectory.js";
+import {
+  createPromotion,
+  listPromotions,
+  setPromotionActive,
+  updatePromotion,
+  type PromotionInput,
+  type PromotionRecord,
+} from "../shared/db/promotionsDirectory.js";
 import { parseCsv } from "../shared/csv/parseCsv.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import {
@@ -168,6 +178,12 @@ function formatCOP(value: string | number): string {
   return `$${Number(value).toLocaleString("es-CO")}`;
 }
 
+/** Fecha simple "DD/MM" a partir de una columna `date` (ej. `valid_from` de promociones) — a diferencia de `formatFecha`, no pasa por `Date`/timezone porque un `date` de Postgres ya viene como string `YYYY-MM-DD` sin hora, y convertirlo a Bogotá desplazaría el día. */
+function formatFechaSolo(value: string): string {
+  const [, month, day] = value.split("-");
+  return `${day}/${month}`;
+}
+
 /** Fecha/hora en horario de Bogotá, sin importar el TZ del servidor. */
 function formatFecha(value: string): string {
   const formatted = new Intl.DateTimeFormat("es-CO", {
@@ -236,6 +252,9 @@ const ICON_ALIADOS =
 
 const ICON_CATEGORIAS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.6h3.4v3.4H2.5V3.6Z"/><path d="M10.1 3.6h3.4v3.4h-3.4V3.6Z"/><path d="M2.5 9h3.4v3.4H2.5V9Z"/><path d="M10.1 9h3.4v3.4h-3.4V9Z"/></svg>';
+
+const ICON_PROMOCIONES =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.4 9.4 5.3l3.2.5-2.3 2.2.5 3.2L8 9.7 5.2 11.2l.5-3.2-2.3-2.2 3.2-.5L8 2.4Z"/><circle cx="8" cy="8" r="6.2"/></svg>';
 
 const ICON_RESUMEN =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.3 11.5a5.7 5.7 0 1 1 11.4 0"/><path d="M8 11.5 10.4 6.8"/><circle cx="8" cy="11.5" r="0.9" fill="currentColor" stroke="none"/></svg>';
@@ -318,6 +337,7 @@ type ActiveSection =
   | "pedidos"
   | "aliados"
   | "categorias"
+  | "promociones"
   | "colaboradores"
   | "perfil"
   | null;
@@ -424,6 +444,7 @@ function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminR
           ${item(`/admin/pedidos`, "Pedidos", "pedidos", ICON_PEDIDOS)}
           ${item(`/admin/aliados`, "Aliados", "aliados", ICON_ALIADOS)}
           ${item(`/admin/categorias`, "Categorías", "categorias", ICON_CATEGORIAS)}
+          ${item(`/admin/promociones`, "Promociones", "promociones", ICON_PROMOCIONES)}
         </ul>
       </div>
       ${
@@ -776,7 +797,7 @@ table.resizing { cursor: col-resize; user-select: none; }
 .field { margin-bottom: 20px; }
 .field:last-of-type { margin-bottom: 0; }
 .field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
-.field select, .field input[type="password"], .field input[type="text"], .field input[type="email"] {
+.field select, .field input[type="password"], .field input[type="text"], .field input[type="email"], .field input[type="number"], .field input[type="date"] {
   width: 100%; max-width: 440px; font: inherit; font-size: 13.5px; background: var(--panel-inset);
   border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; color: var(--ink);
   transition: border-color 140ms ease, background 140ms ease;
@@ -787,7 +808,11 @@ table.resizing { cursor: col-resize; user-select: none; }
   background-repeat: no-repeat; background-position: right 12px center; background-size: 12px;
   text-overflow: ellipsis;
 }
-.field select:hover, .field input[type="password"]:hover, .field input[type="text"]:hover, .field input[type="email"]:hover { border-color: var(--border-strong); }
+.field select:hover, .field input[type="password"]:hover, .field input[type="text"]:hover, .field input[type="email"]:hover, .field input[type="number"]:hover, .field input[type="date"]:hover { border-color: var(--border-strong); }
+.fieldgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 440px; }
+.radiogroup { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.radiogroup label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); text-transform: none; font-weight: 400; }
+.checkgroup { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .field select:focus-visible, .field input[type="password"]:focus-visible, .field input[type="text"]:focus-visible, .field input[type="email"]:focus-visible { border-color: var(--chrome); background: var(--panel); }
 /* Prefijo de país + número suelto (Colaboradores/Perfil, ver
    buildWhatsappPhone/splitWhatsappPhone): el select y el input comparten
@@ -1873,6 +1898,73 @@ const CLIENT_SCRIPT = `
       });
     });
   }
+
+  /* ---------- Promociones: tipo/dimensión muestran-ocultan campos, producto filtra variantes (Fase 23, ver ADR-035) ---------- */
+  (function () {
+    function escapePromoAttr(value) {
+      return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;");
+    }
+
+    var variantsDataEl = document.querySelector("[data-promo-variants-data]");
+    var variantsByProduct = {};
+    try {
+      variantsByProduct = variantsDataEl ? JSON.parse(variantsDataEl.textContent) : {};
+    } catch (e) {
+      variantsByProduct = {};
+    }
+
+    document.querySelectorAll("[data-promo-dialog]").forEach(function (dialog) {
+      function syncTipo() {
+        var tipo = dialog.querySelector('input[name="type"]:checked');
+        var onceWrap = dialog.querySelector("[data-promo-oncepercustomer]");
+        if (onceWrap) onceWrap.style.display = tipo && tipo.value === "campaña" ? "" : "none";
+      }
+      dialog.querySelectorAll('input[name="type"]').forEach(function (r) {
+        r.addEventListener("change", syncTipo);
+      });
+      syncTipo();
+
+      function syncDim() {
+        var dim = dialog.querySelector('input[name="dimension"]:checked');
+        ["aliado", "categoria", "producto"].forEach(function (key) {
+          var wrap = dialog.querySelector('[data-promo-dim="' + key + '"]');
+          if (wrap) wrap.style.display = dim && dim.value === key ? "" : "none";
+        });
+      }
+      dialog.querySelectorAll('input[name="dimension"]').forEach(function (r) {
+        r.addEventListener("change", syncDim);
+      });
+      syncDim();
+
+      var productSelect = dialog.querySelector("[data-promo-product-select]");
+      var variantSelect = dialog.querySelector("[data-promo-variant-select]");
+      if (productSelect && variantSelect) {
+        function syncVariants() {
+          var variants = variantsByProduct[productSelect.value] || [];
+          var selected = variantSelect.getAttribute("data-selected") || "";
+          variantSelect.innerHTML =
+            '<option value="">Todas las variantes</option>' +
+            variants
+              .map(function (v) {
+                return (
+                  '<option value="' + v.id + '"' + (v.id === selected ? " selected" : "") + ">" + escapePromoAttr(v.sku) + "</option>"
+                );
+              })
+              .join("");
+          var wrap = dialog.querySelector("[data-promo-variant-wrap]");
+          if (wrap) wrap.style.display = variants.length > 0 ? "" : "none";
+        }
+        productSelect.addEventListener("change", function () {
+          variantSelect.setAttribute("data-selected", "");
+          syncVariants();
+        });
+        syncVariants();
+      }
+    });
+  })();
 
   /* ---------- menú de cuenta (rail): abrir/cerrar, click afuera, Escape ---------- */
   var profileToggle = document.querySelector("[data-profile-menu-toggle]");
@@ -4425,6 +4517,331 @@ export async function activarCategoria(categoryId: string): Promise<void> {
 
 export async function desactivarCategoria(categoryId: string): Promise<void> {
   await setCategoryActive(categoryId, false);
+}
+
+/**
+ * Promociones (Fase 23, ver ADR-035) — CRUD central en `/admin/promociones`,
+ * modal compartido `promocionDialogHtml` (reutilizable desde los puntos de
+ * entrada de Productos/Aliados/Categorías/Leads que se agregan en una fase
+ * posterior). El formulario solo cubre `type` temporada/campaña — ver la
+ * nota de `promotionsDirectory.ts` sobre por qué `volumen` queda fuera.
+ */
+const PROMO_SEGMENTOS: { value: string; label: string }[] = [
+  { value: "nuevo", label: "Nuevo" },
+  { value: "ocasional", label: "Ocasional" },
+  { value: "frecuente", label: "Frecuente" },
+  { value: "fiel", label: "Fiel" },
+  { value: "inactivo", label: "Inactivo" },
+];
+
+function promocionDimensionLabel(promo: PromotionRecord): string {
+  if (promo.allyId) {
+    return `Aliado: ${promo.allyName ?? "—"}`;
+  }
+  if (promo.categoryId) {
+    return `Categoría: ${promo.categoryName ?? "—"}${promo.includeChildCategories ? " (+ subcategorías)" : ""}`;
+  }
+  if (promo.productId) {
+    return `Producto: ${promo.productName ?? "—"}${promo.variantSku ? ` (${promo.variantSku})` : ""}`;
+  }
+  return "Todo el catálogo";
+}
+
+function promocionDialogHtml(
+  dialogId: string,
+  actionUrl: string,
+  title: string,
+  submitLabel: string,
+  promo: PromotionRecord | null,
+  allies: AllyRecord[],
+  categories: CategoryRecord[],
+  products: ProductSummary[],
+): string {
+  const tipo = promo && promo.type !== "volumen" ? promo.type : "temporada";
+  const dimension = promo?.allyId ? "aliado" : promo?.categoryId ? "categoria" : promo?.productId ? "producto" : "todo";
+  const segmentosSeleccionados = new Set(promo?.eligibleSegments ?? []);
+
+  const allyOptions = allies
+    .map((a) => `<option value="${a.id}"${a.id === promo?.allyId ? " selected" : ""}>${escapeHtml(a.name)}</option>`)
+    .join("");
+  const categoryOptions = categories
+    .map(
+      (c) =>
+        `<option value="${c.id}"${c.id === promo?.categoryId ? " selected" : ""}>${escapeHtml(categoryPath(categories, c.id).join(" › "))}</option>`,
+    )
+    .join("");
+  const productOptions = products
+    .map((p) => `<option value="${p.id}"${p.id === promo?.productId ? " selected" : ""}>${escapeHtml(p.name)}</option>`)
+    .join("");
+  const segmentCheckboxes = PROMO_SEGMENTOS.map(
+    (s) => `<label class="permcheck">
+        <input type="checkbox" name="eligibleSegments" value="${s.value}"${segmentosSeleccionados.has(s.value) ? " checked" : ""}>
+        ${s.label}
+      </label>`,
+  ).join("");
+
+  return `<dialog id="${dialogId}" class="modal" data-promo-dialog>
+    <div class="blockhead"><h2>${escapeHtml(title)}</h2></div>
+    <form method="POST" action="${actionUrl}">
+      <div class="field">
+        <label>Tipo</label>
+        <div class="radiogroup">
+          <label><input type="radio" name="type" value="temporada"${tipo === "temporada" ? " checked" : ""}> Temporada</label>
+          <label><input type="radio" name="type" value="campaña"${tipo === "campaña" ? " checked" : ""}> Campaña</label>
+        </div>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-label">Descripción</label>
+        <input type="text" id="${dialogId}-label" name="label" required value="${escapeHtml(promo?.label ?? "")}" placeholder="Ej. 15% de bienvenida">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-discount">% de descuento</label>
+        <input type="number" id="${dialogId}-discount" name="discountPct" min="0" max="100" step="1" required value="${promo?.discountPct ?? ""}">
+      </div>
+      <div class="field" data-promo-oncepercustomer>
+        <label class="permcheck">
+          <input type="checkbox" name="oncePerCustomer" value="1"${promo?.oncePerCustomer ? " checked" : ""}>
+          Una vez por cliente
+        </label>
+      </div>
+      <div class="fieldgrid">
+        <div class="field">
+          <label for="${dialogId}-desde">Vigente desde</label>
+          <input type="date" id="${dialogId}-desde" name="validFrom" value="${promo?.validFrom ?? ""}">
+        </div>
+        <div class="field">
+          <label for="${dialogId}-hasta">Vigente hasta</label>
+          <input type="date" id="${dialogId}-hasta" name="validTo" value="${promo?.validTo ?? ""}">
+        </div>
+      </div>
+      <div class="field">
+        <label>Dimensión</label>
+        <div class="radiogroup">
+          <label><input type="radio" name="dimension" value="todo"${dimension === "todo" ? " checked" : ""}> Todo el catálogo</label>
+          <label><input type="radio" name="dimension" value="aliado"${dimension === "aliado" ? " checked" : ""}> Un aliado</label>
+          <label><input type="radio" name="dimension" value="categoria"${dimension === "categoria" ? " checked" : ""}> Una categoría</label>
+          <label><input type="radio" name="dimension" value="producto"${dimension === "producto" ? " checked" : ""}> Un producto o variante</label>
+        </div>
+      </div>
+      <div class="field" data-promo-dim="aliado">
+        <label for="${dialogId}-aliado">Aliado</label>
+        <select id="${dialogId}-aliado" name="allyId">${allyOptions}</select>
+      </div>
+      <div class="field" data-promo-dim="categoria">
+        <label for="${dialogId}-categoria">Categoría</label>
+        <select id="${dialogId}-categoria" name="categoryId">${categoryOptions}</select>
+        <label class="permcheck">
+          <input type="checkbox" name="includeChildCategories" value="1"${promo?.includeChildCategories !== false ? " checked" : ""}>
+          Incluir subcategorías
+        </label>
+      </div>
+      <div class="field" data-promo-dim="producto">
+        <label for="${dialogId}-producto">Producto</label>
+        <select id="${dialogId}-producto" name="productId" data-promo-product-select>${productOptions}</select>
+        <div data-promo-variant-wrap>
+          <label for="${dialogId}-variante">Variante (opcional)</label>
+          <select id="${dialogId}-variante" name="variantId" data-promo-variant-select data-selected="${promo?.variantId ?? ""}">
+            <option value="">Todas las variantes</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Segmentos elegibles</label>
+        <div class="checkgroup">${segmentCheckboxes}</div>
+        <p class="hint">Sin selección = aplica a cualquier segmento.</p>
+      </div>
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">${escapeHtml(submitLabel)}</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+export async function renderPromocionesPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const [promotions, allies, categories, products, variants] = await Promise.all([
+    listPromotions(),
+    listAllies(),
+    listCategories(),
+    listProductsSummary(),
+    listAllVariantsForPicker(),
+  ]);
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Cambios guardados.</div>`
+      : "";
+
+  const rows = promotions
+    .map((promo) => {
+      const editarDialogId = `editar-promocion-${promo.id}`;
+      const vigencia =
+        promo.validFrom || promo.validTo
+          ? `${promo.validFrom ? formatFechaSolo(promo.validFrom) : "…"} – ${promo.validTo ? formatFechaSolo(promo.validTo) : "…"}`
+          : "Sin límite";
+      const segmentos =
+        promo.eligibleSegments.length > 0
+          ? promo.eligibleSegments.map((s) => `<span class="tag">${escapeHtml(s)}</span>`).join("")
+          : `<span class="hint">Todos</span>`;
+      const search = [promo.label, promo.allyName, promo.categoryName, promo.productName]
+        .filter((v): v is string => Boolean(v))
+        .join(" ")
+        .toLowerCase();
+      const editable = promo.type !== "volumen";
+
+      return `<tr data-search="${escapeHtml(search)}" data-filter-estado="${promo.active ? "activo" : "inactivo"}" data-sort-tipo="${promo.type}" data-sort-estado="${promo.active ? 1 : 0}">
+        <td>${escapeHtml(promo.type)}</td>
+        <td>${escapeHtml(promo.label ?? "—")}</td>
+        <td>${escapeHtml(promocionDimensionLabel(promo))}</td>
+        <td>${segmentos}</td>
+        <td>${vigencia}</td>
+        <td>${statusToggleHtml(`/admin/promociones/${promo.id}`, promo.active, `la promoción "${promo.label ?? promo.id}"`, "Activa", "Inactiva")}</td>
+        <td><div class="rowactions">
+          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
+        </div></td>
+      </tr>
+      ${editable ? promocionDialogHtml(editarDialogId, `/admin/promociones/${promo.id}`, `Editar ${promo.label ?? "promoción"}`, "Guardar cambios", promo, allies, categories, products) : ""}`;
+    })
+    .join("\n");
+
+  const variantsByProduct: Record<string, { id: string; sku: string }[]> = {};
+  for (const v of variants) {
+    (variantsByProduct[v.productId] ??= []).push({ id: v.id, sku: v.sku });
+  }
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Catálogo</p>
+      <h1>Promociones</h1>
+      <p>Descuentos por temporada o campaña de ${escapeHtml(brandName(tenant))} — se aplica siempre la de mayor beneficio, nunca se combinan.</p>
+    </div>
+    ${banner}
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por descripción, aliado, categoría, producto…" aria-label="Buscar promociones">
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          <option value="activo">Activas</option>
+          <option value="inactivo">Inactivas</option>
+        </select>
+        <div class="tabletools__actions">
+          <button type="button" data-open-dialog="nueva-promocion-dialog" class="btn btn--add" aria-label="Agregar promoción"><span class="btn--add__plus">+</span> Nueva promoción</button>
+        </div>
+      </div>
+      <table>
+        <colgroup>
+          <col style="width:10%"><col style="width:22%"><col style="width:20%">
+          <col style="width:16%"><col style="width:14%"><col style="width:10%"><col style="width:8%">
+        </colgroup>
+        <thead><tr>
+          <th class="sortable" data-sort-key="tipo">Tipo</th>
+          <th>Descripción</th>
+          <th>Dimensión</th>
+          <th>Segmentos</th>
+          <th>Vigencia</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Acciones</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_PROMOCIONES, "Sin promociones todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
+      </table>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${promotions.length}</span> de ${promotions.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
+      </div>
+    </div>
+    ${promocionDialogHtml("nueva-promocion-dialog", "/admin/promociones", "Nueva promoción", "Crear promoción", null, allies, categories, products)}
+    <script type="application/json" data-promo-variants-data>${JSON.stringify(variantsByProduct).replace(/</g, "\\u003c")}</script>
+  `;
+
+  return layout("Promociones", tenant, body, "promociones", admin);
+}
+
+function parsePromotionInput(input: {
+  type?: string;
+  label?: string;
+  discountPct?: string;
+  oncePerCustomer?: string;
+  validFrom?: string;
+  validTo?: string;
+  dimension?: string;
+  allyId?: string;
+  categoryId?: string;
+  includeChildCategories?: string;
+  productId?: string;
+  variantId?: string;
+  eligibleSegments?: string | string[];
+}): { ok: true; value: PromotionInput } | { ok: false; error: string } {
+  const label = (input.label ?? "").trim();
+  if (!label) {
+    return { ok: false, error: "La descripción es obligatoria." };
+  }
+  const type = input.type === "campaña" ? "campaña" : "temporada";
+  const discountPct = Number.parseFloat(input.discountPct ?? "");
+  if (!Number.isFinite(discountPct) || discountPct < 0 || discountPct > 100) {
+    return { ok: false, error: "El % de descuento debe ser un número entre 0 y 100." };
+  }
+  const dimension = input.dimension ?? "todo";
+  const eligibleSegments = input.eligibleSegments === undefined ? [] : ([] as string[]).concat(input.eligibleSegments);
+
+  return {
+    ok: true,
+    value: {
+      type,
+      label,
+      discountPct,
+      oncePerCustomer: type === "campaña" && input.oncePerCustomer === "1",
+      validFrom: input.validFrom?.trim() || null,
+      validTo: input.validTo?.trim() || null,
+      allyId: dimension === "aliado" ? (input.allyId ?? null) || null : null,
+      categoryId: dimension === "categoria" ? (input.categoryId ?? null) || null : null,
+      includeChildCategories: dimension === "categoria" ? input.includeChildCategories === "1" : true,
+      productId: dimension === "producto" ? (input.productId ?? null) || null : null,
+      variantId: dimension === "producto" ? (input.variantId ?? null) || null : null,
+      eligibleSegments,
+    },
+  };
+}
+
+export async function crearPromocion(input: Parameters<typeof parsePromotionInput>[0]): Promise<{ ok: true } | { ok: false; error: string }> {
+  const parsed = parsePromotionInput(input);
+  if (!parsed.ok) {
+    return parsed;
+  }
+  await createPromotion(parsed.value);
+  return { ok: true };
+}
+
+export async function guardarPromocion(
+  promotionId: string,
+  input: Parameters<typeof parsePromotionInput>[0],
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const parsed = parsePromotionInput(input);
+  if (!parsed.ok) {
+    return parsed;
+  }
+  await updatePromotion(promotionId, parsed.value);
+  return { ok: true };
+}
+
+export async function activarPromocion(promotionId: string): Promise<void> {
+  await setPromotionActive(promotionId, true);
+}
+
+export async function desactivarPromocion(promotionId: string): Promise<void> {
+  await setPromotionActive(promotionId, false);
 }
 
 /**
