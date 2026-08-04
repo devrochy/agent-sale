@@ -127,6 +127,7 @@ async function recoverOrphanedConversations(): Promise<void> {
       WHERE conv.status = 'open'
         AND (conv.state ->> 'step') IS DISTINCT FROM 'escalado'
         AND last_msg.direction = 'inbound'
+        AND c.bot_paused = false -- kill-switch por cliente (Fase 23/ADR-036)
     `),
   );
 

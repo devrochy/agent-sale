@@ -5,6 +5,7 @@ export interface ResolvedConversation {
   conversationId: string;
   customerId: string;
   state: Record<string, unknown>;
+  customerBotPaused: boolean;
 }
 
 /**
@@ -23,16 +24,17 @@ export async function resolveConversation(
     // mensaje, no solo en el primero — COALESCE conserva el nombre ya
     // guardado si un mensaje puntual llega sin él, y lo actualiza cuando
     // sí llega (ej. el cliente cambió su nombre de perfil de WhatsApp).
-    const customer = await client.query<{ id: string }>(
+    const customer = await client.query<{ id: string; bot_paused: boolean }>(
       `INSERT INTO customers (phone_number, name)
        VALUES ($1, $2)
        ON CONFLICT (phone_number) DO UPDATE SET
          phone_number = EXCLUDED.phone_number,
          name = COALESCE(EXCLUDED.name, customers.name)
-       RETURNING id`,
+       RETURNING id, bot_paused`,
       [customerPhone, customerName ?? null],
     );
     const customerId = customer.rows[0]!.id;
+    const customerBotPaused = customer.rows[0]!.bot_paused;
 
     const existing = await client.query<{ id: string; state: Record<string, unknown> }>(
       `SELECT id, state FROM conversations
@@ -41,7 +43,7 @@ export async function resolveConversation(
       [customerId],
     );
     if (existing.rows[0]) {
-      return { conversationId: existing.rows[0].id, customerId, state: existing.rows[0].state };
+      return { conversationId: existing.rows[0].id, customerId, state: existing.rows[0].state, customerBotPaused };
     }
 
     const created = await client.query<{ id: string; state: Record<string, unknown> }>(
@@ -50,7 +52,7 @@ export async function resolveConversation(
        RETURNING id, state`,
       [customerId],
     );
-    return { conversationId: created.rows[0]!.id, customerId, state: created.rows[0]!.state };
+    return { conversationId: created.rows[0]!.id, customerId, state: created.rows[0]!.state, customerBotPaused };
   });
 }
 

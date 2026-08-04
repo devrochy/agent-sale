@@ -41,6 +41,8 @@ Tabla nueva `promotion_redemptions` (`promotion_id`, `customer_id`, `order_id`, 
 
 ### Clasificación de cliente: derivada, no editable a mano
 
+**Esta sección queda superada por [ADR-036](../../fase-23-crud-promociones-clasificacion-cliente/adrs/ADR-036-clasificacion-cliente-5-niveles-y-rediseno-leads.md)** (Fase 23), que reemplaza los 3 niveles (`nuevo`/`recurrente`/`fiel`) por 5 (`nuevo`/`ocasional`/`frecuente`/`fiel`/`inactivo`) — se mantiene el texto original por trazabilidad histórica, no describe la clasificación actual del sistema. El resto de esta ADR (elegibilidad multi-dimensión, `promotion_redemptions`, `applied_promotion_id`) sigue vigente sin cambios.
+
 `customers.segment` **no** es una columna editable — se calcula on-demand en cada llamada a `aplicar_promocion` a partir de `COUNT(orders) WHERE customer_id = ... AND status != 'expirado'` (corrección respecto al texto original de esta ADR: `orders.status` nunca tuvo el literal `'confirmed'` — desde Fase 15/16 solo vale `'abierto'` o `'expirado'`; un pedido expirado nunca se vendió de verdad, por eso se excluye en vez de exigir un valor puntual):
 
 - `nuevo`: cliente sin `customer_id` (cotización sin cliente identificado), o con menos pedidos que el umbral de `recurrente`.
