@@ -311,6 +311,34 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 
 ---
 
+## Fase 23 — CRUD de Promociones en el Panel y Clasificación Extendida de Clientes
+
+**Origen:** a diferencia de las Fases 13-22, no viene de un bloque de `PROPUESTA_V2.md` §3 — nace de una petición directa de Rob al cerrar la Fase 17 (2026-08-04), tras probar el motor de promociones por WhatsApp y notar que no hay ninguna forma de gestionar promociones ni de ver la clasificación de un cliente sin tocar la base de datos a mano. La Fase 17 dejó esto explícitamente fuera de alcance (ver su README, "Fuera de alcance").
+
+**Objetivo:** Dar un CRUD completo de promociones en el panel (por producto, aliado, temporada/campaña, categoría/subcategoría), con un modal reutilizable y puntos de entrada distribuidos en Productos, Aliados, Categorías y Leads; y reemplazar la clasificación de 3 niveles de la Fase 17 por una de 5 niveles (nuevo/ocasional/frecuente/fiel/inactivo) visible en un rediseño de la tabla de Leads.
+
+**Entregables:**
+- `/admin/promociones`: alta, edición y activación/desactivación de promociones, sin tocar la base de datos.
+- Modal compartido (`promocion-dialog`) reutilizado desde la lista central y desde un botón "Agregar promoción" en cada fila de Productos, Aliados y Categorías (dimensión pre-cargada y bloqueada), y desde Leads (pre-carga el segmento del cliente, no un `customer_id` — `promotions` no tiene esa columna, ver ADR-035).
+- Clasificación de cliente en 5 niveles (`clasificarCliente()` extendida, `aplicarPromocion.ts`), con umbrales de conteo, intervalo entre compras y recencia en `settings` (ADR-036).
+- Tabla de Leads rediseñada: se quita "Último mensaje", se agrega columna de clasificación y un control de bot por cliente (`customers.bot_paused`, nueva columna).
+- Modal de detalle de lead: ver y editar nombre completo, cédula, dirección, municipio y ciudad (`customers`, columnas ya existentes desde la Fase 15).
+- ADR-035 (CRUD de promociones y puntos de entrada) y ADR-036 (clasificación de 5 niveles y rediseño de Leads).
+
+**Dependencias:** Fase 14 (`ally_id`/`category_id`/`variant_id`), Fase 15 (`customers.full_name`/`address`/`id_document`/`municipality`/`city`) y Fase 17 (columnas de elegibilidad de `promotions` y la clasificación de 3 niveles que esta fase reemplaza).
+
+**Riesgos:** Los umbrales nuevos de clasificación (intervalo entre compras, días de inactividad) no tienen datos reales de ForMotos todavía, mismo tipo de riesgo ya documentado para "fiel" en ADR-027; "cliente fiel" tal como lo define el enunciado de negocio (confianza, satisfacción, recomendación activa) no es medible con los datos que hoy existen en el sistema — se mantiene como proxy por volumen de compra, limitación documentada en ADR-036, no resuelta en esta fase.
+
+**Estimación:** 3-4 semanas.
+
+**Definición de terminado:**
+- [ ] Un administrador crea, edita y activa/desactiva una promoción de cada una de las 4 dimensiones desde `/admin/promociones`, sin tocar la base de datos.
+- [ ] El botón "Agregar promoción" de Productos, Aliados y Categorías abre el modal con la dimensión correspondiente ya pre-cargada.
+- [ ] La tabla de Leads muestra clasificación (5 niveles) y control de bot por cliente, sin la columna "Último mensaje", verificado contra clientes reales con distintos historiales de pedidos.
+- [ ] El modal de detalle de un lead permite ver y editar nombre completo, dirección, cédula, municipio y ciudad, sin afectar los datos de entrega de un pedido en curso (`customers.delivery_*`, Fase 15).
+
+---
+
 ## Pendientes de v1 (`PROPUESTA_V2.md` §4) — qué pasa con cada uno en v2
 
 | Pendiente | Qué pasa en v2 |
