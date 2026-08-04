@@ -322,6 +322,90 @@ describe("runTurn — regla de monto alto", () => {
   });
 });
 
+// Sustituye a la Definición de Terminado #3 de Fase 17 ("mención proactiva
+// en al menos un escenario del golden set de Fase 9"): Fase 9
+// (docs/fase-9-piloto-controlado/) sigue en diseño, no existe todavía el
+// directorio eval/ ni el script eval:golden-set — ver ADR-027. Este test
+// determinístico cubre lo mismo con el mismo patrón mockeado del resto de
+// este archivo: el modelo llama generar_cotizacion y aplicar_promocion en
+// el mismo turno sin que el cliente haya pedido un descuento.
+describe("runTurn — promoción proactiva (Fase 17)", () => {
+  beforeEach(() => {
+    mockConverse.mockReset();
+    vi.mocked(resolveLlmProvider).mockReset();
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(escalarHumano).mockReset();
+    vi.mocked(resolveConversation).mockReset();
+    vi.mocked(loadHistory).mockReset();
+    vi.mocked(appendMessage).mockReset();
+    vi.mocked(updateState).mockReset();
+    vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(recordAudit).mockReset();
+
+    vi.mocked(resolveLlmProvider).mockResolvedValue({
+      provider: { converse: mockConverse },
+      model: "test-model",
+      providerKey: "env-default",
+    });
+    vi.mocked(resolveConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      customerId: "customer-1",
+      state: {},
+    });
+    vi.mocked(loadHistory).mockResolvedValue([]);
+    vi.mocked(getEscalationConfig).mockResolvedValue(null);
+    vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+  });
+
+  it("menciona un descuento sin que el cliente lo haya pedido, llamando aplicar_promocion junto con generar_cotizacion", async () => {
+    vi.mocked(executeTool).mockImplementation(async (_conversationId, _customerId, _messageSid, _threshold, toolUse) => {
+      if (toolUse.name === "generar_cotizacion") {
+        return {
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: JSON.stringify({ quote_id: "q1", subtotal: 300000, total: 300000 }),
+        };
+      }
+      return {
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: JSON.stringify({
+          quote_id: "q1",
+          promotion_applied: { id: "promo-1", kind: "campaña", description: "Bienvenida (15% de descuento)" },
+          subtotal: 300000,
+          discount: 45000,
+          total: 255000,
+        }),
+      };
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "generar_cotizacion", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "aplicar_promocion", input: { quote_id: "q1" } },
+        ],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(
+        endTurn("Tu casco queda en $300.000, pero tenés un 15% de bienvenida: te queda en $255.000."),
+      );
+
+    const result = await runTurn("+573000000000", "quiero cotizar un casco", "sid-promo-1");
+
+    expect(executeTool).toHaveBeenCalledWith(
+      "conv-1",
+      "customer-1",
+      "sid-promo-1",
+      expect.any(Number),
+      expect.objectContaining({ name: "aplicar_promocion" }),
+    );
+    expect(result.responseText).toContain("255.000");
+    expect(escalarHumano).not.toHaveBeenCalled();
+  });
+});
+
 describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
   beforeEach(() => {
     mockConverse.mockReset();

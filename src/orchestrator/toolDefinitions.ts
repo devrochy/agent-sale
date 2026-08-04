@@ -67,7 +67,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "aplicar_promocion",
     description:
-      "Evalúa las promociones activas del tenant contra una cotización existente y aplica automáticamente la de mayor beneficio para el cliente (nunca se combinan promociones). Llamar cuando el cliente pregunta por descuentos o promociones sobre una cotización ya generada.",
+      "Evalúa las promociones activas contra una cotización existente (por aliado, categoría, producto, variante, segmento de cliente o campaña de bienvenida, según cómo esté configurada cada una) y aplica automáticamente la de mayor beneficio para el cliente (nunca se combinan promociones). Llamar apenas se genera una cotización, aunque sea preliminar, para poder mencionar proactivamente un descuento si aplica — y también cuando el cliente pregunta por descuentos o promociones sobre una cotización ya generada.",
     inputSchema: {
       type: "object",
       properties: {

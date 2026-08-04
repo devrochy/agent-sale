@@ -30,6 +30,10 @@ let productC: string;
 let variantC: string;
 let productGuantesC: string;
 let variantGuantesC: string;
+// settings es singleton (ver ADR-032) — se siembra acá para que
+// clasificarCliente (Fase 17) pueda leer los umbrales de segmento, mismo
+// patrón que crearPedido.test.ts.
+let settingsId: string;
 
 async function seedContext(phone: string) {
   const customer = await adminPool.query<{ id: string }>(
@@ -71,6 +75,11 @@ beforeAll(async () => {
   const guantesC = await seedProduct(adminPool, { sku: "GUANTES-C", name: "Guantes regalo", price: 20000, stock: 100 });
   productGuantesC = guantesC.productId;
   variantGuantesC = guantesC.variantId;
+
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Aplicar Promocion Test') RETURNING id`,
+  );
+  settingsId = settings.rows[0]!.id;
 });
 
 afterAll(async () => {
@@ -87,6 +96,7 @@ afterAll(async () => {
   }
   await adminPool.query(`DELETE FROM conversations WHERE id = ANY($1)`, [conversationIds]);
   await adminPool.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
@@ -119,6 +129,9 @@ describe("aplicarPromocion", () => {
     });
 
     afterAll(async () => {
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = ANY($1)`, [
+        promotionIds,
+      ]);
       await adminPool.query(`DELETE FROM promotions WHERE id = ANY($1)`, [promotionIds]);
     });
 
@@ -187,6 +200,9 @@ describe("aplicarPromocion", () => {
     });
 
     afterAll(async () => {
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
       await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
     });
 
@@ -207,6 +223,365 @@ describe("aplicarPromocion", () => {
       );
       expect(items.rows).toHaveLength(1);
       expect(items.rows[0]).toMatchObject({ quantity: 1, unit_price: "0.00" });
+    });
+  });
+
+  describe("con promoción exclusiva de un aliado (Fase 17)", () => {
+    let customerD: string;
+    let conversationD: string;
+    let allyX: string;
+    let allyY: string;
+    let productX: string;
+    let variantX: string;
+    let productY: string;
+    let variantY: string;
+    let promotionId: string;
+
+    beforeAll(async () => {
+      const ctx = await seedContext("3030000004");
+      customerD = ctx.customerId;
+      conversationD = ctx.conversationId;
+
+      const aX = await adminPool.query<{ id: string }>(
+        `INSERT INTO allies (name) VALUES ('Aliado Aislamiento X') RETURNING id`,
+      );
+      allyX = aX.rows[0]!.id;
+      const aY = await adminPool.query<{ id: string }>(
+        `INSERT INTO allies (name) VALUES ('Aliado Aislamiento Y') RETURNING id`,
+      );
+      allyY = aY.rows[0]!.id;
+
+      const prodX = await adminPool.query<{ id: string }>(
+        `INSERT INTO products (ally_id, name) VALUES ($1, 'Producto aliado X') RETURNING id`,
+        [allyX],
+      );
+      productX = prodX.rows[0]!.id;
+      const varX = await adminPool.query<{ id: string }>(
+        `INSERT INTO product_variants (product_id, sku, price) VALUES ($1, 'ALIADO-X-1', 100000) RETURNING id`,
+        [productX],
+      );
+      variantX = varX.rows[0]!.id;
+      await adminPool.query(`INSERT INTO inventory (variant_id, stock_quantity) VALUES ($1, 100)`, [variantX]);
+
+      const prodY = await adminPool.query<{ id: string }>(
+        `INSERT INTO products (ally_id, name) VALUES ($1, 'Producto aliado Y') RETURNING id`,
+        [allyY],
+      );
+      productY = prodY.rows[0]!.id;
+      const varY = await adminPool.query<{ id: string }>(
+        `INSERT INTO product_variants (product_id, sku, price) VALUES ($1, 'ALIADO-Y-1', 50000) RETURNING id`,
+        [productY],
+      );
+      variantY = varY.rows[0]!.id;
+      await adminPool.query(`INSERT INTO inventory (variant_id, stock_quantity) VALUES ($1, 100)`, [variantY]);
+
+      const promo = await adminPool.query<{ id: string }>(
+        `INSERT INTO promotions (type, rules, active, ally_id) VALUES ('temporada', $1, true, $2) RETURNING id`,
+        [JSON.stringify({ kind: "temporada", label: "aliado_x", discount_pct: 10 }), allyX],
+      );
+      promotionId = promo.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
+      await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+        [conversationD],
+      );
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationD]);
+      await deleteProduct(adminPool, productX);
+      await deleteProduct(adminPool, productY);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationD]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerD]);
+      await adminPool.query(`DELETE FROM allies WHERE id = ANY($1)`, [[allyX, allyY]]);
+    });
+
+    it("aplica cuando todos los items son del aliado exclusivo", async () => {
+      const quote = await generarCotizacion(conversationD, customerD, {
+        items: [{ variant_id: variantX, quantity: 1 }],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toMatchObject({ id: promotionId, kind: "temporada" });
+    });
+
+    it("NO aplica si la cotización mezcla un producto de otro aliado (aislamiento)", async () => {
+      const quote = await generarCotizacion(conversationD, customerD, {
+        items: [
+          { variant_id: variantX, quantity: 1 },
+          { variant_id: variantY, quantity: 1 },
+        ],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toBeNull();
+    });
+  });
+
+  describe("con promoción de categoría que incluye subcategorías (Fase 17)", () => {
+    let customerE: string;
+    let conversationE: string;
+    let categoryParent: string;
+    let categoryChild: string;
+    let productE: string;
+    let variantE: string;
+    let promotionId: string;
+
+    beforeAll(async () => {
+      const ctx = await seedContext("3030000005");
+      customerE = ctx.customerId;
+      conversationE = ctx.conversationId;
+
+      const parent = await adminPool.query<{ id: string }>(
+        `SELECT id FROM product_categories WHERE name = 'Protección personal' AND parent_id IS NULL`,
+      );
+      categoryParent = parent.rows[0]!.id;
+      const child = await adminPool.query<{ id: string }>(
+        `SELECT id FROM product_categories WHERE name = 'Guantes' AND parent_id = $1`,
+        [categoryParent],
+      );
+      categoryChild = child.rows[0]!.id;
+
+      const prod = await seedProduct(adminPool, {
+        sku: "GUANTES-CATEGORIA-E",
+        name: "Guantes de prueba",
+        price: 80000,
+        stock: 50,
+        categoryId: categoryChild,
+      });
+      productE = prod.productId;
+      variantE = prod.variantId;
+
+      const promo = await adminPool.query<{ id: string }>(
+        `INSERT INTO promotions (type, rules, active, category_id) VALUES ('temporada', $1, true, $2) RETURNING id`,
+        [JSON.stringify({ kind: "temporada", label: "proteccion_personal", discount_pct: 12 }), categoryParent],
+      );
+      promotionId = promo.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
+      await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+        [conversationE],
+      );
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationE]);
+      await deleteProduct(adminPool, productE);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationE]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerE]);
+    });
+
+    it("aplica una promoción de la categoría padre a un producto de su subcategoría", async () => {
+      const quote = await generarCotizacion(conversationE, customerE, {
+        items: [{ variant_id: variantE, quantity: 1 }],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toMatchObject({ id: promotionId, kind: "temporada" });
+    });
+  });
+
+  describe("con promoción de un producto puntual (Fase 17)", () => {
+    let customerF: string;
+    let conversationF: string;
+    let productF1: string;
+    let variantF1: string;
+    let productF2: string;
+    let variantF2: string;
+    let promotionId: string;
+
+    beforeAll(async () => {
+      const ctx = await seedContext("3030000006");
+      customerF = ctx.customerId;
+      conversationF = ctx.conversationId;
+
+      const p1 = await seedProduct(adminPool, { sku: "PRODUCTO-PUNTUAL-F1", name: "Producto puntual F1", price: 60000, stock: 50 });
+      productF1 = p1.productId;
+      variantF1 = p1.variantId;
+
+      const p2 = await seedProduct(adminPool, { sku: "PRODUCTO-OTRO-F2", name: "Producto otro F2", price: 40000, stock: 50 });
+      productF2 = p2.productId;
+      variantF2 = p2.variantId;
+
+      const promo = await adminPool.query<{ id: string }>(
+        `INSERT INTO promotions (type, rules, active, product_id) VALUES ('temporada', $1, true, $2) RETURNING id`,
+        [JSON.stringify({ kind: "temporada", label: "producto_f1", discount_pct: 8 }), productF1],
+      );
+      promotionId = promo.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
+      await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+        [conversationF],
+      );
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationF]);
+      await deleteProduct(adminPool, productF1);
+      await deleteProduct(adminPool, productF2);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationF]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerF]);
+    });
+
+    it("aplica solo si la cotización es exclusivamente del producto puntual", async () => {
+      const quote = await generarCotizacion(conversationF, customerF, {
+        items: [{ variant_id: variantF1, quantity: 1 }],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toMatchObject({ id: promotionId, kind: "temporada" });
+    });
+
+    it("NO aplica si la cotización incluye otro producto", async () => {
+      const quote = await generarCotizacion(conversationF, customerF, {
+        items: [
+          { variant_id: variantF1, quantity: 1 },
+          { variant_id: variantF2, quantity: 1 },
+        ],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toBeNull();
+    });
+  });
+
+  describe("con promoción restringida a un segmento de cliente (Fase 17)", () => {
+    let customerG: string;
+    let conversationG: string;
+    let productG: string;
+    let variantG: string;
+    let promotionId: string;
+
+    beforeAll(async () => {
+      const ctx = await seedContext("3030000007");
+      customerG = ctx.customerId;
+      conversationG = ctx.conversationId;
+
+      const prod = await seedProduct(adminPool, { sku: "PRODUCTO-SEGMENTO-G", name: "Producto segmento G", price: 90000, stock: 50 });
+      productG = prod.productId;
+      variantG = prod.variantId;
+
+      const promo = await adminPool.query<{ id: string }>(
+        `INSERT INTO promotions (type, rules, active, eligible_segments) VALUES ('temporada', $1, true, $2) RETURNING id`,
+        [
+          JSON.stringify({ kind: "temporada", label: "solo_recurrentes", discount_pct: 20 }),
+          ["recurrente", "fiel"],
+        ],
+      );
+      promotionId = promo.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
+      await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+        [conversationG],
+      );
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationG]);
+      await deleteProduct(adminPool, productG);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationG]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerG]);
+    });
+
+    it("NO aplica a un cliente 'nuevo' sin pedidos previos", async () => {
+      const quote = await generarCotizacion(conversationG, customerG, {
+        items: [{ variant_id: variantG, quantity: 1 }],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toBeNull();
+    });
+  });
+
+  describe("con campaña once_per_customer (Fase 17)", () => {
+    let customerH: string;
+    let conversationH: string;
+    let productH: string;
+    let variantH: string;
+    let promotionId: string;
+    let redeemingOrderId: string;
+
+    beforeAll(async () => {
+      const ctx = await seedContext("3030000008");
+      customerH = ctx.customerId;
+      conversationH = ctx.conversationId;
+
+      const prod = await seedProduct(adminPool, { sku: "PRODUCTO-CAMPANA-H", name: "Producto campaña H", price: 70000, stock: 50 });
+      productH = prod.productId;
+      variantH = prod.variantId;
+
+      const promo = await adminPool.query<{ id: string }>(
+        `INSERT INTO promotions (type, rules, active) VALUES ('campaña', $1, true) RETURNING id`,
+        [JSON.stringify({ kind: "campaña", label: "bienvenida", discount_pct: 15, once_per_customer: true })],
+      );
+      promotionId = promo.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM promotion_redemptions WHERE promotion_id = $1`, [promotionId]);
+      await adminPool.query(`DELETE FROM orders WHERE id = $1`, [redeemingOrderId]);
+      await adminPool.query(`UPDATE quotes SET applied_promotion_id = NULL WHERE applied_promotion_id = $1`, [
+        promotionId,
+      ]);
+      await adminPool.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]);
+      await adminPool.query(
+        `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+        [conversationH],
+      );
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationH]);
+      await deleteProduct(adminPool, productH);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationH]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerH]);
+    });
+
+    it("aplica la campaña la primera vez", async () => {
+      const quote = await generarCotizacion(conversationH, customerH, {
+        items: [{ variant_id: variantH, quantity: 1 }],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toMatchObject({ id: promotionId, kind: "campaña" });
+
+      const order = await adminPool.query<{ id: string }>(
+        `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total)
+         VALUES ($1, $2, $3, 'abierto', 'efectivo_contraentrega', 'pagado', 'recoger_en_tienda', $4, $5)
+         RETURNING id`,
+        [quote.quote_id, conversationH, customerH, `test-redencion-${quote.quote_id}`, result.total],
+      );
+      redeemingOrderId = order.rows[0]!.id;
+      await adminPool.query(
+        `INSERT INTO promotion_redemptions (promotion_id, customer_id, order_id) VALUES ($1, $2, $3)`,
+        [promotionId, customerH, redeemingOrderId],
+      );
+    });
+
+    it("NO se reaplica tras una redención ya registrada", async () => {
+      const quote = await generarCotizacion(conversationH, customerH, {
+        items: [{ variant_id: variantH, quantity: 1 }],
+      });
+
+      const result = await aplicarPromocion({ quote_id: quote.quote_id });
+
+      expect(result.promotion_applied).toBeNull();
     });
   });
 

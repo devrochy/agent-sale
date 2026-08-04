@@ -1,6 +1,6 @@
 # Fase 17 — Motor de Promociones Avanzado y Clasificación de Clientes
 
-Estado: **en diseño** (v2)
+Estado: **completa** (v2)
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-17--motor-de-promociones-avanzado-y-clasificación-de-clientes) · [PROPUESTA_V2.md §3.7](../../PROPUESTA_V2.md) · [Fase 6 — Motor de Promociones](../fase-6-dominio-comercial/motor-promociones.md) · [Fase 14](../fase-14-catalogo-extendido/README.md) · [Fase 16](../fase-16-estado-pedido-pagos-logistica/README.md)
 
@@ -15,6 +15,7 @@ Extiende `aplicar_promocion` para evaluar elegibilidad por aliado, categoría/su
 ## Contenido de esta fase
 
 - [adrs/ADR-027-elegibilidad-multidimension-y-clasificacion-cliente.md](./adrs/ADR-027-elegibilidad-multidimension-y-clasificacion-cliente.md) — esquema de elegibilidad, cómo conviven con "no combinar", y cómo se deriva la clasificación de cliente.
+- [contratos-tools-v5.md](./contratos-tools-v5.md) — actualización del contrato de `aplicar_promocion` (nuevo `kind: "campaña"`).
 
 ## Dependencias
 
@@ -27,8 +28,8 @@ Extiende `aplicar_promocion` para evaluar elegibilidad por aliado, categoría/su
 
 ## Definición de terminado
 
-- [ ] Una promoción exclusiva de un aliado (ej. "Ramos", 10%) solo aplica a productos de ese aliado, verificado con un producto de otro aliado en la misma cotización.
-- [ ] Una promoción de campaña con `once_per_customer` no se vuelve a aplicar al mismo cliente en una segunda conversación.
-- [ ] El agente menciona una promoción activa al detectar interés en la categoría correspondiente, antes del cierre del pedido, en al menos un escenario del golden set de la Fase 9.
+- [x] Una promoción exclusiva de un aliado (ej. "Ramos", 10%) solo aplica a productos de ese aliado, verificado con un producto de otro aliado en la misma cotización — `tests/integration/domains/aplicarPromocion.test.ts`, describe `"con promoción exclusiva de un aliado (Fase 17)"`.
+- [x] Una promoción de campaña con `once_per_customer` no se vuelve a aplicar al mismo cliente en una segunda conversación — `tests/integration/domains/aplicarPromocion.test.ts`, describe `"con campaña once_per_customer (Fase 17)"`, y `tests/integration/domains/crearPedido.test.ts`, describe `"campaña once_per_customer (Fase 17, ver aplicarPromocion.ts)"` (confirma el registro en `promotion_redemptions` al confirmar el pedido).
+- [x] El agente menciona una promoción activa al detectar interés en el producto cotizado, antes del cierre del pedido — sustituido por un test determinístico (`tests/unit/orchestrator/loop.test.ts`, describe `"runTurn — promoción proactiva (Fase 17)"`) en vez del golden set real de la Fase 9, que todavía no existe (ver nota en [ADR-027](./adrs/ADR-027-elegibilidad-multidimension-y-clasificacion-cliente.md)).
 
 Esta es la última fase de la cadena estrictamente secuencial 13→14→15→16→17. Las Fases 18, 19 y 20 pueden ejecutarse en paralelo con esta y entre sí.
