@@ -337,12 +337,16 @@ describe("aplicarPromocion", () => {
       customerE = ctx.customerId;
       conversationE = ctx.conversationId;
 
+      // No depender de un catálogo pre-sembrado (scripts/seed-catalogo-prueba.ts
+      // solo se corre a mano para pruebas manuales, CI nunca lo ejecuta) —
+      // mismo criterio que el resto de describes de este archivo, cada
+      // escenario siembra y borra sus propios datos.
       const parent = await adminPool.query<{ id: string }>(
-        `SELECT id FROM product_categories WHERE name = 'Protección personal' AND parent_id IS NULL`,
+        `INSERT INTO product_categories (name) VALUES ('Protección personal test Fase17') RETURNING id`,
       );
       categoryParent = parent.rows[0]!.id;
       const child = await adminPool.query<{ id: string }>(
-        `SELECT id FROM product_categories WHERE name = 'Guantes' AND parent_id = $1`,
+        `INSERT INTO product_categories (name, parent_id) VALUES ('Guantes test Fase17', $1) RETURNING id`,
         [categoryParent],
       );
       categoryChild = child.rows[0]!.id;
@@ -377,6 +381,8 @@ describe("aplicarPromocion", () => {
       await deleteProduct(adminPool, productE);
       await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationE]);
       await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerE]);
+      await adminPool.query(`DELETE FROM product_categories WHERE id = $1`, [categoryChild]);
+      await adminPool.query(`DELETE FROM product_categories WHERE id = $1`, [categoryParent]);
     });
 
     it("aplica una promoción de la categoría padre a un producto de su subcategoría", async () => {
