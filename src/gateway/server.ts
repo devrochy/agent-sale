@@ -8,10 +8,19 @@ import {
   tomarConversacion,
 } from "../advisor/handoffView.js";
 import {
+  activarAliado,
+  activarCategoria,
   activarColaborador,
+  crearAliado,
+  crearCategoria,
   crearColaborador,
+  desactivarAliado,
+  desactivarCategoria,
   desactivarColaborador,
   exportLeadsCsv,
+  guardarAliado,
+  guardarAsignacionProducto,
+  guardarCategoria,
   guardarCobros,
   guardarComportamiento,
   guardarModeloIa,
@@ -21,7 +30,9 @@ import {
   guardarReviewLink,
   pausarBot,
   reactivarBot,
+  renderAliadosPage,
   renderAnaliticaPage,
+  renderCategoriasPage,
   renderColaboradoresPage,
   renderConexionesPage,
   renderConfiguracionPage,
@@ -438,6 +449,112 @@ export async function buildServer() {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/productos/:productId/asignar", async (request, reply) => {
+    const { productId } = request.params as { productId: string };
+    const { allyId, categoryId } = request.body as { allyId?: string; categoryId?: string };
+    await guardarAsignacionProducto(productId, { allyId: allyId ?? "", categoryId: categoryId ?? "" });
+    return reply.status(303).redirect("/admin/productos");
+  });
+
+  app.get("/admin/aliados", async (request, reply) => {
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderAliadosPage(request.admin!, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/aliados", async (request, reply) => {
+    const { name, contactInfo } = request.body as { name?: string; contactInfo?: string };
+    const result = await crearAliado({ name: name ?? "", contactInfo: contactInfo ?? "" });
+    const redirectUrl = result.ok
+      ? "/admin/aliados?guardado=1"
+      : `/admin/aliados?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/aliados/:allyId", async (request, reply) => {
+    const { allyId } = request.params as { allyId: string };
+    const { name, contactInfo } = request.body as { name?: string; contactInfo?: string };
+    const result = await guardarAliado(allyId, { name: name ?? "", contactInfo: contactInfo ?? "" });
+    const redirectUrl = result.ok
+      ? "/admin/aliados?guardado=1"
+      : `/admin/aliados?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/aliados/:allyId/activar", async (request, reply) => {
+    const { allyId } = request.params as { allyId: string };
+    await activarAliado(allyId);
+    return reply.status(303).redirect("/admin/aliados?guardado=1");
+  });
+
+  app.post("/admin/aliados/:allyId/desactivar", async (request, reply) => {
+    const { allyId } = request.params as { allyId: string };
+    await desactivarAliado(allyId);
+    return reply.status(303).redirect("/admin/aliados?guardado=1");
+  });
+
+  app.get("/admin/categorias", async (request, reply) => {
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderCategoriasPage(request.admin!, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/categorias", async (request, reply) => {
+    const { name, parentId, sortOrder } = request.body as {
+      name?: string;
+      parentId?: string;
+      sortOrder?: string;
+    };
+    const result = await crearCategoria({
+      name: name ?? "",
+      parentId: parentId ?? "",
+      sortOrder: sortOrder ?? "0",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/categorias?guardado=1"
+      : `/admin/categorias?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/categorias/:categoryId", async (request, reply) => {
+    const { categoryId } = request.params as { categoryId: string };
+    const { name, parentId, sortOrder, complementIds } = request.body as {
+      name?: string;
+      parentId?: string;
+      sortOrder?: string;
+      complementIds?: string | string[];
+    };
+    const complementIdsList = complementIds === undefined ? [] : ([] as string[]).concat(complementIds);
+    const result = await guardarCategoria(categoryId, {
+      name: name ?? "",
+      parentId: parentId ?? "",
+      sortOrder: sortOrder ?? "0",
+      complementIds: complementIdsList,
+    });
+    const redirectUrl = result.ok
+      ? "/admin/categorias?guardado=1"
+      : `/admin/categorias?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/categorias/:categoryId/activar", async (request, reply) => {
+    const { categoryId } = request.params as { categoryId: string };
+    await activarCategoria(categoryId);
+    return reply.status(303).redirect("/admin/categorias?guardado=1");
+  });
+
+  app.post("/admin/categorias/:categoryId/desactivar", async (request, reply) => {
+    const { categoryId } = request.params as { categoryId: string };
+    await desactivarCategoria(categoryId);
+    return reply.status(303).redirect("/admin/categorias?guardado=1");
   });
 
   app.post(

@@ -116,10 +116,10 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 
 **Estimación:** 4 semanas.
 
-**Definición de terminado:**
-- [ ] Los ~300+ productos de prueba de `scripts/seed-catalogo-prueba.ts` migrados sin pérdida a `products`/`product_variants`/`product_categories`, con al menos un caso real de 4 niveles de categoría (el ejemplo "Para motos › Otros para motos › Iluminación › Exploradoras").
-- [ ] `consultar_inventario`, `generar_cotizacion` y `crear_pedido` operando sobre `variant_id` en un flujo de prueba completo (preguntar → cotizar con talla/color → confirmar pedido).
-- [ ] Panel admin permite crear/editar/reordenar nodos del árbol de categorías y asignar un aliado a un producto, sin ningún cambio de código.
+**Definición de terminado:** ✅ completa (PRs #54 y #55, 2026-08-03) — ver [[project_fase14_catalogo_extendido]] en memoria del proyecto para el detalle completo.
+- [x] Los 100 productos/104 variantes de prueba de `scripts/seed-catalogo-prueba.ts` (reescrito, arregla de paso un bug preexistente de `tenant_id`) migrados a `products`/`product_variants`/`product_categories`, con el caso real de 4 niveles de categoría ("Para motos › Otros para motos › Iluminación › Exploradoras") verificado.
+- [x] `consultar_inventario`, `generar_cotizacion` y `crear_pedido` operando sobre `variant_id`; el system prompt instruye preguntar la variante cuando hay ambigüedad, verificado manualmente contra un producto real con 3 variantes de talla.
+- [x] Panel admin (`/admin/categorias`, `/admin/aliados`) permite crear/editar/activar-desactivar nodos del árbol y aliados, marcar categorías complementarias (reemplaza el mapa hardcodeado de `recomendarProducto.ts`), y asignar aliado/categoría a un producto existente desde `/admin/productos` — sin ningún cambio de código, verificado end-to-end.
 
 ---
 

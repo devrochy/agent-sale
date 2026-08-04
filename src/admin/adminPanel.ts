@@ -11,6 +11,22 @@ import {
 } from "./auth/adminsDirectory.js";
 import { hashPassword } from "./auth/passwordHash.js";
 import { env } from "../config/env.js";
+import {
+  createAlly,
+  listAllies,
+  setAllyActive,
+  updateAlly,
+  type AllyRecord,
+} from "../shared/db/alliesDirectory.js";
+import {
+  createCategory,
+  listAllComplementPairs,
+  listCategories,
+  setCategoryActive,
+  setComplements,
+  updateCategory,
+  type CategoryRecord,
+} from "../shared/db/productCategoriesDirectory.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import {
   isLlmRoutingMode,
@@ -70,6 +86,9 @@ const FONT_LINK_HREF =
 const FASE0_META_RESUELTO_SIN_HUMANO = 60; // docs/fase-0-descubrimiento.md, criterio de éxito
 
 interface ProductoRow {
+  product_id: string;
+  ally_id: string;
+  category_id: string | null;
   sku: string;
   name: string;
   category: string | null;
@@ -77,6 +96,46 @@ interface ProductoRow {
   description: string | null;
   image_url: string | null;
   stock: string;
+}
+
+/** Orden de un árbol de categorías por profundidad (DFS, hijos por sort_order) — para <select> indentado y para la tabla de /admin/categorias. */
+function categoryTreeOrder(categories: CategoryRecord[]): { id: string; name: string; depth: number }[] {
+  const byParent = new Map<string | null, CategoryRecord[]>();
+  for (const category of categories) {
+    const siblings = byParent.get(category.parentId) ?? [];
+    siblings.push(category);
+    byParent.set(category.parentId, siblings);
+  }
+  for (const siblings of byParent.values()) {
+    siblings.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }
+
+  const ordered: { id: string; name: string; depth: number }[] = [];
+  const walk = (parentId: string | null, depth: number): void => {
+    for (const category of byParent.get(parentId) ?? []) {
+      ordered.push({ id: category.id, name: category.name, depth });
+      walk(category.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return ordered;
+}
+
+function categoryOptionsHtml(categories: CategoryRecord[], selectedId: string | null): string {
+  const blank = `<option value=""${selectedId === null ? " selected" : ""}>Sin categoría</option>`;
+  const options = categoryTreeOrder(categories)
+    .map(
+      (c) =>
+        `<option value="${c.id}"${c.id === selectedId ? " selected" : ""}>${"— ".repeat(c.depth)}${escapeHtml(c.name)}</option>`,
+    )
+    .join("");
+  return blank + options;
+}
+
+function allyOptionsHtml(allies: AllyRecord[], selectedId: string): string {
+  return allies
+    .map((a) => `<option value="${a.id}"${a.id === selectedId ? " selected" : ""}>${escapeHtml(a.name)}</option>`)
+    .join("");
 }
 
 interface OrderItemJson {
@@ -164,6 +223,12 @@ const ICON_PRODUCTOS =
 const ICON_PEDIDOS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2h8v11.5l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1V2Z"/><path d="M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>';
 
+const ICON_ALIADOS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"/><path d="M10.5 13a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"/><path d="M7.6 6.9 8.9 8.5"/></svg>';
+
+const ICON_CATEGORIAS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.6h3.4v3.4H2.5V3.6Z"/><path d="M10.1 3.6h3.4v3.4h-3.4V3.6Z"/><path d="M2.5 9h3.4v3.4H2.5V9Z"/><path d="M10.1 9h3.4v3.4h-3.4V9Z"/></svg>';
+
 const ICON_RESUMEN =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.3 11.5a5.7 5.7 0 1 1 11.4 0"/><path d="M8 11.5 10.4 6.8"/><circle cx="8" cy="11.5" r="0.9" fill="currentColor" stroke="none"/></svg>';
 
@@ -243,6 +308,8 @@ type ActiveSection =
   | "configuracion"
   | "productos"
   | "pedidos"
+  | "aliados"
+  | "categorias"
   | "colaboradores"
   | "perfil"
   | null;
@@ -335,6 +402,8 @@ function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminR
         <ul class="navgroup__items">
           ${item(`/admin/productos`, "Productos", "productos", ICON_PRODUCTOS)}
           ${item(`/admin/pedidos`, "Pedidos", "pedidos", ICON_PEDIDOS)}
+          ${item(`/admin/aliados`, "Aliados", "aliados", ICON_ALIADOS)}
+          ${item(`/admin/categorias`, "Categorías", "categorias", ICON_CATEGORIAS)}
         </ul>
       </div>
       ${
@@ -680,6 +749,9 @@ table.resizing { cursor: col-resize; user-select: none; }
 .phonerow { display: flex; gap: 8px; max-width: 440px; }
 .phonerow select { flex: 0 0 168px; width: auto; }
 .phonerow input { flex: 1; width: auto; min-width: 0; }
+/* Asignación de aliado/categoría por producto (Fase 14, /admin/productos) — dos selects apilados dentro de la celda, el botón Guardar vive en la columna Acciones vía form="...". */
+.asignarform { display: flex; flex-direction: column; gap: 4px; }
+.asignarform select { width: 100%; font-size: 0.82rem; }
 /* Validación en tiempo real (username/correo/contraseña, ver
    data-validate en el JS): la "luz" reutiliza literalmente los colores de
    estado del tablero (--go/--redline) que ya usa el resto del panel (ver
@@ -2484,23 +2556,28 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
     return null;
   }
 
-  const rows = await withTransaction(async (client) => {
-    // Fase 14: una fila por variante (SKU/precio reales viven en
-    // product_variants, no en products) — el listado agrupado por producto
-    // genérico con sus variantes anidadas es trabajo de la sección de
-    // administración de catálogo (PR 2 de la fase), no de esta vista.
-    const result = await client.query<ProductoRow>(
-      `SELECT pv.sku, p.name, pc.name AS category, pv.price, p.description, p.image_url,
-              COALESCE(i.stock_quantity, 0) AS stock
-       FROM product_variants pv
-       JOIN products p ON p.id = pv.product_id
-       LEFT JOIN product_categories pc ON pc.id = p.category_id
-       LEFT JOIN inventory i ON i.variant_id = pv.id
-       WHERE pv.active = true
-       ORDER BY pc.name, p.name`,
-    );
-    return result.rows;
-  });
+  const [rows, allies, categories] = await Promise.all([
+    withTransaction(async (client) => {
+      // Fase 14: una fila por variante (SKU/precio reales viven en
+      // product_variants, no en products) — agrupar por producto genérico
+      // con variantes anidadas queda para una vista de detalle futura, no
+      // es parte de esta fase.
+      const result = await client.query<ProductoRow>(
+        `SELECT p.id AS product_id, p.ally_id, p.category_id,
+                pv.sku, p.name, pc.name AS category, pv.price, p.description, p.image_url,
+                COALESCE(i.stock_quantity, 0) AS stock
+         FROM product_variants pv
+         JOIN products p ON p.id = pv.product_id
+         LEFT JOIN product_categories pc ON pc.id = p.category_id
+         LEFT JOIN inventory i ON i.variant_id = pv.id
+         WHERE pv.active = true
+         ORDER BY pc.name, p.name`,
+      );
+      return result.rows;
+    }),
+    listAllies(),
+    listCategories(),
+  ]);
 
   const tableRows = rows
     .map((row) => {
@@ -2512,14 +2589,25 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
+      // El formulario de asignación queda scopeado por `product_id`, no
+      // `variant_id` — si el producto tiene varias variantes (varias filas
+      // en esta tabla), guardar desde cualquiera de ellas actualiza el
+      // mismo producto genérico, sin duplicar controles por variante.
+      const asignarFormId = `asignar-${row.product_id}`;
       return `<tr data-search="${escapeHtml(search)}">
         <td>${img}</td>
         <td class="mono">${escapeHtml(row.sku)}</td>
         <td>${escapeHtml(row.name)}</td>
-        <td>${escapeHtml(row.category ?? "")}</td>
         <td class="mono">${formatCOP(row.price)}</td>
         <td class="mono ${stock === 0 ? "stock-cero" : ""}">${stock}</td>
+        <td>
+          <form id="${asignarFormId}" method="POST" action="/admin/productos/${row.product_id}/asignar" class="asignarform">
+            <select name="allyId" aria-label="Aliado">${allyOptionsHtml(allies, row.ally_id)}</select>
+            <select name="categoryId" aria-label="Categoría">${categoryOptionsHtml(categories, row.category_id)}</select>
+          </form>
+        </td>
         <td>${escapeHtml(row.description ?? "")}</td>
+        <td><button type="submit" form="${asignarFormId}" class="btn btn--primary btn--sm">Guardar</button></td>
       </tr>`;
     })
     .join("\n");
@@ -2537,11 +2625,11 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
       </div>
       <table data-resizable-table="productos">
         <colgroup>
-          <col style="width:7%"><col style="width:9%"><col style="width:19%">
-          <col style="width:11%"><col style="width:9%"><col style="width:7%"><col style="width:38%">
+          <col style="width:7%"><col style="width:9%"><col style="width:17%">
+          <col style="width:9%"><col style="width:6%"><col style="width:22%"><col style="width:24%"><col style="width:6%">
         </colgroup>
-        <thead><tr><th>Foto</th><th>SKU</th><th>Nombre</th><th>Categoría</th><th>Precio</th><th>Stock</th><th>Descripción</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Cuando se agreguen productos a la base de datos, van a aparecer acá listos para que el agente los recomiende.")}</td></tr>`}</tbody>
+        <thead><tr><th>Foto</th><th>SKU</th><th>Nombre</th><th>Precio</th><th>Stock</th><th>Aliado / Categoría</th><th>Descripción</th><th>Acciones</th></tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="8">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Cuando se agreguen productos a la base de datos, van a aparecer acá listos para que el agente los recomiende.")}</td></tr>`}</tbody>
       </table>
       <div class="pager" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
@@ -2552,6 +2640,20 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
   `;
 
   return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", admin);
+}
+
+/** Asigna aliado/categoría a un producto existente (Fase 14) — no crea productos ni variantes, solo reasigna las dos FK de `products`. */
+export async function guardarAsignacionProducto(
+  productId: string,
+  input: { allyId: string; categoryId: string },
+): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE products SET ally_id = $1, category_id = $2 WHERE id = $3`, [
+      input.allyId,
+      input.categoryId === "" ? null : input.categoryId,
+      productId,
+    ]);
+  });
 }
 
 export async function renderPedidosPage(admin: AdminRecord): Promise<string | null> {
@@ -2636,6 +2738,334 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
   `;
 
   return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", admin);
+}
+
+/**
+ * Aliados (Fase 14, ver ADR-026) — proveedores externos (ej. "Ramos") a
+ * los que se les puede anclar una promoción exclusiva (Fase 17). El aliado
+ * genérico ("Catálogo propio", sembrado en la migración 0039) también
+ * aparece acá y puede editarse como cualquier otro, pero no tiene un
+ * tratamiento especial en esta vista — desactivarlo no tiene sentido de
+ * negocio real (dejaría sin aliado válido a los productos propios), pero
+ * no se bloquea explícitamente: es una decisión operativa, no una regla
+ * que valga la pena codificar de antemano.
+ */
+export async function renderAliadosPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const allies = await listAllies();
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Cambios guardados.</div>`
+      : "";
+
+  const rows = allies
+    .map((ally) => {
+      const formId = `aliado-${ally.id}`;
+      const estadoChip = ally.active
+        ? '<span class="chip chip--go">Activo</span>'
+        : '<span class="chip chip--redline">Inactivo</span>';
+      const estadoAction = `<form method="POST" action="/admin/aliados/${ally.id}/${ally.active ? "desactivar" : "activar"}">
+        <button type="submit" class="btn ${ally.active ? "btn--danger" : "btn--go"} btn--sm">${ally.active ? "Desactivar" : "Activar"}</button>
+      </form>`;
+
+      return `<tr>
+        <td>
+          <form id="${formId}" method="POST" action="/admin/aliados/${ally.id}">
+            <input type="text" name="name" value="${escapeHtml(ally.name)}" required>
+          </form>
+        </td>
+        <td><input type="text" name="contactInfo" form="${formId}" value="${escapeHtml(ally.contactInfo ?? "")}" placeholder="Teléfono, correo, contacto…"></td>
+        <td>${estadoChip}</td>
+        <td><div class="rowactions"><button type="submit" form="${formId}" class="btn btn--primary btn--sm">Guardar</button>${estadoAction}</div></td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Catálogo</p>
+      <h1>Aliados</h1>
+      <p>Proveedores externos de ${escapeHtml(brandName(tenant))} — se les puede asignar un producto o anclar promociones exclusivas.</p>
+    </div>
+    ${banner}
+    <div class="panel tablewrap">
+      <div class="blockhead blockhead--end">
+        <button type="button" data-open-dialog="nuevo-aliado-dialog" class="btn btn--primary btn--icon" aria-label="Agregar aliado" title="Agregar aliado">${ICON_PLUS}</button>
+      </div>
+      <table>
+        <thead><tr><th>Nombre</th><th>Contacto</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
+      </table>
+    </div>
+    <dialog id="nuevo-aliado-dialog" class="modal">
+      <div class="blockhead"><h2>Nuevo aliado</h2></div>
+      <form method="POST" action="/admin/aliados">
+        <div class="field">
+          <label for="nuevo-aliado-nombre">Nombre</label>
+          <input type="text" id="nuevo-aliado-nombre" name="name" required>
+        </div>
+        <div class="field">
+          <label for="nuevo-aliado-contacto">Contacto</label>
+          <input type="text" id="nuevo-aliado-contacto" name="contactInfo" placeholder="Teléfono, correo, contacto…">
+        </div>
+        <div class="formfoot">
+          <button type="submit" class="btn btn--primary">Crear aliado</button>
+          <button type="button" data-close-dialog="nuevo-aliado-dialog" class="btn btn--ghost">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+  `;
+
+  return layout("Aliados", tenant, body, "aliados", admin);
+}
+
+export async function crearAliado(input: {
+  name: string;
+  contactInfo: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, error: "El nombre del aliado es obligatorio." };
+  }
+  await createAlly(name, input.contactInfo.trim() || null);
+  return { ok: true };
+}
+
+export async function guardarAliado(
+  allyId: string,
+  input: { name: string; contactInfo: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, error: "El nombre del aliado es obligatorio." };
+  }
+  await updateAlly(allyId, { name, contactInfo: input.contactInfo.trim() || null });
+  return { ok: true };
+}
+
+export async function activarAliado(allyId: string): Promise<void> {
+  await setAllyActive(allyId, true);
+}
+
+export async function desactivarAliado(allyId: string): Promise<void> {
+  await setAllyActive(allyId, false);
+}
+
+/** Recorre la cadena de `parentId` hasta la raíz — usado para el breadcrumb de la tabla y para impedir ciclos al reasignar el padre de una categoría. */
+function categoryPath(categories: CategoryRecord[], categoryId: string): string[] {
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  const path: string[] = [];
+  let current = byId.get(categoryId);
+  while (current) {
+    path.unshift(current.name);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return path;
+}
+
+/** `candidateId` es la misma categoría que `ofId`, o una de sus categorías descendientes — impide crear un ciclo en el árbol al reasignar `parent_id`. */
+function isSelfOrDescendant(categories: CategoryRecord[], candidateId: string, ofId: string): boolean {
+  if (candidateId === ofId) {
+    return true;
+  }
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  let current = byId.get(candidateId);
+  while (current?.parentId) {
+    if (current.parentId === ofId) {
+      return true;
+    }
+    current = byId.get(current.parentId);
+  }
+  return false;
+}
+
+/**
+ * Categorías (Fase 14, ver ADR-026) — árbol de profundidad libre. Cada fila
+ * edita nombre/padre/orden/complementarias en un mismo formulario
+ * (`guardarCategoria`), Activar/Desactivar queda como acción aparte (mismo
+ * criterio que Colaboradores/Aliados: el estado no se mezcla con el resto
+ * de los campos editables).
+ */
+export async function renderCategoriasPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const [categories, complementPairs] = await Promise.all([listCategories(), listAllComplementPairs()]);
+
+  const complementsByCategory = new Map<string, string[]>();
+  for (const pair of complementPairs) {
+    const list = complementsByCategory.get(pair.categoryId) ?? [];
+    list.push(pair.complementaryCategoryId);
+    complementsByCategory.set(pair.categoryId, list);
+  }
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Cambios guardados.</div>`
+      : "";
+
+  const treeOrder = categoryTreeOrder(categories);
+  const orderedCategories = treeOrder
+    .map((node) => categories.find((c) => c.id === node.id))
+    .filter((c): c is CategoryRecord => c !== undefined);
+
+  const rows = orderedCategories
+    .map((category) => {
+      const formId = `categoria-${category.id}`;
+      const estadoChip = category.active
+        ? '<span class="chip chip--go">Activa</span>'
+        : '<span class="chip chip--redline">Inactiva</span>';
+      const estadoAction = `<form method="POST" action="/admin/categorias/${category.id}/${category.active ? "desactivar" : "activar"}">
+        <button type="submit" class="btn ${category.active ? "btn--danger" : "btn--go"} btn--sm">${category.active ? "Desactivar" : "Activar"}</button>
+      </form>`;
+
+      const parentOptions = `<option value=""${category.parentId === null ? " selected" : ""}>— Categoría raíz —</option>` +
+        categories
+          .filter((c) => !isSelfOrDescendant(categories, c.id, category.id))
+          .map(
+            (c) =>
+              `<option value="${c.id}"${c.id === category.parentId ? " selected" : ""}>${escapeHtml(categoryPath(categories, c.id).join(" › "))}</option>`,
+          )
+          .join("");
+
+      const selectedComplements = new Set(complementsByCategory.get(category.id) ?? []);
+      const complementOptions = categories
+        .filter((c) => c.id !== category.id)
+        .map(
+          (c) =>
+            `<option value="${c.id}"${selectedComplements.has(c.id) ? " selected" : ""}>${escapeHtml(c.name)}</option>`,
+        )
+        .join("");
+
+      return `<tr>
+        <td class="mono hint">${escapeHtml(categoryPath(categories, category.id).join(" › "))}</td>
+        <td>
+          <form id="${formId}" method="POST" action="/admin/categorias/${category.id}">
+            <input type="text" name="name" value="${escapeHtml(category.name)}" required>
+          </form>
+        </td>
+        <td><select name="parentId" form="${formId}">${parentOptions}</select></td>
+        <td><input type="number" name="sortOrder" form="${formId}" value="${category.sortOrder}" style="width:64px"></td>
+        <td><select name="complementIds" form="${formId}" multiple size="3">${complementOptions}</select></td>
+        <td>${estadoChip}</td>
+        <td><div class="rowactions"><button type="submit" form="${formId}" class="btn btn--primary btn--sm">Guardar</button>${estadoAction}</div></td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const rootParentOptions =
+    `<option value="">— Categoría raíz —</option>` +
+    orderedCategories
+      .map((c) => `<option value="${c.id}">${escapeHtml(categoryPath(categories, c.id).join(" › "))}</option>`)
+      .join("");
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Catálogo</p>
+      <h1>Categorías</h1>
+      <p>Árbol de categorías de ${escapeHtml(brandName(tenant))} — profundidad libre, sin límite de niveles.</p>
+    </div>
+    ${banner}
+    <div class="panel tablewrap">
+      <div class="blockhead blockhead--end">
+        <button type="button" data-open-dialog="nueva-categoria-dialog" class="btn btn--primary btn--icon" aria-label="Agregar categoría" title="Agregar categoría">${ICON_PLUS}</button>
+      </div>
+      <table>
+        <thead><tr><th>Ruta</th><th>Nombre</th><th>Categoría padre</th><th>Orden</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
+      </table>
+    </div>
+    <dialog id="nueva-categoria-dialog" class="modal">
+      <div class="blockhead"><h2>Nueva categoría</h2></div>
+      <form method="POST" action="/admin/categorias">
+        <div class="field">
+          <label for="nueva-categoria-nombre">Nombre</label>
+          <input type="text" id="nueva-categoria-nombre" name="name" required>
+        </div>
+        <div class="field">
+          <label for="nueva-categoria-padre">Categoría padre</label>
+          <select id="nueva-categoria-padre" name="parentId">${rootParentOptions}</select>
+        </div>
+        <div class="field">
+          <label for="nueva-categoria-orden">Orden</label>
+          <input type="number" id="nueva-categoria-orden" name="sortOrder" value="0">
+        </div>
+        <div class="formfoot">
+          <button type="submit" class="btn btn--primary">Crear categoría</button>
+          <button type="button" data-close-dialog="nueva-categoria-dialog" class="btn btn--ghost">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+  `;
+
+  return layout("Categorías", tenant, body, "categorias", admin);
+}
+
+export async function crearCategoria(input: {
+  name: string;
+  parentId: string;
+  sortOrder: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, error: "El nombre de la categoría es obligatorio." };
+  }
+  const sortOrder = Number.parseInt(input.sortOrder, 10);
+  if (!Number.isInteger(sortOrder)) {
+    return { ok: false, error: "El orden debe ser un número entero." };
+  }
+  await createCategory(name, input.parentId === "" ? null : input.parentId, sortOrder);
+  return { ok: true };
+}
+
+export async function guardarCategoria(
+  categoryId: string,
+  input: { name: string; parentId: string; sortOrder: string; complementIds: string[] },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, error: "El nombre de la categoría es obligatorio." };
+  }
+  const sortOrder = Number.parseInt(input.sortOrder, 10);
+  if (!Number.isInteger(sortOrder)) {
+    return { ok: false, error: "El orden debe ser un número entero." };
+  }
+  const parentId = input.parentId === "" ? null : input.parentId;
+  if (parentId !== null) {
+    const categories = await listCategories();
+    if (isSelfOrDescendant(categories, parentId, categoryId)) {
+      return {
+        ok: false,
+        error: "No podés asignar como padre a la misma categoría o a una de sus propias subcategorías.",
+      };
+    }
+  }
+  await updateCategory(categoryId, { name, parentId, sortOrder });
+  await setComplements(categoryId, input.complementIds);
+  return { ok: true };
+}
+
+export async function activarCategoria(categoryId: string): Promise<void> {
+  await setCategoryActive(categoryId, true);
+}
+
+export async function desactivarCategoria(categoryId: string): Promise<void> {
+  await setCategoryActive(categoryId, false);
 }
 
 /**

@@ -1,6 +1,6 @@
 # Fase 14 — Esquema de Catálogo Extendido (Aliados, Categorías Jerárquicas, Variantes)
 
-Estado: **en diseño** (v2)
+Estado: **completa** (PRs #54 y #55, 2026-08-03)
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-14--esquema-de-catálogo-extendido-aliados-categorías-jerárquicas-variantes) · [PROPUESTA_V2.md §3.10, §3.10.1](../../PROPUESTA_V2.md) · [Fase 1 — Arquitectura](../fase-1-arquitectura/README.md) · [Fase 5 — Catálogo e Inventario](../fase-5-catalogo-inventario/README.md) · [Fase 6 — Dominio Comercial](../fase-6-dominio-comercial/README.md)
 
@@ -24,8 +24,10 @@ Es, en palabras de la propia propuesta, "la parte de mayor cambio estructural" d
 
 ## Definición de terminado
 
-- [ ] `allies`, `product_categories` (auto-referenciada) y `product_variants` creadas con migración y backfill verificado sin pérdida de datos sobre el catálogo de prueba (`scripts/seed-catalogo-prueba.ts`), incluyendo un caso real de 4 niveles de categoría.
-- [ ] `consultar_inventario`, `generar_cotizacion` y `crear_pedido` operando sobre `variant_id` en un flujo de prueba de punta a punta.
-- [ ] Panel admin permite administrar el árbol de categorías y asignar aliado a un producto sin tocar código (sección nueva, construida sobre la misma base de componentes del panel que ya existe).
+- [x] `allies`, `product_categories` (auto-referenciada), `category_complements` y `product_variants` creadas (migraciones 0039-0045) con backfill verificado sin pérdida de datos sobre el catálogo de prueba reescrito (`scripts/seed-catalogo-prueba.ts`, 100 productos/104 variantes/22 categorías), incluyendo el caso real de 4 niveles ("Para motos › Otros para motos › Iluminación › Exploradoras").
+- [x] `consultar_inventario`, `generar_cotizacion` y `crear_pedido` operando sobre `variant_id`, verificado manualmente de punta a punta contra un producto real con 3 variantes de talla (agrupación correcta por `product_id`, resolución correcta del `variant_id` elegido).
+- [x] Panel admin (`/admin/aliados`, `/admin/categorias`) permite crear/editar/activar-desactivar aliados y nodos del árbol de categorías, marcar categorías complementarias, y asignar aliado/categoría a un producto existente desde `/admin/productos` — sin tocar código, verificado end-to-end.
+
+Implementado en 2 PRs: [#54](https://github.com/devrochy/agent-sale/pull/54) (esquema + tools de dominio + tests) y [#55](https://github.com/devrochy/agent-sale/pull/55) (panel admin de aliados/categorías).
 
 Siguiente paso: [Fase 15 — Datos de Cliente y Flujo de Pedidos Extendido](../fase-15-datos-cliente-flujo-pedidos/README.md), que depende de este esquema.
