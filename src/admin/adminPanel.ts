@@ -148,8 +148,10 @@ interface OrderItemJson {
 
 interface PedidoRow {
   id: string;
+  public_order_number: string;
   status: string;
   payment_method: string;
+  payment_status: string;
   delivery_method: string;
   total: string;
   created_at: string;
@@ -157,6 +159,8 @@ interface PedidoRow {
   customer_name: string | null;
   delivery_address: string | null;
   delivery_id_document: string | null;
+  tracking_number: string | null;
+  carrier: string | null;
   items: OrderItemJson[];
 }
 
@@ -3852,16 +3856,25 @@ export async function confirmarImportacionCsv(
   return { creados, actualizados, errores };
 }
 
-export async function renderPedidosPage(admin: AdminRecord): Promise<string | null> {
+export async function renderPedidosPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string } = {},
+): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Guía registrada.</div>`
+      : "";
+
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
-      `SELECT o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at,
-              o.delivery_address, o.delivery_id_document,
+      `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
+              o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier,
               c.phone_number, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
@@ -3873,7 +3886,7 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, c.phone_number, c.name
+       GROUP BY o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier, c.phone_number, c.name
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -3889,6 +3902,7 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
           ? `<p class="hint">Entrega a: ${escapeHtml(row.delivery_address ?? "-")} · Cédula ${escapeHtml(row.delivery_id_document ?? "-")}</p>`
           : "";
       const search = [
+        row.public_order_number,
         row.customer_name,
         row.phone_number,
         row.status,
@@ -3899,14 +3913,48 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
+      const pago =
+        row.payment_method === "pago_en_linea"
+          ? `${escapeHtml(row.payment_method)} (${escapeHtml(row.payment_status)})`
+          : escapeHtml(row.payment_method);
+
+      const guiaDialogId = `guia-${row.id}`;
+      let guia: string;
+      if (row.tracking_number) {
+        guia = `<p>${escapeHtml(row.tracking_number)}</p><p class="hint">${escapeHtml(row.carrier ?? "-")}</p>`;
+      } else if (row.delivery_method === "domicilio") {
+        guia = `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost">Registrar guía</button>
+        <dialog id="${guiaDialogId}" class="modal">
+          <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
+          <form method="POST" action="/admin/pedidos/${row.id}/guia">
+            <div class="field">
+              <label for="${guiaDialogId}-tracking">Número de guía</label>
+              <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
+            </div>
+            <div class="field">
+              <label for="${guiaDialogId}-carrier">Transportadora</label>
+              <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
+            </div>
+            <div class="formfoot">
+              <button type="submit" class="btn btn--primary">Registrar guía</button>
+              <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
+            </div>
+          </form>
+        </dialog>`;
+      } else {
+        guia = `<p class="hint">-</p>`;
+      }
+
       return `<tr data-search="${escapeHtml(search)}">
+        <td class="mono">${escapeHtml(row.public_order_number)}</td>
         <td>${escapeHtml(row.customer_name ?? row.phone_number)}</td>
         <td><ul class="items">${items}</ul>${entrega}</td>
         <td>${escapeHtml(row.status)}</td>
-        <td>${escapeHtml(row.payment_method)}</td>
+        <td>${pago}</td>
         <td>${escapeHtml(row.delivery_method)}</td>
         <td class="mono">${formatCOP(row.total)}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
+        <td>${guia}</td>
       </tr>`;
     })
     .join("\n");
@@ -3917,17 +3965,18 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
       <h1>Pedidos</h1>
       <p>${rows.length} pedidos confirmados de ${escapeHtml(brandName(tenant))}.</p>
     </div>
+    ${banner}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
-        <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, producto, estado…" aria-label="Buscar pedidos">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto, estado…" aria-label="Buscar pedidos">
       </div>
       <table data-resizable-table="pedidos">
         <colgroup>
-          <col style="width:15%"><col style="width:28%"><col style="width:11%">
-          <col style="width:14%"><col style="width:14%"><col style="width:9%"><col style="width:9%">
+          <col style="width:8%"><col style="width:18%"><col style="width:20%"><col style="width:9%">
+          <col style="width:12%"><col style="width:11%"><col style="width:8%"><col style="width:8%"><col style="width:6%">
         </colgroup>
-        <thead><tr><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
+        <thead><tr><th>N° pedido</th><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th><th>Guía</th></tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>

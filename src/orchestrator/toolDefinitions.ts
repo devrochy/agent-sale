@@ -151,6 +151,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "consultar_estado_pedido",
+    description:
+      "Responde el estado real de un pedido ya hecho por el cliente, a partir de su número público (formato 'FM-0001'). Llamar cuando el cliente pregunte cómo va su pedido — nunca inventar ni asumir el estado. Si devuelve found:false, pedirle al cliente que confirme el número o avisarle que no se encontró.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        public_order_number: {
+          type: "string",
+          description: "Número público del pedido que menciona el cliente, ej. 'FM-0001' (acepta variantes como 'fm1' o 'FM 0001').",
+        },
+      },
+      required: ["public_order_number"],
+    },
+  },
+  {
     name: "recomendar_producto",
     description:
       "Sugiere productos relacionados o complementarios (ej. guantes para quien compra un casco). Llamar después de que el cliente muestre interés en un producto concreto, para ofrecer venta cruzada relevante.",
