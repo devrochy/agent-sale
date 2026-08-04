@@ -114,7 +114,8 @@ export async function crearPedido(
       conversation_id: string;
       customer_id: string;
       total: string;
-    }>(`SELECT id, conversation_id, customer_id, total FROM quotes WHERE id = $1`, [
+      applied_promotion_id: string | null;
+    }>(`SELECT id, conversation_id, customer_id, total, applied_promotion_id FROM quotes WHERE id = $1`, [
       input.quote_id,
     ]);
     const quote = quoteResult.rows[0];
@@ -302,6 +303,23 @@ export async function crearPedido(
        WHERE oi.order_id = $1 AND i.variant_id = oi.variant_id`,
       [orderId],
     );
+
+    // Cotizar no es comprar: la redención de una campaña `once_per_customer`
+    // (ver Fase 17, aplicarPromocion.ts) recién se registra acá, al
+    // confirmar el pedido — si el cliente cotiza con la campaña aplicada y
+    // no compra, la sigue teniendo disponible.
+    if (quote.applied_promotion_id) {
+      const promo = await client.query<{ type: string; rules: { once_per_customer?: boolean } }>(
+        `SELECT type, rules FROM promotions WHERE id = $1`,
+        [quote.applied_promotion_id],
+      );
+      if (promo.rows[0]?.type === "campaña" && promo.rows[0].rules.once_per_customer) {
+        await client.query(
+          `INSERT INTO promotion_redemptions (promotion_id, customer_id, order_id) VALUES ($1, $2, $3)`,
+          [quote.applied_promotion_id, quote.customer_id, orderId],
+        );
+      }
+    }
 
     return {
       order_id: orderId,
