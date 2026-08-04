@@ -27,6 +27,15 @@ import {
   updateCategory,
   type CategoryRecord,
 } from "../shared/db/productCategoriesDirectory.js";
+import {
+  createProduct,
+  getProductDetail,
+  listProductsSummary,
+  updateProduct,
+  type ProductDetail,
+  type VariantInput,
+  type VariantUpdateInput,
+} from "../shared/db/productsDirectory.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import {
   isLlmRoutingMode,
@@ -84,19 +93,6 @@ const FONT_LINK_HREF =
   "https://fonts.googleapis.com/css2?family=Oxanium:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
 
 const FASE0_META_RESUELTO_SIN_HUMANO = 60; // docs/fase-0-descubrimiento.md, criterio de éxito
-
-interface ProductoRow {
-  product_id: string;
-  ally_id: string;
-  category_id: string | null;
-  sku: string;
-  name: string;
-  category: string | null;
-  price: string;
-  description: string | null;
-  image_url: string | null;
-  stock: string;
-}
 
 /** Orden de un árbol de categorías por profundidad (DFS, hijos por sort_order) — para <select> indentado y para la tabla de /admin/categorias. */
 function categoryTreeOrder(categories: CategoryRecord[]): { id: string; name: string; depth: number }[] {
@@ -750,8 +746,23 @@ table.resizing { cursor: col-resize; user-select: none; }
 .phonerow select { flex: 0 0 168px; width: auto; }
 .phonerow input { flex: 1; width: auto; min-width: 0; }
 /* Asignación de aliado/categoría por producto (Fase 14, /admin/productos) — dos selects apilados dentro de la celda, el botón Guardar vive en la columna Acciones vía form="...". */
-.asignarform { display: flex; flex-direction: column; gap: 4px; }
-.asignarform select { width: 100%; font-size: 0.82rem; }
+/* Modal ancho para el alta/edición de producto (la lista de variantes no entra en los 440px del modal chico) — ver productoDialogHtml. */
+dialog.modal.modal--wide { max-width: 640px; }
+/* Lista dinámica de variantes (SKU/talla/color/precio/stock/activa) del modal de producto — Agregar/Quitar en CLIENT_SCRIPT, sin librería. */
+.variantlist { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.variantrow { display: grid; grid-template-columns: 1.3fr 0.8fr 0.8fr 0.9fr 0.7fr auto auto; gap: 6px; align-items: center; }
+.variantrow input[type="text"], .variantrow input[type="number"] { width: 100%; font-size: 0.82rem; padding: 6px 8px; }
+.variantrow__active { display: flex; align-items: center; gap: 4px; font-size: 0.78rem; white-space: nowrap; }
+/* Edición rápida por doble clic (Productos/Aliados, ver data-dblclick-cell en CLIENT_SCRIPT): el campo se ve como texto plano hasta que se hace doble clic — recién ahí se vuelve un input/select interactivo de verdad. */
+.dblclick-cell input, .dblclick-cell select {
+  width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 4px;
+  pointer-events: none; color: inherit; font: inherit;
+}
+.dblclick-cell.dblclick-active input, .dblclick-cell.dblclick-active select {
+  border-color: var(--border); background: var(--bg); pointer-events: auto;
+}
+.dblclick-cell { cursor: default; }
+.dblclick-cell.dblclick-active { cursor: text; }
 /* Validación en tiempo real (username/correo/contraseña, ver
    data-validate en el JS): la "luz" reutiliza literalmente los colores de
    estado del tablero (--go/--redline) que ya usa el resto del panel (ver
@@ -1268,6 +1279,42 @@ const CLIENT_SCRIPT = `
       var dialog = document.getElementById(btn.getAttribute("data-close-dialog"));
       if (dialog) dialog.close();
     });
+  });
+
+  /* ---------- edición rápida por doble clic (Productos/Aliados, ver .dblclick-cell en STYLE_BLOCK) ---------- */
+  document.querySelectorAll(".dblclick-cell").forEach(function (cell) {
+    cell.addEventListener("dblclick", function () {
+      cell.classList.add("dblclick-active");
+      var field = cell.querySelector("input, select");
+      if (field) field.focus();
+    });
+  });
+
+  /* ---------- variantes dinámicas del modal de producto: agregar/quitar fila ---------- */
+  document.querySelectorAll("[data-add-variant-row]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var dialog = btn.closest("dialog");
+      if (!dialog) return;
+      var template = dialog.querySelector("[data-variant-row-template]");
+      var list = dialog.querySelector("[data-variant-list]");
+      if (!template || !list) return;
+      list.appendChild(template.content.cloneNode(true));
+    });
+  });
+  document.addEventListener("click", function (event) {
+    var removeBtn = event.target.closest && event.target.closest("[data-remove-variant-row]");
+    if (!removeBtn) return;
+    var row = removeBtn.closest("[data-variant-row]");
+    var list = removeBtn.closest("[data-variant-list]");
+    if (row && list && list.querySelectorAll("[data-variant-row]").length > 1) {
+      row.remove();
+    }
+  });
+  document.addEventListener("change", function (event) {
+    if (event.target.matches && event.target.matches("[data-active-toggle]")) {
+      var hidden = event.target.parentElement.querySelector('input[name="active[]"]');
+      if (hidden) hidden.value = event.target.checked ? "true" : "false";
+    }
   });
 
   /* ---------- avatar del Perfil: círculo clickeable -> input file oculto -> data URL ---------- */
@@ -2550,65 +2597,151 @@ export async function renderConexionesPage(admin: AdminRecord): Promise<string |
   return layout("Conexiones", tenant, body, "conexiones", admin);
 }
 
-export async function renderProductosPage(admin: AdminRecord): Promise<string | null> {
+/** Una fila de variante dentro del modal de alta/edición de producto — `variant: null` es una fila en blanco (nueva, del `<template>`); con datos es una variante ya persistida (edición). */
+function variantRowHtml(
+  variant: { id: string; sku: string; attributes: Record<string, unknown>; price: number; stock: number; active: boolean } | null,
+  removable: boolean,
+): string {
+  const talla = variant && typeof variant.attributes.talla === "string" ? variant.attributes.talla : "";
+  const color = variant && typeof variant.attributes.color === "string" ? variant.attributes.color : "";
+  const active = variant ? variant.active : true;
+  const removeBtn = removable
+    ? `<button type="button" class="btn btn--ghost btn--sm" data-remove-variant-row>Quitar</button>`
+    : "";
+  return `<div class="variantrow" data-variant-row>
+    <input type="hidden" name="variantId[]" value="${variant ? escapeHtml(variant.id) : ""}">
+    <input type="text" name="sku[]" value="${variant ? escapeHtml(variant.sku) : ""}" placeholder="SKU" required>
+    <input type="text" name="talla[]" value="${escapeHtml(talla)}" placeholder="Talla (opcional)">
+    <input type="text" name="color[]" value="${escapeHtml(color)}" placeholder="Color (opcional)">
+    <input type="number" name="price[]" value="${variant ? variant.price : ""}" placeholder="Precio" min="0" step="1" required>
+    <input type="number" name="stock[]" value="${variant ? variant.stock : "0"}" placeholder="Stock" min="0" step="1" required>
+    <label class="variantrow__active"><input type="checkbox" data-active-toggle${active ? " checked" : ""}><input type="hidden" name="active[]" value="${active ? "true" : "false"}">Activa</label>
+    ${removeBtn}
+  </div>`;
+}
+
+/**
+ * Modal de alta o edición de producto — un mismo template para ambos casos
+ * (`product: null` = alta, con datos = edición). Trae nombre/descripción/
+ * imagen/aliado/categoría y la lista dinámica de variantes (Agregar/Quitar
+ * en `CLIENT_SCRIPT`, sin librería). El submit va siempre a
+ * `POST /admin/productos/:id` (edición) o `POST /admin/productos` (alta) —
+ * ver `crearProducto`/`guardarProducto`.
+ */
+function productoDialogHtml(
+  dialogId: string,
+  title: string,
+  product: ProductDetail | null,
+  allies: AllyRecord[],
+  categories: CategoryRecord[],
+): string {
+  const action = product ? `/admin/productos/${product.id}` : "/admin/productos";
+  const variantRows = product
+    ? product.variants.map((v) => variantRowHtml(v, false)).join("")
+    : variantRowHtml(null, false);
+
+  return `<dialog id="${dialogId}" class="modal modal--wide">
+    <div class="blockhead"><h2>${escapeHtml(title)}</h2></div>
+    <form method="POST" action="${action}">
+      <div class="field">
+        <label for="${dialogId}-nombre">Nombre</label>
+        <input type="text" id="${dialogId}-nombre" name="name" required value="${product ? escapeHtml(product.name) : ""}">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-descripcion">Descripción</label>
+        <input type="text" id="${dialogId}-descripcion" name="description" value="${escapeHtml(product?.description ?? "")}">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-imagen">Imagen (URL)</label>
+        <input type="text" id="${dialogId}-imagen" name="imageUrl" placeholder="https://…" value="${escapeHtml(product?.imageUrl ?? "")}">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-aliado">Aliado</label>
+        <select id="${dialogId}-aliado" name="allyId">${allyOptionsHtml(allies, product?.allyId ?? allies[0]?.id ?? "")}</select>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-categoria">Categoría</label>
+        <select id="${dialogId}-categoria" name="categoryId">${categoryOptionsHtml(categories, product?.categoryId ?? null)}</select>
+      </div>
+      <div class="field">
+        <label>Variantes</label>
+        <p class="hint">Dejá talla/color vacíos si el producto no tiene variantes reales — igual necesita al menos una fila (SKU/precio/stock).</p>
+        <div class="variantlist" data-variant-list>${variantRows}</div>
+        <template data-variant-row-template>${variantRowHtml(null, true)}</template>
+        <button type="button" class="btn btn--ghost btn--sm" data-add-variant-row>+ Agregar variante</button>
+      </div>
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">${product ? "Guardar cambios" : "Crear producto"}</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+export async function renderProductosPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string; allyId?: string },
+): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const [rows, allies, categories] = await Promise.all([
-    withTransaction(async (client) => {
-      // Fase 14: una fila por variante (SKU/precio reales viven en
-      // product_variants, no en products) — agrupar por producto genérico
-      // con variantes anidadas queda para una vista de detalle futura, no
-      // es parte de esta fase.
-      const result = await client.query<ProductoRow>(
-        `SELECT p.id AS product_id, p.ally_id, p.category_id,
-                pv.sku, p.name, pc.name AS category, pv.price, p.description, p.image_url,
-                COALESCE(i.stock_quantity, 0) AS stock
-         FROM product_variants pv
-         JOIN products p ON p.id = pv.product_id
-         LEFT JOIN product_categories pc ON pc.id = p.category_id
-         LEFT JOIN inventory i ON i.variant_id = pv.id
-         WHERE pv.active = true
-         ORDER BY pc.name, p.name`,
-      );
-      return result.rows;
-    }),
+  const [products, allies, categories] = await Promise.all([
+    listProductsSummary({ allyId: query.allyId }),
     listAllies(),
     listCategories(),
   ]);
+  const productDetails = await Promise.all(products.map((p) => getProductDetail(p.id)));
 
-  const tableRows = rows
-    .map((row) => {
-      const stock = Number(row.stock);
-      const img = row.image_url
-        ? `<img class="thumb" src="${escapeHtml(row.image_url)}" alt="${escapeHtml(row.name)}">`
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Cambios guardados.</div>`
+      : "";
+
+  const filterNotice = query.allyId
+    ? (() => {
+        const ally = allies.find((a) => a.id === query.allyId);
+        return `<p class="hint">Filtrado por aliado: <strong>${escapeHtml(ally?.name ?? "desconocido")}</strong> — <a href="/admin/productos">ver todos</a>.</p>`;
+      })()
+    : "";
+
+  const tableRows = products
+    .map((product, index) => {
+      const img = product.imageUrl
+        ? `<img class="thumb" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}">`
         : "";
-      const search = [row.sku, row.name, row.category, row.description]
+      const search = [product.name, product.categoryName, product.description]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
-      // El formulario de asignación queda scopeado por `product_id`, no
-      // `variant_id` — si el producto tiene varias variantes (varias filas
-      // en esta tabla), guardar desde cualquiera de ellas actualiza el
-      // mismo producto genérico, sin duplicar controles por variante.
-      const asignarFormId = `asignar-${row.product_id}`;
+      const rapidoFormId = `rapido-${product.id}`;
+      const editarDialogId = `editar-producto-${product.id}`;
+      const priceRange =
+        product.minPrice === product.maxPrice
+          ? formatCOP(product.minPrice)
+          : `${formatCOP(product.minPrice)} – ${formatCOP(product.maxPrice)}`;
+      const variantesResumen = `${product.variantCount} ${product.variantCount === 1 ? "variante" : "variantes"} · ${priceRange} · stock ${product.totalStock}`;
+
       return `<tr data-search="${escapeHtml(search)}">
         <td>${img}</td>
-        <td class="mono">${escapeHtml(row.sku)}</td>
-        <td>${escapeHtml(row.name)}</td>
-        <td class="mono">${formatCOP(row.price)}</td>
-        <td class="mono ${stock === 0 ? "stock-cero" : ""}">${stock}</td>
-        <td>
-          <form id="${asignarFormId}" method="POST" action="/admin/productos/${row.product_id}/asignar" class="asignarform">
-            <select name="allyId" aria-label="Aliado">${allyOptionsHtml(allies, row.ally_id)}</select>
-            <select name="categoryId" aria-label="Categoría">${categoryOptionsHtml(categories, row.category_id)}</select>
+        <td class="dblclick-cell">
+          <form id="${rapidoFormId}" method="POST" action="/admin/productos/${product.id}">
+            <input type="hidden" name="imageUrl" value="${escapeHtml(product.imageUrl ?? "")}">
+            <input type="text" name="name" value="${escapeHtml(product.name)}" required>
           </form>
         </td>
-        <td>${escapeHtml(row.description ?? "")}</td>
-        <td><button type="submit" form="${asignarFormId}" class="btn btn--primary btn--sm">Guardar</button></td>
-      </tr>`;
+        <td class="dblclick-cell"><select name="allyId" form="${rapidoFormId}">${allyOptionsHtml(allies, product.allyId)}</select></td>
+        <td class="dblclick-cell"><select name="categoryId" form="${rapidoFormId}">${categoryOptionsHtml(categories, product.categoryId)}</select></td>
+        <td class="mono ${product.totalStock === 0 ? "stock-cero" : ""}">${escapeHtml(variantesResumen)}</td>
+        <td class="dblclick-cell"><input type="text" name="description" form="${rapidoFormId}" value="${escapeHtml(product.description ?? "")}"></td>
+        <td><div class="rowactions">
+          <button type="submit" form="${rapidoFormId}" class="btn btn--primary btn--sm">Guardar</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--sm">Editar</button>
+        </div></td>
+      </tr>
+      ${productoDialogHtml(editarDialogId, `Editar ${product.name}`, productDetails[index] ?? null, allies, categories)}`;
     })
     .join("\n");
 
@@ -2616,20 +2749,23 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
     <div class="pagehead">
       <p class="eyebrow">Catálogo</p>
       <h1>Productos</h1>
-      <p>${rows.length} productos en el catálogo de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${products.length} productos en el catálogo de ${escapeHtml(brandName(tenant))}.</p>
+      ${filterNotice}
     </div>
+    ${banner}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
-        <input type="search" class="searchbox" data-table-search placeholder="Buscar por SKU, nombre, categoría o descripción…" aria-label="Buscar productos">
-        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por nombre, categoría o descripción…" aria-label="Buscar productos">
+        <span class="hint tabular"><span data-table-count>${products.length}</span> de ${products.length}</span>
+        <button type="button" data-open-dialog="nuevo-producto-dialog" class="btn btn--primary btn--icon" aria-label="Agregar producto" title="Agregar producto">${ICON_PLUS}</button>
       </div>
       <table data-resizable-table="productos">
         <colgroup>
-          <col style="width:7%"><col style="width:9%"><col style="width:17%">
-          <col style="width:9%"><col style="width:6%"><col style="width:22%"><col style="width:24%"><col style="width:6%">
+          <col style="width:7%"><col style="width:17%"><col style="width:14%">
+          <col style="width:14%"><col style="width:20%"><col style="width:20%"><col style="width:8%">
         </colgroup>
-        <thead><tr><th>Foto</th><th>SKU</th><th>Nombre</th><th>Precio</th><th>Stock</th><th>Aliado / Categoría</th><th>Descripción</th><th>Acciones</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="8">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Cuando se agreguen productos a la base de datos, van a aparecer acá listos para que el agente los recomiende.")}</td></tr>`}</tbody>
+        <thead><tr><th>Foto</th><th>Nombre</th><th>Aliado</th><th>Categoría</th><th>Variantes</th><th>Descripción</th><th>Acciones</th></tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
       <div class="pager" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
@@ -2637,23 +2773,179 @@ export async function renderProductosPage(admin: AdminRecord): Promise<string | 
         <button type="button" data-table-next aria-label="Página siguiente">›</button>
       </div>
     </div>
+    ${productoDialogHtml("nuevo-producto-dialog", "Nuevo producto", null, allies, categories)}
   `;
 
-  return layout(`Catálogo (${rows.length} productos)`, tenant, body, "productos", admin);
+  return layout(`Catálogo (${products.length} productos)`, tenant, body, "productos", admin);
 }
 
-/** Asigna aliado/categoría a un producto existente (Fase 14) — no crea productos ni variantes, solo reasigna las dos FK de `products`. */
-export async function guardarAsignacionProducto(
+function parseVariantInputs(body: Record<string, string | string[] | undefined>): {
+  variantId: string;
+  sku: string;
+  price: string;
+  stock: string;
+  talla: string;
+  color: string;
+  active: string;
+}[] {
+  const toArray = (value: string | string[] | undefined): string[] =>
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const skus = toArray(body["sku[]"]);
+  const variantIds = toArray(body["variantId[]"]);
+  const prices = toArray(body["price[]"]);
+  const stocks = toArray(body["stock[]"]);
+  const tallas = toArray(body["talla[]"]);
+  const colors = toArray(body["color[]"]);
+  const actives = toArray(body["active[]"]);
+
+  return skus.map((sku, i) => ({
+    variantId: variantIds[i] ?? "",
+    sku,
+    price: prices[i] ?? "",
+    stock: stocks[i] ?? "",
+    talla: tallas[i] ?? "",
+    color: colors[i] ?? "",
+    active: actives[i] ?? "true",
+  }));
+}
+
+function buildVariantAttributes(talla: string, color: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  if (talla.trim() !== "") {
+    attributes.talla = talla.trim();
+  }
+  if (color.trim() !== "") {
+    attributes.color = color.trim();
+  }
+  return attributes;
+}
+
+/** Mensaje específico si el SKU ya está en uso (`product_variants_sku_key`) — genérico para cualquier otro error de base. */
+function productUniqueViolationMessage(error: unknown): string {
+  const pgError = error instanceof Error ? (error as { code?: string; constraint?: string }) : undefined;
+  if (pgError?.code === "23505" && pgError.constraint === "product_variants_sku_key") {
+    return "Ya existe una variante con ese SKU — usá uno distinto.";
+  }
+  return "No se pudo guardar el producto.";
+}
+
+export async function crearProducto(input: {
+  name: string;
+  description: string;
+  imageUrl: string;
+  allyId: string;
+  categoryId: string;
+  variants: Record<string, string | string[] | undefined>;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, error: "El nombre del producto es obligatorio." };
+  }
+  if (!input.allyId) {
+    return { ok: false, error: "Elegí un aliado." };
+  }
+
+  const parsedVariants = parseVariantInputs(input.variants);
+  if (parsedVariants.length === 0) {
+    return { ok: false, error: "El producto necesita al menos una variante (SKU, precio y stock)." };
+  }
+
+  const variants: VariantInput[] = [];
+  for (const v of parsedVariants) {
+    if (!v.sku.trim()) {
+      return { ok: false, error: "Cada variante necesita un SKU." };
+    }
+    const price = Number.parseFloat(v.price);
+    const stock = Number.parseInt(v.stock, 10);
+    if (!Number.isFinite(price) || price < 0) {
+      return { ok: false, error: `Precio inválido para el SKU ${v.sku}.` };
+    }
+    if (!Number.isInteger(stock) || stock < 0) {
+      return { ok: false, error: `Stock inválido para el SKU ${v.sku}.` };
+    }
+    variants.push({ sku: v.sku.trim(), attributes: buildVariantAttributes(v.talla, v.color), price, stock });
+  }
+
+  try {
+    await createProduct({
+      name,
+      description: input.description.trim() || null,
+      imageUrl: input.imageUrl.trim() || null,
+      allyId: input.allyId,
+      categoryId: input.categoryId === "" ? null : input.categoryId,
+      variants,
+    });
+  } catch (error) {
+    return { ok: false, error: productUniqueViolationMessage(error) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Guarda un producto existente — usado tanto por la edición rápida por
+ * doble clic (nombre/aliado/categoría/descripción, sin variantes en el
+ * form) como por el modal completo (todos los campos + variantes). A
+ * diferencia de `crearProducto`, acá **no** se exige al menos una
+ * variante: un array vacío significa "esta vez no se tocan variantes",
+ * nunca "borrar todas" (las variantes solo se desactivan explícitamente
+ * desde el modal, nunca se eliminan).
+ */
+export async function guardarProducto(
   productId: string,
-  input: { allyId: string; categoryId: string },
-): Promise<void> {
-  await withTransaction(async (client) => {
-    await client.query(`UPDATE products SET ally_id = $1, category_id = $2 WHERE id = $3`, [
-      input.allyId,
-      input.categoryId === "" ? null : input.categoryId,
-      productId,
-    ]);
-  });
+  input: {
+    name: string;
+    description: string;
+    imageUrl: string;
+    allyId: string;
+    categoryId: string;
+    variants: Record<string, string | string[] | undefined>;
+  },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const name = input.name.trim();
+  if (!name) {
+    return { ok: false, error: "El nombre del producto es obligatorio." };
+  }
+  if (!input.allyId) {
+    return { ok: false, error: "Elegí un aliado." };
+  }
+
+  const parsedVariants = parseVariantInputs(input.variants);
+  const variants: VariantUpdateInput[] = [];
+  for (const v of parsedVariants) {
+    if (!v.sku.trim()) {
+      return { ok: false, error: "Cada variante necesita un SKU." };
+    }
+    const price = Number.parseFloat(v.price);
+    const stock = Number.parseInt(v.stock, 10);
+    if (!Number.isFinite(price) || price < 0) {
+      return { ok: false, error: `Precio inválido para el SKU ${v.sku}.` };
+    }
+    if (!Number.isInteger(stock) || stock < 0) {
+      return { ok: false, error: `Stock inválido para el SKU ${v.sku}.` };
+    }
+    variants.push({
+      id: v.variantId === "" ? null : v.variantId,
+      sku: v.sku.trim(),
+      attributes: buildVariantAttributes(v.talla, v.color),
+      price,
+      stock,
+      active: v.active === "true",
+    });
+  }
+
+  try {
+    await updateProduct(productId, {
+      name,
+      description: input.description.trim() || null,
+      imageUrl: input.imageUrl.trim() || null,
+      allyId: input.allyId,
+      categoryId: input.categoryId === "" ? null : input.categoryId,
+      variants,
+    });
+  } catch (error) {
+    return { ok: false, error: productUniqueViolationMessage(error) };
+  }
+  return { ok: true };
 }
 
 export async function renderPedidosPage(admin: AdminRecord): Promise<string | null> {
@@ -2767,9 +3059,20 @@ export async function renderAliadosPage(
       ? `<div class="banner banner--ok">Cambios guardados.</div>`
       : "";
 
+  const allyDialogFields = (dialogId: string, name: string, contactInfo: string): string => `
+        <div class="field">
+          <label for="${dialogId}-nombre">Nombre</label>
+          <input type="text" id="${dialogId}-nombre" name="name" required value="${escapeHtml(name)}">
+        </div>
+        <div class="field">
+          <label for="${dialogId}-contacto">Contacto</label>
+          <input type="text" id="${dialogId}-contacto" name="contactInfo" placeholder="Teléfono, correo, contacto…" value="${escapeHtml(contactInfo)}">
+        </div>`;
+
   const rows = allies
     .map((ally) => {
       const formId = `aliado-${ally.id}`;
+      const editarDialogId = `editar-aliado-${ally.id}`;
       const estadoChip = ally.active
         ? '<span class="chip chip--go">Activo</span>'
         : '<span class="chip chip--redline">Inactivo</span>';
@@ -2778,15 +3081,30 @@ export async function renderAliadosPage(
       </form>`;
 
       return `<tr>
-        <td>
+        <td class="dblclick-cell">
           <form id="${formId}" method="POST" action="/admin/aliados/${ally.id}">
             <input type="text" name="name" value="${escapeHtml(ally.name)}" required>
           </form>
         </td>
-        <td><input type="text" name="contactInfo" form="${formId}" value="${escapeHtml(ally.contactInfo ?? "")}" placeholder="Teléfono, correo, contacto…"></td>
+        <td class="dblclick-cell"><input type="text" name="contactInfo" form="${formId}" value="${escapeHtml(ally.contactInfo ?? "")}" placeholder="Teléfono, correo, contacto…"></td>
+        <td><a href="/admin/productos?allyId=${ally.id}">Ver productos</a></td>
         <td>${estadoChip}</td>
-        <td><div class="rowactions"><button type="submit" form="${formId}" class="btn btn--primary btn--sm">Guardar</button>${estadoAction}</div></td>
-      </tr>`;
+        <td><div class="rowactions">
+          <button type="submit" form="${formId}" class="btn btn--primary btn--sm">Guardar</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--sm">Editar</button>
+          ${estadoAction}
+        </div></td>
+      </tr>
+      <dialog id="${editarDialogId}" class="modal">
+        <div class="blockhead"><h2>Editar ${escapeHtml(ally.name)}</h2></div>
+        <form method="POST" action="/admin/aliados/${ally.id}">
+          ${allyDialogFields(editarDialogId, ally.name, ally.contactInfo ?? "")}
+          <div class="formfoot">
+            <button type="submit" class="btn btn--primary">Guardar cambios</button>
+            <button type="button" data-close-dialog="${editarDialogId}" class="btn btn--ghost">Cancelar</button>
+          </div>
+        </form>
+      </dialog>`;
     })
     .join("\n");
 
@@ -2802,21 +3120,14 @@ export async function renderAliadosPage(
         <button type="button" data-open-dialog="nuevo-aliado-dialog" class="btn btn--primary btn--icon" aria-label="Agregar aliado" title="Agregar aliado">${ICON_PLUS}</button>
       </div>
       <table>
-        <thead><tr><th>Nombre</th><th>Contacto</th><th>Estado</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
+        <thead><tr><th>Nombre</th><th>Contacto</th><th>Productos</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
     </div>
     <dialog id="nuevo-aliado-dialog" class="modal">
       <div class="blockhead"><h2>Nuevo aliado</h2></div>
       <form method="POST" action="/admin/aliados">
-        <div class="field">
-          <label for="nuevo-aliado-nombre">Nombre</label>
-          <input type="text" id="nuevo-aliado-nombre" name="name" required>
-        </div>
-        <div class="field">
-          <label for="nuevo-aliado-contacto">Contacto</label>
-          <input type="text" id="nuevo-aliado-contacto" name="contactInfo" placeholder="Teléfono, correo, contacto…">
-        </div>
+        ${allyDialogFields("nuevo-aliado", "", "")}
         <div class="formfoot">
           <button type="submit" class="btn btn--primary">Crear aliado</button>
           <button type="button" data-close-dialog="nuevo-aliado-dialog" class="btn btn--ghost">Cancelar</button>
