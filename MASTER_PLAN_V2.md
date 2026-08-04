@@ -6,7 +6,9 @@ Este documento es la continuación de [`MASTER_PLAN.md`](./MASTER_PLAN.md) (Fase
 
 **Vigente durante todo este documento: instrucción 5 de `PROPUESTA_V2.md`.** Nada de `MASTER_PLAN.md` ni de `docs/fase-0-*` a `docs/fase-12-*` se edita en esta etapa. Este documento y las carpetas `docs/fase-13-*` en adelante son la única superficie de escritura de v2. Cuando el negocio confirme que v2 pasa a producción, este documento se fusiona con `MASTER_PLAN.md` (numeración continua, sin rastro de "v1"/"v2") siguiendo el criterio de la sección 5 de `PROPUESTA_V2.md`.
 
-Las decisiones de arquitectura de v1 que este documento **mantiene sin cambios** (no se reabren): monolito modular, RLS multi-tenant desde la primera tabla, tool calling con validación estricta contra Postgres, pgvector dentro de Postgres, `node-cron` en proceso para jobs programados (ADR-018), escalamiento por máquina de estados explícita, idempotencia/auditoría/observabilidad desde el diseño. Toda fase nueva de v2 se construye sobre estas mismas decisiones.
+Las decisiones de arquitectura de v1 que este documento **mantiene sin cambios** (no se reabren): monolito modular, tool calling con validación estricta contra Postgres, pgvector dentro de Postgres, `node-cron` en proceso para jobs programados (ADR-018), escalamiento por máquina de estados explícita, idempotencia/auditoría/observabilidad desde el diseño. Toda fase nueva de v2 se construye sobre estas mismas decisiones.
+
+**Corrección post-Fase 13 (ADR-032, 2026-08-03):** este documento originalmente listaba "RLS multi-tenant desde la primera tabla" como decisión que no se reabre. Se reabrió: al implementar la Fase 13 quedó en evidencia que agent-sale sirve un solo negocio (ForMotos), no varios, y el propio código ya lo asumía en varios puntos. ADR-032 supera formalmente a ADR-004 — se retiró RLS y `tenant_id` de las 17 tablas de negocio + 4 de tokens; `tenants` se renombró a `settings` (tabla singleton). **Toda mención a "por tenant"/`tenantId` en las Fases 14-22 de este documento (redactadas antes de ADR-032) queda obsoleta** — las fases siguientes parten del esquema mono-tenant ya vigente, sin columna `tenant_id` en ninguna tabla nueva.
 
 ---
 
@@ -64,17 +66,19 @@ Esto también cambia el punto de partida de varios bloques de la propuesta: el b
 
 ---
 
-## Fase 13 — Autenticación Real, Roles de Colaborador y Notificaciones Administrativas
+## Fase 13 — Autenticación Real, Roles de Colaborador y Notificaciones Administrativas — ✅ COMPLETA (mergeada a `develop`, PRs #52/#53, 2026-08-03)
 
-**Objetivo:** Reemplazar el Basic Auth global (ADR-015) por login individual con sesiones, una tabla de administradores con permisos granulares, y extender las notificaciones/reportes existentes (Fase 12.2, ADR-024) para que respeten esos permisos en vez de un único destinatario fijo por tenant.
+**Objetivo:** Reemplazar el Basic Auth global (ADR-015) por login individual con sesiones, una tabla de administradores con permisos granulares, y extender las notificaciones/reportes existentes (Fase 12.2, ADR-024) para que respeten esos permisos en vez de un único destinatario fijo.
 
 **Entregables:**
-- Tabla `admins` (por tenant): email, hash de contraseña, rol (`master`/`colaborador`), activo/inactivo.
-- Tabla `admin_permissions` (o columna `jsonb` de permisos, a decidir en ADR-025): `recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`.
-- Login con sesión (cookie firmada), reemplazando el hook de Basic Auth de `src/gateway/server.ts:59-69` para rutas `/admin/*`.
-- Sección "Colaboradores" (`GET/POST /admin/:tenantId/colaboradores`): el administrador *master* crea/activa/desactiva cuentas y asigna permisos.
-- `dailyReport.ts` y las notificaciones de pago de ADR-024 leen la lista de administradores con el permiso correspondiente, no `tenants.report_recipient_phone` como destinatario único.
-- ADR-025: alcance de autenticación real y modelo de permisos (reemplaza el criterio "diferido" de ADR-015, documentando por qué el disparador ya se activó).
+- Tabla `admins`: email, `username` (único, 5-32 caracteres), `avatar_data` (data URL base64), `phone` (único), hash de contraseña, rol (`master`/`colaborador`), activo/inactivo.
+- Tabla `admin_permissions` (resuelto en ADR-025: tabla propia con columnas booleanas, no `jsonb`): `recibe_reporte_diario`, `recibe_tickets`, `recibe_notificacion_pagos`.
+- Login con sesión (cookie firmada) en `/login`, reemplazando el Basic Auth global. **Ampliado sobre el alcance original**: login combinado por username O correo (`findAdminByUsernameOrEmail`), no solo correo.
+- Sección "Colaboradores" (`/admin/colaboradores`, sin `tenantId` desde ADR-032): el administrador *master* crea/activa/desactiva cuentas y asigna permisos vía un `<dialog>` nativo; tabla con columna "Acciones" (Guardar permisos + Activar/Desactivar coloreado).
+- `dailyReport.ts` y las notificaciones de pago de `wompiWebhookHandler.ts` leen `resolveNotificationRecipients()` (lista de administradores con el permiso correspondiente), con `settings.report_recipient_phone` como fallback solo si ningún admin tiene el permiso marcado.
+- ADR-025: alcance de autenticación real y modelo de permisos.
+- **Fuera del alcance original, agregado a pedido explícito tras probar lo anterior** ("Fase 13 v2"): sección "Perfil" (`/admin/perfil`) para editar username/correo/teléfono/avatar propios (master y colaborador por igual); menú de cuenta en el pie del nav rail ("Editar perfil"/"Cerrar sesión"); validación en tiempo real de username/email/password + chequeo de disponibilidad de username al salir del campo; teléfono como selector de prefijo de país + número (Colombia por defecto); "Reporte del asistente" parametrizable (diario/semanal/mensual/personalizado, en vez de fijo diario). Ver [[project_retiro_multitenancy_perfil]] para el detalle completo.
+- **No estaba planeado y se ejecutó dentro de esta misma rama de trabajo**: retiro completo de multi-tenancy (ADR-032, ver corrección al inicio de este documento) — surgió al implementar el login (`/admin/:tenantId/login` no tenía sentido para un solo negocio).
 
 **Dependencias:** Ninguna de v2 (fase base). De v1: reabre el punto que **ADR-015** dejó pendiente para "la Fase 10 real".
 
@@ -83,9 +87,9 @@ Esto también cambia el punto de partida de varios bloques de la propuesta: el b
 **Estimación:** 3 semanas.
 
 **Definición de terminado:**
-- [ ] Ningún acceso a `/admin/*` funciona ya con la credencial Basic Auth global; login individual obligatorio.
-- [ ] Un administrador *master* puede desactivar a un colaborador y esa cuenta pierde acceso de inmediato (sesión invalidada, no solo bloqueo de login futuro).
-- [ ] El reporte diario y la notificación de pago aprobado llegan solo a los administradores con el permiso correspondiente activo, verificado con al menos 2 administradores de prueba con permisos distintos.
+- [x] Ningún acceso a `/admin/*` funciona ya con la credencial Basic Auth global; login individual obligatorio.
+- [x] Un administrador *master* puede desactivar a un colaborador y esa cuenta pierde acceso de inmediato (`session.ts` valida `admins.active` en cada request contra la fila fresca, no solo al momento del login).
+- [x] El reporte diario y la notificación de pago aprobado llegan solo a los administradores con el permiso correspondiente activo (`resolveNotificationRecipients`, con tests de integración en `dailyReport.test.ts` y `wompiWebhook.test.ts`).
 
 ### Nota de alcance frente a la Fase 10 original
 
@@ -98,7 +102,7 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 **Objetivo:** Reemplazar `products.category` (texto plano) por un árbol de categorías de profundidad libre, introducir `allies` como entidad propia, y separar el producto genérico de sus variantes concretas (SKU/precio/stock), migrando los contratos de las tools que hoy referencian `product_id` directamente.
 
 **Entregables:**
-- Tabla `allies` (`id`, `tenant_id`, `name`, `contact_info`, `active`).
+- Tabla `allies` (`id`, `name`, `contact_info`, `active`) — sin `tenant_id` (ADR-032, ver corrección al inicio de este documento).
 - Tabla `product_categories` auto-referenciada (`parent_id`), con sección nueva en el panel para administrar el árbol sin tocar código.
 - Tabla `product_variants` (`product_id`, `sku`, `attributes jsonb`, `price`, `active`); `products` pierde `sku`/`price` propios y gana `ally_id`, `category_id`, `has_variants`.
 - Migración de `inventory.product_id`, `quote_items.product_id`, `order_items.product_id` → `*.variant_id`, con script de backfill (todo producto existente recibe una variante "default" sin atributos, preservando SKU/precio/stock actuales — cero pérdida de datos).

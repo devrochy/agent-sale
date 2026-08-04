@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { aplicarPromocion } from "../../../src/domains/commerce/aplicarPromocion.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
+import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
@@ -22,9 +23,13 @@ let customerB: string;
 let conversationC: string;
 let customerC: string;
 let productA: string;
+let variantA: string;
 let productB: string;
+let variantB: string;
 let productC: string;
+let variantC: string;
 let productGuantesC: string;
+let variantGuantesC: string;
 
 async function seedContext(phone: string) {
   const customer = await adminPool.query<{ id: string }>(
@@ -51,33 +56,21 @@ beforeAll(async () => {
   customerC = c.customerId;
   conversationC = c.conversationId;
 
-  const prodA = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('CASCO-PROMO-A', 'Casco promo A', 100000) RETURNING id`,
-  );
-  productA = prodA.rows[0]!.id;
-  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 100)`, [
-    productA,
-  ]);
+  const prodA = await seedProduct(adminPool, { sku: "CASCO-PROMO-A", name: "Casco promo A", price: 100000, stock: 100 });
+  productA = prodA.productId;
+  variantA = prodA.variantId;
 
-  const prodB = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('CASCO-PROMO-B', 'Casco promo B', 100000) RETURNING id`,
-  );
-  productB = prodB.rows[0]!.id;
-  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 100)`, [
-    productB,
-  ]);
+  const prodB = await seedProduct(adminPool, { sku: "CASCO-PROMO-B", name: "Casco promo B", price: 100000, stock: 100 });
+  productB = prodB.productId;
+  variantB = prodB.variantId;
 
-  const prodC = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('CASCO-PROMO-C', 'Casco promo C', 100000) RETURNING id`,
-  );
-  productC = prodC.rows[0]!.id;
-  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 100)`, [
-    productC,
-  ]);
-  const guantesC = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('GUANTES-C', 'Guantes regalo', 20000) RETURNING id`,
-  );
-  productGuantesC = guantesC.rows[0]!.id;
+  const prodC = await seedProduct(adminPool, { sku: "CASCO-PROMO-C", name: "Casco promo C", price: 100000, stock: 100 });
+  productC = prodC.productId;
+  variantC = prodC.variantId;
+
+  const guantesC = await seedProduct(adminPool, { sku: "GUANTES-C", name: "Guantes regalo", price: 20000, stock: 100 });
+  productGuantesC = guantesC.productId;
+  variantGuantesC = guantesC.variantId;
 });
 
 afterAll(async () => {
@@ -89,8 +82,9 @@ afterAll(async () => {
     [conversationIds],
   );
   await adminPool.query(`DELETE FROM quotes WHERE conversation_id = ANY($1)`, [conversationIds]);
-  await adminPool.query(`DELETE FROM inventory WHERE product_id = ANY($1)`, [productIds]);
-  await adminPool.query(`DELETE FROM products WHERE id = ANY($1)`, [productIds]);
+  for (const productId of productIds) {
+    await deleteProduct(adminPool, productId);
+  }
   await adminPool.query(`DELETE FROM conversations WHERE id = ANY($1)`, [conversationIds]);
   await adminPool.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
   await adminPool.end();
@@ -130,7 +124,7 @@ describe("aplicarPromocion", () => {
 
     it("aplica la promoción de temporada cuando da mayor beneficio que la de volumen", async () => {
       const quote = await generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: productA, quantity: 15 }],
+        items: [{ variant_id: variantA, quantity: 15 }],
       });
 
       const result = await aplicarPromocion({ quote_id: quote.quote_id });
@@ -143,7 +137,7 @@ describe("aplicarPromocion", () => {
 
     it("aplica la promoción de volumen cuando da mayor beneficio que la de temporada", async () => {
       const quote = await generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: productA, quantity: 35 }],
+        items: [{ variant_id: variantA, quantity: 35 }],
       });
 
       const result = await aplicarPromocion({ quote_id: quote.quote_id });
@@ -155,7 +149,7 @@ describe("aplicarPromocion", () => {
 
     it("no combina promociones: nunca aplica ambas a la vez", async () => {
       const quote = await generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: productA, quantity: 15 }],
+        items: [{ variant_id: variantA, quantity: 15 }],
       });
 
       const result = await aplicarPromocion({ quote_id: quote.quote_id });
@@ -169,7 +163,7 @@ describe("aplicarPromocion", () => {
   describe("sin ninguna promoción activa", () => {
     it("devuelve promotion_applied null", async () => {
       const quote = await generarCotizacion(conversationB, customerB, {
-        items: [{ product_id: productB, quantity: 15 }],
+        items: [{ variant_id: variantB, quantity: 15 }],
       });
 
       const result = await aplicarPromocion({ quote_id: quote.quote_id });
@@ -198,7 +192,7 @@ describe("aplicarPromocion", () => {
 
     it("agrega el producto de regalo a la cotización cuando la promoción es 'producto gratis'", async () => {
       const quote = await generarCotizacion(conversationC, customerC, {
-        items: [{ product_id: productC, quantity: 3 }],
+        items: [{ variant_id: variantC, quantity: 3 }],
       });
 
       const result = await aplicarPromocion({ quote_id: quote.quote_id });
@@ -208,8 +202,8 @@ describe("aplicarPromocion", () => {
       expect(result.total).toBe(300000);
 
       const items = await adminPool.query(
-        `SELECT product_id, quantity, unit_price FROM quote_items WHERE quote_id = $1 AND product_id = $2`,
-        [quote.quote_id, productGuantesC],
+        `SELECT variant_id, quantity, unit_price FROM quote_items WHERE quote_id = $1 AND variant_id = $2`,
+        [quote.quote_id, variantGuantesC],
       );
       expect(items.rows).toHaveLength(1);
       expect(items.rows[0]).toMatchObject({ quantity: 1, unit_price: "0.00" });

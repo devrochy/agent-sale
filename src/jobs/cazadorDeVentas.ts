@@ -51,7 +51,8 @@ async function fetchQuoteItems(quoteId: string): Promise<QuoteItemRow[]> {
     const result = await client.query<QuoteItemRow>(
       `SELECT p.name, qi.quantity
        FROM quote_items qi
-       JOIN products p ON p.id = qi.product_id
+       JOIN product_variants pv ON pv.id = qi.variant_id
+       JOIN products p ON p.id = pv.product_id
        WHERE qi.quote_id = $1
        ORDER BY p.name`,
       [quoteId],

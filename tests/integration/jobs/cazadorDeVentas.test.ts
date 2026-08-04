@@ -9,11 +9,13 @@ vi.mock("../../../src/gateway/sendMessage.js", () => ({
 import { getWhatsAppMessageStatus, sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import { runCazadorDeVentas } from "../../../src/jobs/cazadorDeVentas.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
+import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
 let productId: string;
+let variantId: string;
 
 const PHONES = {
   valido: "whatsapp:+573010000001",
@@ -70,8 +72,8 @@ async function seedCase(
   const quoteId = quote.rows[0]!.id;
 
   await adminPool.query(
-    `INSERT INTO quote_items (quote_id, product_id, quantity, unit_price) VALUES ($1, $2, 1, 50000)`,
-    [quoteId, productId],
+    `INSERT INTO quote_items (quote_id, variant_id, quantity, unit_price) VALUES ($1, $2, 1, 50000)`,
+    [quoteId, variantId],
   );
 
   if (opts.withOrder) {
@@ -87,10 +89,14 @@ async function seedCase(
 }
 
 beforeAll(async () => {
-  const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('CV-1', 'Guantes de prueba', 50000) RETURNING id`,
-  );
-  productId = product.rows[0]!.id;
+  const product = await seedProduct(adminPool, {
+    sku: "CV-1",
+    name: "Guantes de prueba",
+    price: 50000,
+    stock: 0,
+  });
+  productId = product.productId;
+  variantId = product.variantId;
 
   setups.valido = await seedCase("valido", { quoteAgeHours: 5, lastCustomerMessageHoursAgo: 2 });
   setups.conPedido = await seedCase("conPedido", {
@@ -160,7 +166,7 @@ afterAll(async () => {
     [phones],
   );
   await adminPool.query(`DELETE FROM customers WHERE phone_number = ANY($1)`, [phones]);
-  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productId]);
+  await deleteProduct(adminPool, productId);
   await adminPool.end();
   await appPool.end();
 });

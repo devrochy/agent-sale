@@ -120,20 +120,23 @@ export async function aplicarPromocion(input: AplicarPromocionInput): Promise<Ap
             };
           }
         } else {
-          const freeProduct = await client.query<{ name: string; price: string }>(
-            `SELECT name, price FROM products WHERE sku = $1`,
+          const freeVariant = await client.query<{ name: string; price: string }>(
+            `SELECT p.name, pv.price
+             FROM product_variants pv
+             JOIN products p ON p.id = pv.product_id
+             WHERE pv.sku = $1 AND pv.active = true`,
             [tier.free_item_sku],
           );
-          const product = freeProduct.rows[0];
-          if (!product) {
+          const variant = freeVariant.rows[0];
+          if (!variant) {
             continue;
           }
-          const benefitValue = Number(product.price);
+          const benefitValue = Number(variant.price);
           if (!best || benefitValue > best.benefitValue) {
             best = {
               id: promo.id,
               kind: "volumen",
-              description: `Producto gratis por volumen: ${product.name}`,
+              description: `Producto gratis por volumen: ${variant.name}`,
               benefitValue,
               monetaryDiscount: 0,
               freeItemSku: tier.free_item_sku,
@@ -174,14 +177,14 @@ export async function aplicarPromocion(input: AplicarPromocionInput): Promise<Ap
     ]);
 
     if (best.freeItemSku) {
-      const freeProduct = await client.query<{ id: string }>(
-        `SELECT id FROM products WHERE sku = $1`,
+      const freeVariant = await client.query<{ id: string }>(
+        `SELECT id FROM product_variants WHERE sku = $1 AND active = true`,
         [best.freeItemSku],
       );
       await client.query(
-        `INSERT INTO quote_items (quote_id, product_id, quantity, unit_price)
+        `INSERT INTO quote_items (quote_id, variant_id, quantity, unit_price)
          VALUES ($1, $2, 1, 0)`,
-        [input.quote_id, freeProduct.rows[0]!.id],
+        [input.quote_id, freeVariant.rows[0]!.id],
       );
     }
 

@@ -1,7 +1,7 @@
 import { withTransaction } from "../../shared/db/index.js";
 
 export interface CotizacionItemInput {
-  product_id: string;
+  variant_id: string;
   quantity: number;
 }
 
@@ -10,7 +10,7 @@ export interface GenerarCotizacionInput {
 }
 
 export interface CotizacionItemOutput {
-  product_id: string;
+  variant_id: string;
   name: string;
   quantity: number;
   unit_price: number;
@@ -24,7 +24,7 @@ export interface GenerarCotizacionOutput {
   status: "draft";
 }
 
-interface ProductStockRow {
+interface VariantStockRow {
   id: string;
   name: string;
   price: string;
@@ -54,32 +54,33 @@ export async function generarCotizacion(
 
     for (const item of input.items) {
       if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
-        throw new Error(`Cantidad inválida para el producto ${item.product_id}: ${item.quantity}`);
+        throw new Error(`Cantidad inválida para la variante ${item.variant_id}: ${item.quantity}`);
       }
 
-      const result = await client.query<ProductStockRow>(
-        `SELECT p.id, p.name, p.price, COALESCE(i.stock_quantity, 0) AS stock
-         FROM products p
-         LEFT JOIN inventory i ON i.product_id = p.id
-         WHERE p.id = $1`,
-        [item.product_id],
+      const result = await client.query<VariantStockRow>(
+        `SELECT pv.id, p.name, pv.price, COALESCE(i.stock_quantity, 0) AS stock
+         FROM product_variants pv
+         JOIN products p ON p.id = pv.product_id
+         LEFT JOIN inventory i ON i.variant_id = pv.id
+         WHERE pv.id = $1 AND pv.active = true`,
+        [item.variant_id],
       );
-      const product = result.rows[0];
-      if (!product) {
-        throw new Error(`Producto no encontrado: ${item.product_id}`);
+      const variant = result.rows[0];
+      if (!variant) {
+        throw new Error(`Variante no encontrada: ${item.variant_id}`);
       }
 
-      const stock = Number(product.stock);
+      const stock = Number(variant.stock);
       if (stock < item.quantity) {
         throw new Error(
-          `Stock insuficiente para ${product.name}: pediste ${item.quantity}, hay ${stock} disponibles.`,
+          `Stock insuficiente para ${variant.name}: pediste ${item.quantity}, hay ${stock} disponibles.`,
         );
       }
 
-      const unitPrice = Number(product.price);
+      const unitPrice = Number(variant.price);
       items.push({
-        product_id: product.id,
-        name: product.name,
+        variant_id: variant.id,
+        name: variant.name,
         quantity: item.quantity,
         unit_price: unitPrice,
         line_total: unitPrice * item.quantity,
@@ -98,9 +99,9 @@ export async function generarCotizacion(
 
     for (const item of items) {
       await client.query(
-        `INSERT INTO quote_items (quote_id, product_id, quantity, unit_price)
+        `INSERT INTO quote_items (quote_id, variant_id, quantity, unit_price)
          VALUES ($1, $2, $3, $4)`,
-        [quoteId, item.product_id, item.quantity, item.unit_price],
+        [quoteId, item.variant_id, item.quantity, item.unit_price],
       );
     }
 

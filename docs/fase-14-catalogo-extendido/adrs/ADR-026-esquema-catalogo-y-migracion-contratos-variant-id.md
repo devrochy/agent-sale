@@ -1,7 +1,9 @@
 # ADR-026: Esquema de catálogo extendido (aliados, categorías, variantes) y migración de contratos a `variant_id`
 
 ## Estado
-Propuesta (pendiente de aceptación antes de iniciar implementación de la Fase 14).
+Aceptada (2026-08-03, al iniciar la implementación de la Fase 14).
+
+**Corrección respecto a la redacción original:** este ADR se escribió antes del retiro de multi-tenancy (ADR-032, Fase 13). Los bloques de esquema de abajo ya no llevan `tenant_id` — agent-sale es mono-tenant desde `migrations/0036_drop_multitenancy.cjs`, y esa columna no se reintroduce solo para el catálogo. También se agregó una decisión que la redacción original no contemplaba: `recomendar_producto` no usa embeddings (nunca se implementó, pese a que `products.embedding` existe desde la Fase 5) — usa un mapa hardcodeado `COMPLEMENTARY_CATEGORIES` que compara el texto de `products.category`, y ese mapa se rompe en cuanto `category` pasa a ser `category_id` (FK). Ver "Sobre la recomendación de productos complementarios" más abajo.
 
 ## Contexto
 
@@ -23,7 +25,14 @@ La propuesta original (§3.10.1) ya trae un esquema de punto de partida, marcado
 
 ### Sobre el aliado por defecto
 
-`PROPUESTA_V2.md` deja abierto si `products.ally_id` es obligatorio con un aliado "genérico" para productos propios de ForMotos, o nullable. Se decide **obligatorio con aliado genérico**: se crea un `allies` sembrado (`name: "Catálogo propio"` o el nombre comercial del tenant) para todo producto que no venga de un tercero. Esto simplifica el código de promociones (Fase 17) — nunca hay que distinguir "promoción por aliado" de "promoción para productos sin aliado" como dos casos separados, siempre hay un `ally_id`.
+`PROPUESTA_V2.md` deja abierto si `products.ally_id` es obligatorio con un aliado "genérico" para productos propios de ForMotos, o nullable. Se decide **obligatorio con aliado genérico**: se crea un `allies` sembrado (`name: "Catálogo propio"`) para todo producto que no venga de un tercero. Esto simplifica el código de promociones (Fase 17) — nunca hay que distinguir "promoción por aliado" de "promoción para productos sin aliado" como dos casos separados, siempre hay un `ally_id`.
+
+### Sobre la recomendación de productos complementarios
+
+`src/domains/commerce/recomendarProducto.ts` resuelve hoy sus sugerencias con un mapa hardcodeado en código (`COMPLEMENTARY_CATEGORIES`, ej. `{casco: ["guantes","chaqueta"], ...}`) comparando directamente el texto de `products.category`. Al reemplazar `category` (texto) por `category_id` (FK a `product_categories`), ese mapa deja de tener sentido.
+
+1. **Mantener un mapa hardcodeado, ahora por `category_id`** — descartada: sigue siendo una regla de negocio que solo un desarrollador puede cambiar, exactamente la limitación que esta fase busca resolver para categorías/aliados en el panel.
+2. **Tabla `category_complements` administrable desde el panel** — elegida: `(category_id uuid FK, complementary_category_id uuid FK, PRIMARY KEY(category_id, complementary_category_id))`, editable desde la misma sección de categorías que ya construye esta fase (`/admin/categorias`, PR 2). Se siembran ambas direcciones explícitamente al marcar dos categorías como complementarias (evita depender de un `OR` simétrico en cada query).
 
 ## Decisión
 
@@ -31,19 +40,25 @@ La propuesta original (§3.10.1) ya trae un esquema de punto de partida, marcado
 
 ```sql
 allies (
-  id uuid PK, tenant_id uuid FK, name text, contact_info text,
+  id uuid PK, name text, contact_info text,
   active boolean DEFAULT true, created_at timestamptz
 )
 
 product_categories (
-  id uuid PK, tenant_id uuid FK,
+  id uuid PK,
   parent_id uuid FK → product_categories.id NULL,  -- null = nivel raíz
   name text, sort_order int, active boolean DEFAULT true
 )
 
+category_complements (
+  category_id uuid FK → product_categories.id,
+  complementary_category_id uuid FK → product_categories.id,
+  PRIMARY KEY (category_id, complementary_category_id)
+)
+
 products (
-  id uuid PK, tenant_id uuid FK,
-  ally_id uuid FK → allies.id NOT NULL,             -- default: aliado genérico del tenant
+  id uuid PK,
+  ally_id uuid FK → allies.id NOT NULL,             -- default: aliado genérico
   category_id uuid FK → product_categories.id,      -- nodo hoja
   name text, description text, embedding vector, has_variants boolean,
   updated_at timestamptz
@@ -61,12 +76,10 @@ Todo producto tiene al menos una variante — incluso los que hoy no tienen tall
 
 ### Migración de tablas existentes
 
-`inventory.product_id`, `quote_items.product_id`, `order_items.product_id` → `variant_id`. Script de backfill en un solo paso transaccional por tenant:
+`inventory.product_id`, `quote_items.product_id`, `order_items.product_id` → `variant_id`. No hay catálogo real cargado en ninguna base al momento de implementar esta fase (confirmado con el negocio) — solo el catálogo de prueba de `scripts/seed-catalogo-prueba.ts` — así que no hace falta un backfill de producción cuidadoso, pero se mantiene el mismo criterio de pasos separados por prudencia y porque es el patrón que ya usa el proyecto (migraciones nunca se editan):
 1. Por cada `products` existente, crear una `product_variants` con el `sku`/`price` que hoy vive en `products`, `attributes = '{}'`.
 2. Actualizar `inventory`/`quote_items`/`order_items` para apuntar a esa variante recién creada.
-3. Solo después de verificar el conteo de filas migradas contra el original, eliminar `sku`/`price` de `products`.
-
-El paso 3 se ejecuta en una migración separada de los pasos 1-2, para poder revertir sin pérdida si el backfill muestra una discrepancia.
+3. En una migración separada de los pasos 1-2, eliminar `sku`/`price`/`category` de `products` (para poder revertir sin pérdida si algo sale mal en desarrollo).
 
 ### Migración de contratos de tools
 
@@ -83,5 +96,6 @@ Cuando `consultar_inventario` devuelve un producto con más de una `variant` act
 ## Consecuencias
 
 - Toda promoción de Fase 17 puede anclarse a `ally_id`, `category_id` (con o sin hijas) o `product_id`/`variant_id`, sin campos booleanos sueltos en `products`.
-- El costo de este cambio es alto en superficie (3 tablas nuevas, 3 tablas existentes migradas, 3 contratos de tools) pero se paga una sola vez — se ejecuta antes que Fase 15/16/17 precisamente para no migrar dos veces la misma tabla.
-- Un aliado "genérico" por tenant significa que `allies` nunca está vacío para un tenant con catálogo cargado — simplifica cualquier query de listado "productos por aliado" (siempre hay al menos un grupo).
+- El costo de este cambio es alto en superficie (4 tablas nuevas — `allies`, `product_categories`, `category_complements`, `product_variants` —, 3 tablas existentes migradas, 4-5 contratos de tools) pero se paga una sola vez — se ejecuta antes que Fase 15/16/17 precisamente para no migrar dos veces la misma tabla.
+- Un aliado "genérico" significa que `allies` nunca está vacío mientras haya catálogo cargado — simplifica cualquier query de listado "productos por aliado" (siempre hay al menos un grupo).
+- `recomendar_producto` deja de depender de una constante en código para sus sugerencias — el negocio puede ajustar qué categorías se recomiendan entre sí sin un deploy.

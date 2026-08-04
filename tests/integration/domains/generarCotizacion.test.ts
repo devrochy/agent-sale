@@ -2,6 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
+import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
@@ -9,6 +10,7 @@ const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_U
 let conversationA: string;
 let customerA: string;
 let productA: string;
+let variantA: string;
 
 beforeAll(async () => {
   const customer = await adminPool.query<{ id: string }>(
@@ -21,13 +23,14 @@ beforeAll(async () => {
   );
   conversationA = conversation.rows[0]!.id;
 
-  const product = await adminPool.query<{ id: string }>(
-    `INSERT INTO products (sku, name, price) VALUES ('CASCO-COT', 'Casco cotización', 100000) RETURNING id`,
-  );
-  productA = product.rows[0]!.id;
-  await adminPool.query(`INSERT INTO inventory (product_id, stock_quantity) VALUES ($1, 10)`, [
-    productA,
-  ]);
+  const product = await seedProduct(adminPool, {
+    sku: "CASCO-COT",
+    name: "Casco cotización",
+    price: 100000,
+    stock: 10,
+  });
+  productA = product.productId;
+  variantA = product.variantId;
 });
 
 afterAll(async () => {
@@ -36,8 +39,7 @@ afterAll(async () => {
     [conversationA],
   );
   await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationA]);
-  await adminPool.query(`DELETE FROM inventory WHERE product_id = $1`, [productA]);
-  await adminPool.query(`DELETE FROM products WHERE id = $1`, [productA]);
+  await deleteProduct(adminPool, productA);
   await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationA]);
   await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerA]);
   await adminPool.end();
@@ -47,14 +49,14 @@ afterAll(async () => {
 describe("generarCotizacion", () => {
   it("crea una cotización con subtotal calculado a partir del precio real", async () => {
     const result = await generarCotizacion(conversationA, customerA, {
-      items: [{ product_id: productA, quantity: 3 }],
+      items: [{ variant_id: variantA, quantity: 3 }],
     });
 
     expect(result.status).toBe("draft");
     expect(result.subtotal).toBe(300000);
     expect(result.items).toEqual([
       {
-        product_id: productA,
+        variant_id: variantA,
         name: "Casco cotización",
         quantity: 3,
         unit_price: 100000,
@@ -73,17 +75,17 @@ describe("generarCotizacion", () => {
   it("falla si el stock no alcanza para la cantidad pedida", async () => {
     await expect(
       generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: productA, quantity: 999 }],
+        items: [{ variant_id: variantA, quantity: 999 }],
       }),
     ).rejects.toThrow(/Stock insuficiente/);
   });
 
-  it("falla si el producto no existe", async () => {
+  it("falla si la variante no existe", async () => {
     await expect(
       generarCotizacion(conversationA, customerA, {
-        items: [{ product_id: "00000000-0000-0000-0000-000000000000", quantity: 1 }],
+        items: [{ variant_id: "00000000-0000-0000-0000-000000000000", quantity: 1 }],
       }),
-    ).rejects.toThrow(/Producto no encontrado/);
+    ).rejects.toThrow(/Variante no encontrada/);
   });
 
   it("falla si la lista de items está vacía", async () => {

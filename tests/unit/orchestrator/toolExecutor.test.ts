@@ -71,7 +71,7 @@ describe("executeTool", () => {
       status: "draft",
     });
 
-    const items = [{ product_id: "p1", quantity: 2 }];
+    const items = [{ variant_id: "v1", quantity: 2 }];
     await run("generar_cotizacion", { items });
 
     expect(generarCotizacion).toHaveBeenCalledWith("conv-1", "customer-1", { items });
