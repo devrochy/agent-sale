@@ -99,6 +99,26 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           enum: ["domicilio", "recoger_en_tienda"],
           description: "Método de entrega acordado con el cliente.",
         },
+        customer_data: {
+          type: "object",
+          description:
+            "Datos de entrega del cliente para este pedido. Requerido para que el pedido quede confirmado — si no se manda (o falta address/id_document/full_name), la tool devuelve status 'faltan_datos_cliente' con lo que ya haya guardado (existing_data) y qué falta (missing_fields), sin confirmar nada. Nunca reutilices en silencio datos guardados de un pedido anterior: confirmá explícitamente con el cliente (ej. '¿tu dirección sigue siendo la misma?') antes de volver a llamar la tool con customer_data.",
+          properties: {
+            address: { type: "string", description: "Dirección de entrega." },
+            id_document: { type: "string", description: "Número de cédula o documento de identidad." },
+            full_name: {
+              type: "string",
+              description: "Nombre completo para la entrega (puede diferir del nombre de WhatsApp).",
+            },
+            municipality: { type: "string", description: "Municipio, si el cliente lo menciona (opcional)." },
+            city: { type: "string", description: "Ciudad, si el cliente lo menciona (opcional)." },
+            save_permanently: {
+              type: "boolean",
+              description: "true si el cliente aceptó guardar estos datos para futuros pedidos.",
+            },
+          },
+          required: ["address", "id_document", "full_name", "save_permanently"],
+        },
       },
       required: ["quote_id", "payment_method", "delivery_method"],
     },

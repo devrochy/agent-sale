@@ -9,10 +9,20 @@ export type PaymentMethod =
   | "pago_en_linea";
 export type DeliveryMethod = "domicilio" | "recoger_en_tienda";
 
+export interface CustomerData {
+  address: string;
+  id_document: string;
+  full_name: string;
+  municipality?: string;
+  city?: string;
+  save_permanently: boolean;
+}
+
 export interface CrearPedidoInput {
   quote_id: string;
   payment_method: PaymentMethod;
   delivery_method: DeliveryMethod;
+  customer_data?: CustomerData;
 }
 
 export interface CrearPedidoOutput {
@@ -22,10 +32,20 @@ export interface CrearPedidoOutput {
     | "duplicate"
     | "monto_alto"
     | "wompi_no_configurado"
-    | "wompi_monto_minimo";
+    | "wompi_monto_minimo"
+    | "faltan_datos_cliente";
   total: number;
   /** Solo presente cuando payment_method es 'pago_en_linea' y status 'confirmed' (ver ADR-024). */
   payment_link_url?: string;
+  /** Solo presente cuando status es 'faltan_datos_cliente' (ver ADR-033). */
+  missing_fields?: Array<"address" | "id_document" | "full_name">;
+  existing_data?: {
+    address: string | null;
+    id_document: string | null;
+    full_name: string | null;
+    municipality: string | null;
+    city: string | null;
+  } | null;
 }
 
 /**
@@ -115,7 +135,64 @@ export async function crearPedido(
       return { kind: "monto_alto" as const, total };
     }
 
-    return { kind: "ok" as const, quote, total };
+    // Captura progresiva de datos de entrega (ver ADR-033). La tool nunca
+    // reutiliza en silencio los datos ya guardados en `customers` — si el
+    // orquestador no manda `customer_data` completo, se niega igual que ya
+    // hace con `monto_alto`, devolviendo lo que haya guardado (o null) para
+    // que el modelo se lo confirme explícitamente al cliente antes de
+    // reintentar.
+    if (!input.customer_data) {
+      const customerResult = await client.query<{
+        address: string | null;
+        id_document: string | null;
+        full_name: string | null;
+        municipality: string | null;
+        city: string | null;
+      }>(
+        `SELECT address, id_document, full_name, municipality, city FROM customers WHERE id = $1`,
+        [quote.customer_id],
+      );
+      const customer = customerResult.rows[0] ?? null;
+      const missingFields: Array<"address" | "id_document" | "full_name"> = [];
+      if (!customer?.address) missingFields.push("address");
+      if (!customer?.id_document) missingFields.push("id_document");
+      if (!customer?.full_name) missingFields.push("full_name");
+
+      return {
+        kind: "faltan_datos_cliente" as const,
+        total,
+        existingData: customer,
+        missingFields,
+      };
+    }
+
+    const cd = input.customer_data;
+    if (cd.save_permanently) {
+      // COALESCE solo para municipality/city (opcionales, no vienen siempre)
+      // — mismo criterio que memory.ts para no pisar con null un dato ya
+      // guardado. address/id_document/full_name son obligatorios en
+      // customer_data, así que se sobrescriben directo.
+      await client.query(
+        `UPDATE customers
+         SET address = $2, id_document = $3, full_name = $4,
+             municipality = COALESCE($5, municipality), city = COALESCE($6, city)
+         WHERE id = $1`,
+        [quote.customer_id, cd.address, cd.id_document, cd.full_name, cd.municipality ?? null, cd.city ?? null],
+      );
+    }
+
+    return {
+      kind: "ok" as const,
+      quote,
+      total,
+      deliverySnapshot: {
+        address: cd.address,
+        idDocument: cd.id_document,
+        fullName: cd.full_name,
+        municipality: cd.municipality ?? null,
+        city: cd.city ?? null,
+      },
+    };
   });
 
   if (checked.kind === "duplicate") {
@@ -124,8 +201,17 @@ export async function crearPedido(
   if (checked.kind === "monto_alto") {
     return { order_id: null, status: "monto_alto", total: checked.total };
   }
+  if (checked.kind === "faltan_datos_cliente") {
+    return {
+      order_id: null,
+      status: "faltan_datos_cliente",
+      total: checked.total,
+      missing_fields: checked.missingFields,
+      existing_data: checked.existingData,
+    };
+  }
 
-  const { quote, total } = checked;
+  const { quote, total, deliverySnapshot } = checked;
 
   let paymentLink: { paymentLinkId: string; url: string } | null = null;
   if (input.payment_method === "pago_en_linea") {
@@ -150,8 +236,8 @@ export async function crearPedido(
 
   const created = await withTransaction(async (client) => {
     const order = await client.query<{ id: string }>(
-      `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
-       VALUES ($1, $2, $3, 'confirmed', $4, $5, $6, $7, $8, $9)
+      `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id, delivery_address, delivery_id_document, delivery_full_name, delivery_municipality, delivery_city)
+       VALUES ($1, $2, $3, 'confirmed', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING id`,
       [
@@ -164,6 +250,11 @@ export async function crearPedido(
         idempotencyKey,
         quote.total,
         paymentLink?.paymentLinkId ?? null,
+        deliverySnapshot.address,
+        deliverySnapshot.idDocument,
+        deliverySnapshot.fullName,
+        deliverySnapshot.municipality,
+        deliverySnapshot.city,
       ],
     );
 

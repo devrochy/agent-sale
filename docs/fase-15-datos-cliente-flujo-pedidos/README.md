@@ -1,8 +1,8 @@
 # Fase 15 — Datos de Cliente y Flujo de Pedidos Extendido
 
-Estado: **en diseño** (v2)
+Estado: **implementada** (v2)
 
-Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-15--datos-de-cliente-y-flujo-de-pedidos-extendido) · [PROPUESTA_V2.md §3.2](../../PROPUESTA_V2.md) · [Fase 6 — Dominio Comercial](../fase-6-dominio-comercial/flujo-cotizacion-pedido.md) · [Fase 14 — Catálogo Extendido](../fase-14-catalogo-extendido/README.md)
+Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-15--datos-de-cliente-y-flujo-de-pedidos-extendido) · [PROPUESTA_V2.md §3.2](../../PROPUESTA_V2.md) · [Fase 6 — Dominio Comercial](../fase-6-dominio-comercial/flujo-cotizacion-pedido.md) · [Fase 14 — Catálogo Extendido](../fase-14-catalogo-extendido/README.md) · [ADR-033](./adrs/ADR-033-datos-entrega-y-pedido-abierto.md) · [contratos-tools-v3.md](./contratos-tools-v3.md)
 
 Que el asistente capture y confirme progresivamente dirección, cédula y nombre completo del cliente al cerrar un pedido, con opción de cambio temporal o permanente, y que un pedido abierto pueda seguir recibiendo productos antes de cerrarse — sin crear un segundo pedido.
 
@@ -13,7 +13,7 @@ Que el asistente capture y confirme progresivamente dirección, cédula y nombre
 
 ## Contenido de esta fase
 
-Esta fase no introduce una decisión de arquitectura nueva que amerite ADR propia — extiende el flujo conversacional ya diseñado en Fase 6 con datos adicionales y una tool de "agregar ítem a pedido abierto", siguiendo el mismo principio rector de `contratos-tools.md` ("el LLM propone, la tool decide"). El único punto que sí requiere una decisión explícita en implementación (documentado como nota de diseño, no como ADR separada) es si "agregar producto a un pedido abierto" es una tool nueva con su propia `idempotency_key` o una reapertura del `quote_id` original — se resuelve al iniciar la implementación, con el mismo criterio de idempotencia que ya exige `crear_pedido` (`docs/fase-1-arquitectura/contratos-tools.md`).
+Extiende el flujo conversacional ya diseñado en Fase 6 con captura progresiva de dirección/cédula/nombre de entrega, y agrega una tool nueva `agregar_item_pedido` para sumar productos a un pedido `abierto` sin generar un segundo `order_id`. A diferencia de lo que se anticipaba al planificar, sí introduce decisiones de arquitectura que ameritan ADR propia — ver [ADR-033](./adrs/ADR-033-datos-entrega-y-pedido-abierto.md): `orders.status = 'abierto'` para todo pedido nuevo (no solo pago en línea) y `agregar_item_pedido` como tool independiente con su propio mecanismo de idempotencia (no una reapertura de `quote_id`).
 
 ## Dependencias
 

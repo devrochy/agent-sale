@@ -155,6 +155,8 @@ interface PedidoRow {
   created_at: string;
   phone_number: string;
   customer_name: string | null;
+  delivery_address: string | null;
+  delivery_id_document: string | null;
   items: OrderItemJson[];
 }
 
@@ -3859,6 +3861,7 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at,
+              o.delivery_address, o.delivery_id_document,
               c.phone_number, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
@@ -3870,7 +3873,7 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at, c.phone_number, c.name
+       GROUP BY o.id, o.status, o.payment_method, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, c.phone_number, c.name
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -3881,6 +3884,10 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
       const items = row.items
         .map((item) => `<li>${item.quantity}× ${escapeHtml(item.name)} (${formatCOP(item.unit_price)})</li>`)
         .join("");
+      const entrega =
+        row.delivery_address || row.delivery_id_document
+          ? `<p class="hint">Entrega a: ${escapeHtml(row.delivery_address ?? "-")} · Cédula ${escapeHtml(row.delivery_id_document ?? "-")}</p>`
+          : "";
       const search = [
         row.customer_name,
         row.phone_number,
@@ -3894,7 +3901,7 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
         .toLowerCase();
       return `<tr data-search="${escapeHtml(search)}">
         <td>${escapeHtml(row.customer_name ?? row.phone_number)}</td>
-        <td><ul class="items">${items}</ul></td>
+        <td><ul class="items">${items}</ul>${entrega}</td>
         <td>${escapeHtml(row.status)}</td>
         <td>${escapeHtml(row.payment_method)}</td>
         <td>${escapeHtml(row.delivery_method)}</td>
