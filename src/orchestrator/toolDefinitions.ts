@@ -124,6 +124,33 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "agregar_item_pedido",
+    description:
+      "Suma productos a un pedido ya confirmado en la misma conversación, mientras siga abierto (todavía no despachado) — sin crear un pedido ni una cotización nueva. Usar cuando el cliente pide agregar algo más después de que crear_pedido ya devolvió status 'confirmed'. Vuelve a validar precio y stock reales, igual que generar_cotizacion.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido ya confirmado (de crear_pedido)." },
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              variant_id: {
+                type: "string",
+                description:
+                  "UUID de la variante concreta (de consultar_inventario) — si el producto tiene más de una variante activa, preguntar cuál antes de agregarla.",
+              },
+              quantity: { type: "integer", description: "Cantidad solicitada, mayor que 0." },
+            },
+            required: ["variant_id", "quantity"],
+          },
+        },
+      },
+      required: ["order_id", "items"],
+    },
+  },
+  {
     name: "recomendar_producto",
     description:
       "Sugiere productos relacionados o complementarios (ej. guantes para quien compra un casco). Llamar después de que el cliente muestre interés en un producto concreto, para ofrecer venta cruzada relevante.",
