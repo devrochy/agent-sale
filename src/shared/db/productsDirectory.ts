@@ -72,13 +72,20 @@ interface ProductSummaryRow {
 }
 
 /** Solo cuenta variantes activas — un producto con todas sus variantes desactivadas no debe ofrecerse ni listarse, mismo criterio que `consultarInventario.ts`. */
-export async function listProductsSummary(filters: { allyId?: string } = {}): Promise<ProductSummary[]> {
+export async function listProductsSummary(
+  filters: { allyId?: string; categoryId?: string } = {},
+): Promise<ProductSummary[]> {
   return withTransaction(async (client) => {
     const params: string[] = [];
     let allyFilter = "";
     if (filters.allyId) {
       params.push(filters.allyId);
       allyFilter = `AND p.ally_id = $${params.length}`;
+    }
+    let categoryFilter = "";
+    if (filters.categoryId) {
+      params.push(filters.categoryId);
+      categoryFilter = `AND p.category_id = $${params.length}`;
     }
 
     const result = await client.query<ProductSummaryRow>(
@@ -92,7 +99,7 @@ export async function listProductsSummary(filters: { allyId?: string } = {}): Pr
        LEFT JOIN product_categories pc ON pc.id = p.category_id
        JOIN product_variants pv ON pv.product_id = p.id AND pv.active = true
        LEFT JOIN inventory i ON i.variant_id = pv.id
-       WHERE true ${allyFilter}
+       WHERE true ${allyFilter} ${categoryFilter}
        GROUP BY p.id, p.name, p.description, p.image_url, p.ally_id, a.name, p.category_id, pc.name
        ORDER BY pc.name, p.name`,
       params,
@@ -264,6 +271,26 @@ export async function updateProduct(
 }
 
 /** Busca una variante por SKU exacto — usado por la carga masiva de CSV para decidir alta vs. actualización. */
+/** Cantidad de productos por aliado — usado para el chip "N productos" de `/admin/aliados`, no cuenta variantes ni filtra por activas (es un conteo simple de administración, no de catálogo vendible). */
+export async function countProductsPerAlly(): Promise<Record<string, number>> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{ ally_id: string; count: string }>(
+      `SELECT ally_id, COUNT(*) AS count FROM products GROUP BY ally_id`,
+    );
+    return Object.fromEntries(result.rows.map((row) => [row.ally_id, Number(row.count)]));
+  });
+}
+
+/** Mismo criterio que `countProductsPerAlly` pero por categoría (solo cuenta productos con `category_id` asignado) — usado en el árbol de `/admin/categorias`. */
+export async function countProductsPerCategory(): Promise<Record<string, number>> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{ category_id: string; count: string }>(
+      `SELECT category_id, COUNT(*) AS count FROM products WHERE category_id IS NOT NULL GROUP BY category_id`,
+    );
+    return Object.fromEntries(result.rows.map((row) => [row.category_id, Number(row.count)]));
+  });
+}
+
 export async function findVariantBySku(sku: string): Promise<{ id: string; productId: string } | null> {
   return withTransaction(async (client) => {
     const result = await client.query<{ id: string; product_id: string }>(
@@ -272,6 +299,45 @@ export async function findVariantBySku(sku: string): Promise<{ id: string; produ
     );
     const row = result.rows[0];
     return row ? { id: row.id, productId: row.product_id } : null;
+  });
+}
+
+/** Clasificación en lote de SKUs para la previsualización de la carga masiva de CSV — una sola consulta en vez de un `findVariantBySku` por fila. */
+export async function classifySkus(
+  skus: string[],
+): Promise<
+  Map<string, { productName: string; price: number; stock: number; description: string | null; imageUrl: string | null }>
+> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{
+      sku: string;
+      name: string;
+      price: string;
+      stock: string;
+      description: string | null;
+      image_url: string | null;
+    }>(
+      `SELECT pv.sku, p.name, pv.price, COALESCE(i.stock_quantity, 0) AS stock, p.description, p.image_url
+       FROM product_variants pv
+       JOIN products p ON p.id = pv.product_id
+       LEFT JOIN inventory i ON i.variant_id = pv.id
+       WHERE pv.sku = ANY($1)`,
+      [skus],
+    );
+    const map = new Map<
+      string,
+      { productName: string; price: number; stock: number; description: string | null; imageUrl: string | null }
+    >();
+    for (const row of result.rows) {
+      map.set(row.sku, {
+        productName: row.name,
+        price: Number(row.price),
+        stock: Number(row.stock),
+        description: row.description,
+        imageUrl: row.image_url,
+      });
+    }
+    return map;
   });
 }
 

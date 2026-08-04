@@ -11,6 +11,7 @@ import {
   activarAliado,
   activarCategoria,
   activarColaborador,
+  confirmarImportacionCsv,
   crearAliado,
   crearCategoria,
   crearColaborador,
@@ -29,8 +30,8 @@ import {
   guardarProducto,
   guardarReporteDiario,
   guardarReviewLink,
-  importarProductosCsv,
   pausarBot,
+  previsualizarImportacionCsv,
   reactivarBot,
   renderAliadosPage,
   renderAnaliticaPage,
@@ -40,7 +41,6 @@ import {
   renderConfiguracionPage,
   renderConversacionesPage,
   renderFlujoPage,
-  renderImportarProductosPage,
   renderLeadsPage,
   renderLoginPage,
   renderOverviewPage,
@@ -439,12 +439,24 @@ export async function buildServer() {
   });
 
   app.get("/admin/productos", async (request, reply) => {
-    const { error, guardado, allyId } = request.query as {
+    const { error, guardado, allyId, categoryId, creados, actualizados, errores } = request.query as {
       error?: string;
       guardado?: string;
       allyId?: string;
+      categoryId?: string;
+      creados?: string;
+      actualizados?: string;
+      errores?: string;
     };
-    const html = await renderProductosPage(request.admin!, { error, guardado, allyId });
+    const html = await renderProductosPage(request.admin!, {
+      error,
+      guardado,
+      allyId,
+      categoryId,
+      creados,
+      actualizados,
+      errores,
+    });
     if (!html) {
       return reply.status(404).send();
     }
@@ -492,32 +504,51 @@ export async function buildServer() {
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.get("/admin/productos/importar", async (request, reply) => {
-    const { error, creados, actualizados, errores } = request.query as {
-      error?: string;
-      creados?: string;
-      actualizados?: string;
-      errores?: string;
-    };
-    const html = await renderImportarProductosPage(request.admin!, { error, creados, actualizados, errores });
-    if (!html) {
-      return reply.status(404).send();
+  app.post("/admin/productos/importar/previsualizar", async (request, reply) => {
+    const { csvText } = request.body as { csvText?: string };
+    if (!csvText) {
+      return reply.send({ ok: false, error: "Elegí un archivo CSV primero." });
     }
-    return reply.type("text/html").send(html);
+    const resultado = await previsualizarImportacionCsv(csvText);
+    return reply.send(resultado);
   });
 
   app.post("/admin/productos/importar", async (request, reply) => {
-    const { allyId, csvText } = request.body as { allyId?: string; csvText?: string };
-    if (!allyId || !csvText) {
+    const body = request.body as Record<string, string | string[] | undefined>;
+    const allyId = body.allyId as string | undefined;
+    if (!allyId) {
       return reply
         .status(303)
-        .redirect(`/admin/productos/importar?error=${encodeURIComponent("Elegí un aliado y un archivo CSV.")}`);
+        .redirect(`/admin/productos?error=${encodeURIComponent("Elegí un aliado antes de confirmar la carga.")}`);
     }
-    const resultado = await importarProductosCsv(allyId, csvText);
+    const toArray = (value: string | string[] | undefined): string[] =>
+      value === undefined ? [] : Array.isArray(value) ? value : [value];
+    const skus = toArray(body["sku[]"]);
+    const names = toArray(body["name[]"]);
+    const prices = toArray(body["price[]"]);
+    const stocks = toArray(body["stock[]"]);
+    const tallas = toArray(body["talla[]"]);
+    const colors = toArray(body["color[]"]);
+    const categoryIds = toArray(body["categoryId[]"]);
+    const descriptions = toArray(body["description[]"]);
+    const imageUrls = toArray(body["imageUrl[]"]);
+    const rows = skus.map((sku, i) => ({
+      sku,
+      name: names[i] ?? "",
+      price: prices[i] ?? "",
+      stock: stocks[i] ?? "",
+      talla: tallas[i] ?? "",
+      color: colors[i] ?? "",
+      categoryId: categoryIds[i] ?? "",
+      description: descriptions[i] ?? "",
+      imageUrl: imageUrls[i] ?? "",
+    }));
+
+    const resultado = await confirmarImportacionCsv(allyId, rows);
     return reply
       .status(303)
       .redirect(
-        `/admin/productos/importar?creados=${resultado.creados}&actualizados=${resultado.actualizados}&errores=${resultado.errores.length}`,
+        `/admin/productos?creados=${resultado.creados}&actualizados=${resultado.actualizados}&errores=${resultado.errores.length}`,
       );
   });
 

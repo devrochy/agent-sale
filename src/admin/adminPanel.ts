@@ -28,6 +28,9 @@ import {
   type CategoryRecord,
 } from "../shared/db/productCategoriesDirectory.js";
 import {
+  classifySkus,
+  countProductsPerAlly,
+  countProductsPerCategory,
   createProduct,
   findVariantBySku,
   getProductDetail,
@@ -322,11 +325,23 @@ const ICON_IGNITION =
 const ICON_EDIT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.6 2.6a1.6 1.6 0 0 1 2.3 2.3L5.8 12l-2.9.7.7-2.9 7-7Z"/></svg>';
 
+/** Guardar (Productos/Aliados/Categorías, edición rápida por doble clic) — icon-only para no competir en ancho con Editar/el switch de estado en la columna de Acciones. */
+const ICON_SAVE =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4"/></svg>';
+
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
 
 const ICON_PLUS =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
+
+/** Flecha hacia una bandeja — "subir archivo" (botón "Importar CSV" de Productos). */
+const ICON_IMPORT =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10.2V2.5"/><path d="M4.8 5.3 8 2.2l3.2 3.1"/><path d="M2.5 11v1.7a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V11"/></svg>';
+
+/** Flecha de expandir/colapsar (variantes de producto, ramas del árbol de categorías) — rota 90°/-90° por CSS según el estado, no son dos iconos distintos. */
+const ICON_CHEVRON =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>';
 
 const ICON_CALENDARIO =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.2" width="11" height="10.3" rx="1.2"/><path d="M2.5 6.2h11M5.3 2v2.4M10.7 2v2.4"/></svg>';
@@ -455,6 +470,14 @@ ${STYLE_BLOCK}
       ${body}
     </main>
   </div>
+  <dialog id="confirm-dialog" class="modal">
+    <div class="blockhead"><h2>Confirmar</h2></div>
+    <p data-confirm-message></p>
+    <div class="formfoot">
+      <button type="button" class="btn btn--primary" data-confirm-accept>Confirmar</button>
+      <button type="button" class="btn btn--ghost" data-confirm-cancel>Cancelar</button>
+    </div>
+  </dialog>
   <script>${CLIENT_SCRIPT}</script>
 </body>
 </html>`;
@@ -690,10 +713,29 @@ table.resizing { cursor: col-resize; user-select: none; }
 .searchbox::placeholder { color: var(--ink-faint); }
 .searchbox:focus-visible { outline: 2px solid var(--chrome); outline-offset: 1px; }
 .tabletools .hint { font-family: var(--font-mono); }
-.pager { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--ink-muted); }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--ink-muted); }
+.pager__controls { display: flex; align-items: center; gap: 12px; }
 .pager button { font: inherit; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; color: var(--ink); cursor: pointer; }
 .pager button:disabled { opacity: 0.35; cursor: default; }
 .pager button:not(:disabled):hover { border-color: var(--border-strong); }
+/* Encabezados de columna ordenables (clic = asc/desc) — ver [data-sort-key] en CLIENT_SCRIPT. */
+.sortable { cursor: pointer; user-select: none; }
+.sortable:hover { color: var(--ink); }
+.sortable::after {
+  content: ""; display: inline-block; width: 9px; height: 9px; margin-left: 5px; opacity: 0.35;
+  vertical-align: -1px; background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.5 11 6H5z'/%3E%3Cpath d='M8 13.5 5 10h6z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 2.5 11 6H5z'/%3E%3Cpath d='M8 13.5 5 10h6z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.sortable--asc::after, .sortable--desc::after { opacity: 1; }
+.sortable--asc::after {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 3 12.5 9h-9z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 3 12.5 9h-9z'/%3E%3C/svg%3E");
+}
+.sortable--desc::after {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 13 3.5 7h9z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 13 3.5 7h9z'/%3E%3C/svg%3E");
+}
 .flow { display: flex; flex-direction: column; align-items: center; gap: 0; max-width: 640px; }
 .flowline { width: 2px; height: 26px; background: repeating-linear-gradient(var(--border-strong), var(--border-strong) 4px, transparent 4px, transparent 8px); }
 .flownode { width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 16px 20px; text-align: center; }
@@ -751,6 +793,8 @@ table.resizing { cursor: col-resize; user-select: none; }
 /* Asignación de aliado/categoría por producto (Fase 14, /admin/productos) — dos selects apilados dentro de la celda, el botón Guardar vive en la columna Acciones vía form="...". */
 /* Modal ancho para el alta/edición de producto (la lista de variantes no entra en los 440px del modal chico) — ver productoDialogHtml. */
 dialog.modal.modal--wide { max-width: 640px; }
+/* Modal extra-ancho — solo la previsualización de import CSV, necesita lugar para la miniatura + descripción de cada fila sin scroll horizontal apretado. */
+dialog.modal.modal--xwide { max-width: 980px; }
 /* Lista dinámica de variantes (SKU/talla/color/precio/stock/activa) del modal de producto — Agregar/Quitar en CLIENT_SCRIPT, sin librería. */
 .variantlist { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .variantrow { display: grid; grid-template-columns: 1.3fr 0.8fr 0.8fr 0.9fr 0.7fr auto auto; gap: 6px; align-items: center; }
@@ -766,6 +810,120 @@ dialog.modal.modal--wide { max-width: 640px; }
 }
 .dblclick-cell { cursor: default; }
 .dblclick-cell.dblclick-active { cursor: text; }
+
+/* Barra de herramientas con filtros facetados (Productos/Aliados/Categorías) — el select de filtro comparte altura/tipografía con .searchbox, pero es más angosto y no crece (los filtros no deben empujar la búsqueda). */
+.tablefilter {
+  font: inherit; font-size: 12.5px; background: var(--panel-inset); border: 1px solid var(--border);
+  border-radius: 7px; padding: 7px 30px 7px 11px; color: var(--ink); cursor: pointer; flex-shrink: 0;
+  appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%23889198' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 11px;
+}
+.tablefilter:hover { border-color: var(--border-strong); }
+/* El botón de alta (Productos/Aliados/Categorías) ya no es un botón primario aislado — es un control liviano dentro de la misma barra de filtros, con el mismo peso visual que "cancelar" en un form: abrir el formulario no es la acción que se confirma, crear/guardar adentro sí lo es (ese sigue siendo .btn--primary). */
+.btn--add {
+  background: transparent; border: 1px dashed var(--border-strong); color: var(--chrome);
+  font-weight: 700;
+}
+.btn--add:hover { background: var(--chrome-soft); border-style: solid; border-color: var(--chrome); }
+.btn--add__plus { font-size: 15px; line-height: 1; margin-right: -2px; }
+/* Agrupa los botones de acción (ej. "Importar CSV" + "Nuevo producto") al borde derecho de la barra de filtros — el margin-left:auto vive acá, no en .btn--add, para que el grupo entero se empuje junto y no cada botón por separado. */
+.tabletools__actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+/* Filas expandibles (variantes de un producto) — colapsadas por default, ver data-expand-toggle/data-expand-row en CLIENT_SCRIPT. */
+.expandtoggle {
+  background: none; border: none; padding: 2px; cursor: pointer; color: var(--ink-faint);
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
+  transition: transform 140ms ease, color 140ms ease;
+}
+.expandtoggle:hover { color: var(--ink); background: var(--panel-inset); }
+.expandtoggle svg { width: 13px; height: 13px; transition: transform 140ms ease; }
+.expandtoggle--open svg { transform: rotate(90deg); }
+tr.expandrow { display: none; background: var(--panel-inset); }
+tr.expandrow.is-open { display: table-row; }
+tr.expandrow td { padding: 12px 16px 14px 44px; }
+.variantgrid { display: flex; flex-direction: column; gap: 6px; }
+.variantchip { display: flex; align-items: center; gap: 10px; font-size: 12.5px; padding: 6px 4px; border-bottom: 1px dashed var(--border); }
+.variantchip:last-child { border-bottom: none; }
+.variantchip__sku { font-family: var(--font-mono); color: var(--ink-faint); min-width: 120px; }
+.variantchip__attrs { display: flex; gap: 6px; flex: 1; }
+.variantchip__price { font-family: var(--font-mono); min-width: 90px; text-align: right; }
+.variantchip__stock { font-family: var(--font-mono); min-width: 70px; text-align: right; }
+.variantchip--inactive { opacity: 0.5; }
+.tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 5px; background: var(--panel); border: 1px solid var(--border); font-size: 11px; color: var(--ink-muted); }
+.tag--go { background: var(--go-soft); border-color: var(--go); color: var(--go); }
+.tag--bad { background: var(--redline-soft); border-color: var(--redline); color: var(--redline); }
+/* Chip de conteo (ej. "12 productos" en Aliados) — usa los mismos colores neutrales que .chip--muted, con el número en mono para escanear la columna de un vistazo. */
+.countbadge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; background: var(--panel-inset); border: 1px solid var(--border); font-size: 12px; color: var(--ink-muted); text-decoration: none; }
+.countbadge:hover { border-color: var(--chrome); color: var(--chrome); }
+.countbadge strong { font-family: var(--font-mono); color: var(--ink); }
+/* padding-left igual al del input de nombre (.dblclick-cell input, 4px) — sin esto el nombre y el "aliado · categoría" de abajo quedan desalineados horizontalmente. */
+.rowmeta { font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; padding-left: 4px; }
+
+/*
+ * Previsualización editable de la carga por CSV — una card por producto
+ * (no una fila de grid con scroll horizontal): la miniatura siempre va
+ * primero y siempre visible, sea la imagen nueva del CSV (editable, fila
+ * "Nuevo") o la imagen ya guardada del producto (solo lectura, fila
+ * "Actualiza" — la carga masiva nunca reasigna imagen/descripción de un
+ * producto existente, pero mostrarla en solo lectura evita que parezca
+ * que la funcionalidad no está, que es justo el reporte que motivó este
+ * rediseño).
+ */
+.importpreview { display: flex; flex-direction: column; gap: 10px; max-height: 56vh; overflow-y: auto; margin: 16px 0; padding-right: 6px; }
+.importrow { display: flex; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-inset); }
+.importrow--crear { border-color: var(--go); }
+.importrow--error { border-color: var(--redline); }
+.importrow__thumb { width: 60px; height: 60px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
+.importrow__thumb--empty { display: flex; align-items: center; justify-content: center; color: var(--ink-faint); }
+.importrow__thumb--empty svg { width: 20px; height: 20px; }
+.importrow__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.importrow__head { display: flex; align-items: center; gap: 8px; }
+.importrow__head input { flex: 1; font-weight: 600; font-size: 13px; padding: 6px 8px; }
+.importrow__fields { display: flex; flex-wrap: wrap; gap: 8px; }
+.importrow__fields input, .importrow__fields select { font-size: 12.5px; padding: 6px 8px; }
+.importrow__fields input[readonly] { background: var(--panel); color: var(--ink-faint); }
+.importrow__field--sku { flex: 0 1 118px; }
+.importrow__field--price { flex: 0 1 100px; }
+.importrow__field--stock { flex: 0 1 76px; }
+.importrow__field--attr { flex: 0 1 76px; }
+.importrow__field--category { flex: 1 1 170px; }
+.importrow__description { font: inherit; font-size: 12.5px; padding: 7px 9px; resize: vertical; min-height: 36px; width: 100%; }
+.importrow__description[readonly] { background: var(--panel); color: var(--ink-faint); resize: none; }
+.importrow__context { font-size: 11.5px; color: var(--ink-faint); }
+.importrow__context--error { color: var(--redline); }
+
+/* Árbol de categorías — indentación real + línea de guía por profundidad, en vez de la tabla plana con inputs siempre visibles de antes. */
+.cattree__row td:first-child { position: relative; }
+.cattree__branch { display: flex; align-items: center; gap: 6px; }
+.cattree__guide { flex-shrink: 0; height: 20px; border-left: 1px dashed var(--border-strong); }
+.cattree__toggle { background: none; border: none; padding: 2px; cursor: pointer; color: var(--ink-faint); display: inline-flex; flex-shrink: 0; border-radius: 5px; }
+.cattree__toggle:hover { color: var(--ink); background: var(--panel-inset); }
+.cattree__toggle svg { width: 12px; height: 12px; transition: transform 140ms ease; transform: rotate(90deg); }
+.cattree__row--collapsed .cattree__toggle svg { transform: rotate(0deg); }
+.cattree__spacer { display: inline-block; width: 18px; flex-shrink: 0; }
+.cattree__row--dim { opacity: 0.4; }
+.cattree__name { font-weight: 600; }
+
+/* Switch de Activar/Desactivar (Aliados/Categorías) — reemplaza los dos botones de texto condicionales ("Activar"/"Desactivar") por un único control compacto, mismo criterio de color que ya usaba el botón (verde = activo, rojo = inactivo) pero sin competir en ancho con Guardar/Editar en la columna de Acciones. */
+.toggleswitch { background: none; border: none; padding: 2px; cursor: pointer; display: inline-flex; align-items: center; flex-shrink: 0; }
+.toggleswitch__track {
+  width: 34px; height: 18px; border-radius: 10px; position: relative; flex-shrink: 0;
+  background: var(--redline-soft); border: 1px solid var(--redline);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.toggleswitch--on .toggleswitch__track { background: var(--go-soft); border-color: var(--go); }
+.toggleswitch__knob {
+  position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--redline); transition: transform 140ms ease, background 140ms ease;
+}
+.toggleswitch--on .toggleswitch__knob { transform: translateX(16px); background: var(--go); }
+.toggleswitch:hover .toggleswitch__track { filter: brightness(1.15); }
+.toggleswitch:focus-visible { outline: 2px solid var(--chrome); outline-offset: 2px; border-radius: 10px; }
+/* Columna Estado con el switch — el texto acompaña el color del track (verde/gris) en vez de vivir en un chip aparte, sin duplicar la señal de estado dos veces en la misma fila. */
+.statustoggle { display: flex; align-items: center; gap: 8px; }
+.statustoggle__label { font-size: 12.5px; font-weight: 600; color: var(--go); }
+.statustoggle__label--off { color: var(--ink-faint); font-weight: 500; }
 /* Validación en tiempo real (username/correo/contraseña, ver
    data-validate en el JS): la "luz" reutiliza literalmente los colores de
    estado del tablero (--go/--redline) que ya usa el resto del panel (ver
@@ -1097,7 +1255,7 @@ const CLIENT_SCRIPT = `
     }
   }
 
-  /* ---------- tablas: búsqueda + paginado en el cliente ---------- */
+  /* ---------- tablas: búsqueda + filtros + paginado en el cliente ---------- */
   document.querySelectorAll("[data-table]").forEach(function (wrap) {
     var pageSize = parseInt(wrap.getAttribute("data-page-size"), 10) || 15;
     var tbody = wrap.querySelector("tbody");
@@ -1108,17 +1266,80 @@ const CLIENT_SCRIPT = `
     var pageLabel = wrap.querySelector("[data-table-pagelabel]");
     var prevBtn = wrap.querySelector("[data-table-prev]");
     var nextBtn = wrap.querySelector("[data-table-next]");
+    // Filtros facetados (ej. Aliado/Categoría en Productos, Estado en
+    // Aliados) — cada select data-table-filter data-filter-key="ally"
+    // se combina con la búsqueda de texto vía AND, comparando su valor
+    // contra el atributo data-filter-ally de cada fila. "" = sin filtro.
+    var filterSelects = Array.prototype.slice.call(wrap.querySelectorAll("[data-table-filter]"));
+    // Encabezados ordenables (ver .sortable en STYLE_BLOCK) — cada <th
+    // data-sort-key="precio"> compara el atributo data-sort-precio de cada
+    // fila. Reordena los <tr> reales en el DOM (no solo su display), así
+    // la paginación de arriba sigue tomando las primeras N filas visibles
+    // en el orden correcto.
+    var sortHeaders = Array.prototype.slice.call(wrap.querySelectorAll("[data-sort-key]"));
+    var sortKey = null;
+    var sortDir = 1;
     var page = 1;
+
+    function applySort() {
+      if (!sortKey) return;
+      rows.sort(function (a, b) {
+        var av = a.getAttribute("data-sort-" + sortKey) || "";
+        var bv = b.getAttribute("data-sort-" + sortKey) || "";
+        var an = parseFloat(av);
+        var bn = parseFloat(bv);
+        var cmp;
+        if (av !== "" && bv !== "" && !isNaN(an) && !isNaN(bn)) {
+          cmp = an - bn;
+        } else {
+          cmp = av.localeCompare(bv, "es", { sensitivity: "base" });
+        }
+        return cmp * sortDir;
+      });
+      rows.forEach(function (tr) {
+        var expandId = tr.getAttribute("data-expand-target");
+        var expandRow = expandId ? document.getElementById(expandId) : null;
+        tbody.appendChild(tr);
+        if (expandRow) tbody.appendChild(expandRow);
+      });
+    }
+    sortHeaders.forEach(function (th) {
+      th.addEventListener("click", function () {
+        var key = th.getAttribute("data-sort-key");
+        sortDir = sortKey === key ? sortDir * -1 : 1;
+        sortKey = key;
+        sortHeaders.forEach(function (h) { h.classList.remove("sortable--asc", "sortable--desc"); });
+        th.classList.add(sortDir === 1 ? "sortable--asc" : "sortable--desc");
+        page = 1;
+        applySort();
+        apply();
+      });
+    });
 
     function apply() {
       var q = (searchInput.value || "").trim().toLowerCase();
       var matched = rows.filter(function (tr) {
-        return !q || tr.getAttribute("data-search").indexOf(q) !== -1;
+        if (q && tr.getAttribute("data-search").indexOf(q) === -1) return false;
+        for (var i = 0; i < filterSelects.length; i++) {
+          var sel = filterSelects[i];
+          var val = sel.value;
+          if (!val) continue;
+          if (tr.getAttribute("data-filter-" + sel.getAttribute("data-filter-key")) !== val) return false;
+        }
+        return true;
       });
       var pages = Math.max(1, Math.ceil(matched.length / pageSize));
       if (page > pages) page = pages;
       var start = (page - 1) * pageSize;
-      rows.forEach(function (tr) { tr.style.display = "none"; });
+      rows.forEach(function (tr) {
+        tr.style.display = "none";
+        // Si la fila tenía su detalle de variantes abierto, se colapsa al
+        // filtrar/paginar — evita dejar la fila de detalle visible sin su
+        // fila dueña (que puede haber cambiado de página).
+        var expandId = tr.getAttribute("data-expand-target");
+        var expandRow = expandId ? document.getElementById(expandId) : null;
+        if (expandRow) expandRow.classList.remove("is-open");
+      });
       // "table-row" explícito, no "" — la hoja de estilos ya declara
       // tr[data-search] { display: none } por defecto (evita el parpadeo
       // de todas las filas antes de paginar); un style.display = "" no
@@ -1133,9 +1354,64 @@ const CLIENT_SCRIPT = `
     if (searchInput) {
       searchInput.addEventListener("input", function () { page = 1; apply(); });
     }
+    filterSelects.forEach(function (sel) {
+      sel.addEventListener("change", function () { page = 1; apply(); });
+    });
     if (prevBtn) prevBtn.addEventListener("click", function () { if (page > 1) { page--; apply(); } });
     if (nextBtn) nextBtn.addEventListener("click", function () { page++; apply(); });
     apply();
+  });
+
+  /* ---------- filas expandibles (ej. variantes de un producto) ---------- */
+  document.addEventListener("click", function (event) {
+    var toggle = event.target.closest && event.target.closest("[data-expand-toggle]");
+    if (!toggle) return;
+    var targetRow = document.getElementById(toggle.getAttribute("data-expand-toggle"));
+    if (!targetRow) return;
+    var isOpen = targetRow.classList.toggle("is-open");
+    toggle.classList.toggle("expandtoggle--open", isOpen);
+    toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  });
+
+  /* ---------- árbol de categorías: colapsar/expandir ramas ---------- */
+  document.querySelectorAll("[data-cattree]").forEach(function (tree) {
+    var rows = Array.prototype.slice.call(tree.querySelectorAll("[data-cat-row]"));
+    function descendants(id) {
+      var direct = rows.filter(function (r) { return r.getAttribute("data-cat-parent") === id; });
+      var all = direct.slice();
+      direct.forEach(function (r) {
+        all = all.concat(descendants(r.getAttribute("data-cat-row")));
+      });
+      return all;
+    }
+    tree.querySelectorAll("[data-cat-toggle]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var row = btn.closest("[data-cat-row]");
+        var id = row.getAttribute("data-cat-row");
+        var collapsed = row.classList.toggle("cattree__row--collapsed");
+        descendants(id).forEach(function (r) {
+          r.style.display = collapsed ? "none" : "";
+        });
+      });
+    });
+
+    // Búsqueda de texto + filtro de estado (Activas/Inactivas/Todas) —
+    // atenúan en vez de esconder: una categoría inactiva puede seguir
+    // teniendo hijas activas, esconderla rompería la jerarquía visible.
+    var searchInput = tree.parentElement.querySelector("[data-cattree-search]");
+    var estadoFilter = tree.parentElement.querySelector("[data-cattree-estado]");
+    function applyDim() {
+      var q = searchInput ? (searchInput.value || "").trim().toLowerCase() : "";
+      var val = estadoFilter ? estadoFilter.value : "";
+      rows.forEach(function (r) {
+        var active = r.getAttribute("data-cat-active") === "true";
+        var estadoDim = (val === "activas" && !active) || (val === "inactivas" && active);
+        var searchDim = q && r.getAttribute("data-cat-search").indexOf(q) === -1;
+        r.classList.toggle("cattree__row--dim", estadoDim || searchDim);
+      });
+    }
+    if (searchInput) searchInput.addEventListener("input", applyDim);
+    if (estadoFilter) estadoFilter.addEventListener("change", applyDim);
   });
 
   /* ---------- tablas: columnas redimensionables (persistido por tabla) ---------- */
@@ -1191,14 +1467,37 @@ const CLIENT_SCRIPT = `
     });
   });
 
-  /* ---------- Configuración: confirmación al pausar el bot ---------- */
-  document.querySelectorAll("[data-confirm]").forEach(function (form) {
-    form.addEventListener("submit", function (evt) {
-      if (!window.confirm(form.getAttribute("data-confirm"))) {
+  /* ---------- confirmación con la modal del panel (pausar el bot, activar/desactivar aliados y categorías) — reemplaza window.confirm() nativo por #confirm-dialog, mismo estilo que el resto de los diálogos ---------- */
+  var confirmDialog = document.getElementById("confirm-dialog");
+  if (confirmDialog) {
+    var pendingConfirmForm = null;
+    document.querySelectorAll("[data-confirm]").forEach(function (form) {
+      form.addEventListener("submit", function (evt) {
         evt.preventDefault();
-      }
+        pendingConfirmForm = form;
+        var msgEl = confirmDialog.querySelector("[data-confirm-message]");
+        if (msgEl) msgEl.textContent = form.getAttribute("data-confirm");
+        confirmDialog.showModal();
+      });
     });
-  });
+    var confirmAccept = confirmDialog.querySelector("[data-confirm-accept]");
+    if (confirmAccept) {
+      confirmAccept.addEventListener("click", function () {
+        confirmDialog.close();
+        if (pendingConfirmForm) {
+          pendingConfirmForm.submit();
+          pendingConfirmForm = null;
+        }
+      });
+    }
+    var confirmCancel = confirmDialog.querySelector("[data-confirm-cancel]");
+    if (confirmCancel) {
+      confirmCancel.addEventListener("click", function () {
+        confirmDialog.close();
+        pendingConfirmForm = null;
+      });
+    }
+  }
 
   /* ---------- Configuración: filtra el selector de Modelo según el Proveedor elegido ---------- */
   var providerSelect = document.querySelector("[data-provider-select]");
@@ -1366,6 +1665,197 @@ const CLIENT_SCRIPT = `
       reader.readAsText(file);
     });
   }
+
+  /* ---------- Importar productos: previsualización editable antes de confirmar la carga ---------- */
+  (function () {
+    var previewBtn = document.querySelector("[data-import-preview-btn]");
+    if (!previewBtn) return;
+
+    function escapeForAttr(value) {
+      return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;");
+    }
+
+    // Árbol de categorías embebido por el servidor (ver importarCsvPreviewDialogHtml)
+    // — se arma una vez el <select> de categoría de cada fila nueva, sin otro round-trip.
+    var categoryTreeEl = document.querySelector("[data-import-categories]");
+    var categoryTree = [];
+    try {
+      categoryTree = categoryTreeEl ? JSON.parse(categoryTreeEl.textContent) : [];
+    } catch (e) {
+      categoryTree = [];
+    }
+    function categorySelectHtml() {
+      var options = categoryTree
+        .map(function (c) {
+          return '<option value="' + escapeForAttr(c.id) + '">' + new Array(c.depth + 1).join("— ") + escapeForAttr(c.name) + "</option>";
+        })
+        .join("");
+      return (
+        '<select name="categoryId[]" class="importrow__field--category"><option value="">Sin categoría</option>' +
+        options +
+        "</select>"
+      );
+    }
+
+    // Ícono placeholder cuando todavía no hay ninguna imagen que mostrar
+    // (fila "Error" sin SKU resuelto todavía).
+    var THUMB_PLACEHOLDER_ICON =
+      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6"/><circle cx="5.4" cy="6" r="1" fill="currentColor" stroke="none"/><path d="M2.2 11.6 5.8 8l2.6 2.4L11 8l2.8 3"/></svg>';
+
+    function thumbHtml(url) {
+      var has = !!(url && url.trim());
+      return (
+        '<img class="importrow__thumb" data-import-thumb src="' + escapeForAttr(url) + '" alt="" loading="lazy"' +
+        (has ? "" : ' style="display:none"') + ">" +
+        '<div class="importrow__thumb importrow__thumb--empty" data-import-thumb-empty' +
+        (has ? ' style="display:none"' : "") + ">" + THUMB_PLACEHOLDER_ICON + "</div>"
+      );
+    }
+
+    // Delegado sobre el contenedor (no sobre cada fila, que se reemplaza
+    // entero en cada renderImportPreview) — si el admin corrige la URL de
+    // la imagen en la previsualización, la miniatura de al lado se
+    // actualiza en vivo.
+    var previewBody = document.querySelector("[data-import-preview-body]");
+    if (previewBody) {
+      previewBody.addEventListener("input", function (event) {
+        if (!event.target.matches("[data-import-image-input]")) return;
+        var row = event.target.closest(".importrow");
+        var img = row ? row.querySelector("[data-import-thumb]") : null;
+        var empty = row ? row.querySelector("[data-import-thumb-empty]") : null;
+        var val = event.target.value.trim();
+        if (img) { img.src = val; img.style.display = val ? "" : "none"; }
+        if (empty) { empty.style.display = val ? "none" : ""; }
+      });
+    }
+
+    function renderImportPreview(rows, allyId) {
+      var body = document.querySelector("[data-import-preview-body]");
+      var allyHidden = document.querySelector("[data-import-ally-hidden]");
+      var summary = document.querySelector("[data-import-summary]");
+      if (allyHidden) allyHidden.value = allyId;
+      if (!body) return;
+
+      var creando = rows.filter(function (r) { return r.kind === "crear"; }).length;
+      var actualizando = rows.filter(function (r) { return r.kind === "actualizar"; }).length;
+      var conError = rows.filter(function (r) { return r.kind === "error"; }).length;
+      if (summary) {
+        summary.textContent =
+          creando + " producto(s) nuevo(s) · " + actualizando + " actualización(es) de stock" +
+          (conError ? " · " + conError + " fila(s) con error" : "") +
+          " — elegí la categoría de cada producto nuevo y revisá/editá lo que haga falta antes de confirmar. Si varias filas nuevas comparten nombre, se usa la categoría de la primera.";
+      }
+
+      body.innerHTML = rows
+        .map(function (row) {
+          var isCrear = row.kind === "crear";
+          var isActualizar = row.kind === "actualizar";
+          var readonly = isActualizar ? "readonly" : "";
+
+          var badge = isCrear
+            ? '<span class="tag tag--go">Nuevo</span>'
+            : isActualizar
+              ? '<span class="tag">Actualiza</span>'
+              : '<span class="tag tag--bad">Error</span>';
+
+          // La imagen de una fila "Actualiza" es la ya guardada del
+          // producto (informativa, nunca se reasigna); la de "Nuevo" es
+          // la del CSV, editable más abajo.
+          var thumbUrl = isCrear ? row.imageUrl : isActualizar ? row.existingImageUrl || "" : "";
+          var thumb = thumbHtml(thumbUrl);
+
+          var categoryField = isCrear
+            ? categorySelectHtml()
+            : '<input type="hidden" name="categoryId[]" value="">';
+
+          var descriptionField = isCrear
+            ? '<textarea class="importrow__description" name="description[]" placeholder="Descripción (opcional)" rows="2">' +
+              escapeForAttr(row.description) + "</textarea>"
+            : isActualizar
+              ? '<textarea class="importrow__description" rows="2" readonly>' +
+                escapeForAttr(row.existingDescription || "Sin descripción guardada.") + "</textarea>" +
+                '<input type="hidden" name="description[]" value="">'
+              : '<input type="hidden" name="description[]" value="">';
+
+          var imageUrlField = isCrear
+            ? '<input type="text" class="importrow__imageurl" name="imageUrl[]" data-import-image-input value="' +
+              escapeForAttr(row.imageUrl) + '" placeholder="URL de la imagen (opcional)">'
+            : '<input type="hidden" name="imageUrl[]" value="">';
+
+          var context = isActualizar
+            ? '<span class="importrow__context">Precio y stock actuales: $' + escapeForAttr(row.existingPrice) +
+              " · stock " + escapeForAttr(row.existingStock) +
+              ". El nombre, la categoría, la descripción y la imagen no cambian por esta carga.</span>"
+            : row.errorMessage
+              ? '<span class="importrow__context importrow__context--error">' + escapeForAttr(row.errorMessage) + "</span>"
+              : "";
+
+          return (
+            '<div class="importrow importrow--' + row.kind + '">' +
+            thumb +
+            '<div class="importrow__body">' +
+            '<div class="importrow__head">' +
+            badge +
+            '<input type="text" name="name[]" value="' + escapeForAttr(row.name) + '" placeholder="Nombre" ' + readonly + ">" +
+            "</div>" +
+            '<div class="importrow__fields">' +
+            '<input type="text" name="sku[]" class="mono importrow__field--sku" value="' + escapeForAttr(row.sku) + '" placeholder="SKU">' +
+            '<input type="number" name="price[]" class="importrow__field--price" value="' + escapeForAttr(row.price) + '" placeholder="Precio">' +
+            '<input type="number" name="stock[]" class="importrow__field--stock" value="' + escapeForAttr(row.stock) + '" placeholder="Stock">' +
+            '<input type="text" name="talla[]" class="importrow__field--attr" value="' + escapeForAttr(row.talla) + '" placeholder="Talla" ' + readonly + ">" +
+            '<input type="text" name="color[]" class="importrow__field--attr" value="' + escapeForAttr(row.color) + '" placeholder="Color" ' + readonly + ">" +
+            categoryField +
+            "</div>" +
+            descriptionField +
+            imageUrlField +
+            context +
+            "</div>" +
+            "</div>"
+          );
+        })
+        .join("");
+    }
+
+    previewBtn.addEventListener("click", function () {
+      var allySelect = document.querySelector("[data-import-ally-select]");
+      var csvHidden = document.querySelector("[data-csv-hidden]");
+      var errorEl = document.querySelector("[data-import-step1-error]");
+      if (errorEl) errorEl.textContent = "";
+      if (!csvHidden || !csvHidden.value) {
+        if (errorEl) errorEl.textContent = "Elegí un archivo CSV primero.";
+        return;
+      }
+      previewBtn.disabled = true;
+      previewBtn.textContent = "Analizando…";
+      fetch("/admin/productos/importar/previsualizar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csvText: csvHidden.value }),
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          previewBtn.disabled = false;
+          previewBtn.textContent = "Previsualizar";
+          if (!data.ok) {
+            if (errorEl) errorEl.textContent = data.error || "No se pudo leer el archivo.";
+            return;
+          }
+          renderImportPreview(data.rows, allySelect ? allySelect.value : "");
+          var step1Dialog = document.getElementById("importar-csv-dialog");
+          var previewDialog = document.getElementById("importar-csv-preview-dialog");
+          if (step1Dialog) step1Dialog.close();
+          if (previewDialog) previewDialog.showModal();
+        })
+        .catch(function () {
+          previewBtn.disabled = false;
+          previewBtn.textContent = "Previsualizar";
+          if (errorEl) errorEl.textContent = "No se pudo analizar el archivo — probá de nuevo.";
+        });
+    });
+  })();
 
   /* ---------- Reporte del asistente: "Cada cuántos días" solo se ve con frecuencia "Personalizado" ---------- */
   var frecuenciaGrid = document.querySelector("[data-frecuencia-grid]");
@@ -1997,7 +2487,6 @@ export async function renderLeadsPage(admin: AdminRecord): Promise<string | null
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, mensaje o estado…" aria-label="Buscar leads">
-        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
       </div>
       <table data-resizable-table="leads">
         <colgroup>
@@ -2006,10 +2495,13 @@ export async function renderLeadsPage(admin: AdminRecord): Promise<string | null
         <thead><tr><th>Cliente</th><th>Último mensaje</th><th>Estado</th><th>Cliente desde</th></tr></thead>
         <tbody>${tableRows || `<tr><td colspan="4">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
-      <div class="pager" data-table-pager>
-        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
-        <span class="tabular" data-table-pagelabel>1 / 1</span>
-        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
       </div>
     </div>
   `;
@@ -2141,7 +2633,6 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, motivo, estado o asesor…" aria-label="Buscar tickets">
-        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
       </div>
       <table data-resizable-table="tickets">
         <colgroup>
@@ -2151,10 +2642,13 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
         <thead><tr><th>Cliente</th><th>Motivo</th><th>Estado</th><th>Asignado a</th><th>Creado</th><th>Resumen</th><th></th></tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>
-      <div class="pager" data-table-pager>
-        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
-        <span class="tabular" data-table-pagelabel>1 / 1</span>
-        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
       </div>
     </div>
   `;
@@ -2696,9 +3190,73 @@ function productoDialogHtml(
   </dialog>`;
 }
 
+function allyFilterOptionsHtml(allies: AllyRecord[]): string {
+  return (
+    `<option value="">Todos los aliados</option>` +
+    allies.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")
+  );
+}
+
+function categoryFilterOptionsHtml(categories: CategoryRecord[]): string {
+  const blank = `<option value="">Todas las categorías</option>`;
+  const options = categoryTreeOrder(categories)
+    .map((c) => `<option value="${c.id}">${"— ".repeat(c.depth)}${escapeHtml(c.name)}</option>`)
+    .join("");
+  return blank + options;
+}
+
+/** Chip de solo lectura para un atributo de variante (ej. "Talla: M") — se omite si la variante no tiene ese atributo (productos genéricos). */
+function attributeTag(label: string, value: unknown): string {
+  if (typeof value !== "string" || value === "") {
+    return "";
+  }
+  return `<span class="tag">${escapeHtml(label)}: ${escapeHtml(value)}</span>`;
+}
+
+/** Switch compacto de Activar/Desactivar (Aliados/Categorías) — reemplaza el botón de texto condicional, mismo verde/rojo pero sin competir en ancho con Guardar/Editar. `actionUrlBase` es la URL sin el segmento final ("activar"/"desactivar"), ej. "/admin/aliados/{id}". */
+function toggleSwitchHtml(actionUrlBase: string, active: boolean, subjectLabel: string): string {
+  const nextAction = active ? "desactivar" : "activar";
+  // El switch reemplazó un botón de texto explícito ("Desactivar") por un
+  // control mucho más chico y fácil de tocar sin querer — `data-confirm`
+  // recupera esa fricción intencional antes de un cambio de estado real,
+  // mostrando la modal compartida #confirm-dialog (ver layout()/
+  // CLIENT_SCRIPT) en vez de un window.confirm() nativo fuera de estilo.
+  const confirmMsg =
+    nextAction === "desactivar"
+      ? `¿Desactivar ${subjectLabel}? Deja de estar disponible para el asistente.`
+      : `¿Activar ${subjectLabel} de nuevo?`;
+  return `<form method="POST" action="${actionUrlBase}/${nextAction}" data-confirm="${escapeHtml(confirmMsg)}">
+    <button type="submit" class="toggleswitch${active ? " toggleswitch--on" : ""}" aria-label="${nextAction === "activar" ? "Activar" : "Desactivar"}" title="${nextAction === "activar" ? "Activar" : "Desactivar"}">
+      <span class="toggleswitch__track"><span class="toggleswitch__knob"></span></span>
+    </button>
+  </form>`;
+}
+
+/** Columna Estado (Aliados/Categorías) — el switch de Activar/Desactivar vive acá directo, con su propio texto de estado al lado, en vez de un chip de solo lectura separado de la acción que lo cambia. */
+function statusToggleHtml(
+  actionUrlBase: string,
+  active: boolean,
+  subjectLabel: string,
+  activeLabel: string,
+  inactiveLabel: string,
+): string {
+  return `<div class="statustoggle">
+    ${toggleSwitchHtml(actionUrlBase, active, subjectLabel)}
+    <span class="statustoggle__label${active ? "" : " statustoggle__label--off"}">${active ? activeLabel : inactiveLabel}</span>
+  </div>`;
+}
+
 export async function renderProductosPage(
   admin: AdminRecord,
-  query: { error?: string; guardado?: string; allyId?: string },
+  query: {
+    error?: string;
+    guardado?: string;
+    allyId?: string;
+    categoryId?: string;
+    creados?: string;
+    actualizados?: string;
+    errores?: string;
+  },
 ): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
@@ -2706,7 +3264,7 @@ export async function renderProductosPage(
   }
 
   const [products, allies, categories] = await Promise.all([
-    listProductsSummary({ allyId: query.allyId }),
+    listProductsSummary({ allyId: query.allyId, categoryId: query.categoryId }),
     listAllies(),
     listCategories(),
   ]);
@@ -2716,50 +3274,83 @@ export async function renderProductosPage(
     ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
     : query.guardado
       ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+      : query.creados !== undefined
+        ? `<div class="banner ${query.errores && query.errores !== "0" ? "banner--error" : "banner--ok"}">
+             Carga por CSV — creados: ${escapeHtml(query.creados)} · actualizados: ${escapeHtml(query.actualizados ?? "0")} · con error: ${escapeHtml(query.errores ?? "0")}
+             ${query.errores && query.errores !== "0" ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron." : ""}
+           </div>`
+        : "";
 
-  const filterNotice = query.allyId
-    ? (() => {
-        const ally = allies.find((a) => a.id === query.allyId);
-        return `<p class="hint">Filtrado por aliado: <strong>${escapeHtml(ally?.name ?? "desconocido")}</strong> — <a href="/admin/productos">ver todos</a>.</p>`;
-      })()
-    : "";
+  const filterNotice =
+    query.allyId || query.categoryId
+      ? (() => {
+          const parts: string[] = [];
+          if (query.allyId) {
+            const ally = allies.find((a) => a.id === query.allyId);
+            parts.push(`aliado <strong>${escapeHtml(ally?.name ?? "desconocido")}</strong>`);
+          }
+          if (query.categoryId) {
+            const category = categories.find((c) => c.id === query.categoryId);
+            parts.push(`categoría <strong>${escapeHtml(category?.name ?? "desconocida")}</strong>`);
+          }
+          return `<p class="hint">Filtrado por ${parts.join(" y ")} — <a href="/admin/productos">ver todos</a>.</p>`;
+        })()
+      : "";
 
   const tableRows = products
     .map((product, index) => {
+      const detail = productDetails[index] ?? null;
       const img = product.imageUrl
         ? `<img class="thumb" src="${escapeHtml(product.imageUrl)}" alt="${escapeHtml(product.name)}">`
         : "";
-      const search = [product.name, product.categoryName, product.description]
+      const search = [product.name, product.categoryName, product.allyName, product.description]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
       const rapidoFormId = `rapido-${product.id}`;
       const editarDialogId = `editar-producto-${product.id}`;
+      const expandId = `variantes-${product.id}`;
       const priceRange =
         product.minPrice === product.maxPrice
           ? formatCOP(product.minPrice)
           : `${formatCOP(product.minPrice)} – ${formatCOP(product.maxPrice)}`;
-      const variantesResumen = `${product.variantCount} ${product.variantCount === 1 ? "variante" : "variantes"} · ${priceRange} · stock ${product.totalStock}`;
 
-      return `<tr data-search="${escapeHtml(search)}">
+      const variantChips = (detail?.variants ?? [])
+        .map(
+          (v) => `<div class="variantchip${v.active ? "" : " variantchip--inactive"}">
+            <span class="variantchip__sku mono">${escapeHtml(v.sku)}</span>
+            <span class="variantchip__attrs">${attributeTag("Talla", v.attributes.talla)}${attributeTag("Color", v.attributes.color)}${!v.active ? '<span class="tag">Inactiva</span>' : ""}</span>
+            <span class="variantchip__price">${formatCOP(v.price)}</span>
+            <span class="variantchip__stock ${v.stock === 0 ? "stock-cero" : ""}">stock ${v.stock}</span>
+          </div>`,
+        )
+        .join("");
+
+      return `<tr data-search="${escapeHtml(search)}" data-filter-ally="${product.allyId}" data-filter-category="${product.categoryId ?? ""}" data-filter-stock="${product.totalStock > 0 ? "con" : "sin"}" data-expand-target="${expandId}" data-sort-name="${escapeHtml(product.name.toLowerCase())}" data-sort-variants="${product.variantCount}" data-sort-price="${product.minPrice}" data-sort-stock="${product.totalStock}" data-sort-description="${escapeHtml((product.description ?? "").toLowerCase())}">
         <td>${img}</td>
         <td class="dblclick-cell">
           <form id="${rapidoFormId}" method="POST" action="/admin/productos/${product.id}">
             <input type="hidden" name="imageUrl" value="${escapeHtml(product.imageUrl ?? "")}">
+            <input type="hidden" name="allyId" value="${product.allyId}">
+            <input type="hidden" name="categoryId" value="${product.categoryId ?? ""}">
             <input type="text" name="name" value="${escapeHtml(product.name)}" required>
           </form>
+          <p class="rowmeta">${escapeHtml(product.allyName)}${product.categoryName ? ` · ${escapeHtml(product.categoryName)}` : ""}</p>
         </td>
-        <td class="dblclick-cell"><select name="allyId" form="${rapidoFormId}">${allyOptionsHtml(allies, product.allyId)}</select></td>
-        <td class="dblclick-cell"><select name="categoryId" form="${rapidoFormId}">${categoryOptionsHtml(categories, product.categoryId)}</select></td>
-        <td class="mono ${product.totalStock === 0 ? "stock-cero" : ""}">${escapeHtml(variantesResumen)}</td>
+        <td>
+          <button type="button" class="expandtoggle" data-expand-toggle="${expandId}" aria-expanded="false" aria-label="Ver variantes">${ICON_CHEVRON}</button>
+          ${product.variantCount} ${product.variantCount === 1 ? "variante" : "variantes"}
+        </td>
+        <td class="mono">${priceRange}</td>
+        <td class="mono ${product.totalStock === 0 ? "stock-cero" : ""}">${product.totalStock}</td>
         <td class="dblclick-cell"><input type="text" name="description" form="${rapidoFormId}" value="${escapeHtml(product.description ?? "")}"></td>
         <td><div class="rowactions">
-          <button type="submit" form="${rapidoFormId}" class="btn btn--primary btn--sm">Guardar</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--sm">Editar</button>
+          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
         </div></td>
       </tr>
-      ${productoDialogHtml(editarDialogId, `Editar ${product.name}`, productDetails[index] ?? null, allies, categories)}`;
+      <tr class="expandrow" id="${expandId}"><td colspan="7"><div class="variantgrid">${variantChips}</div></td></tr>
+      ${productoDialogHtml(editarDialogId, `Editar ${product.name}`, detail, allies, categories)}`;
     })
     .join("\n");
 
@@ -2774,28 +3365,102 @@ export async function renderProductosPage(
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por nombre, categoría o descripción…" aria-label="Buscar productos">
-        <span class="hint tabular"><span data-table-count>${products.length}</span> de ${products.length}</span>
-        <a href="/admin/productos/importar" class="btn btn--sm">Importar CSV</a>
-        <button type="button" data-open-dialog="nuevo-producto-dialog" class="btn btn--primary btn--icon" aria-label="Agregar producto" title="Agregar producto">${ICON_PLUS}</button>
+        <select class="tablefilter" data-table-filter data-filter-key="ally" aria-label="Filtrar por aliado">${allyFilterOptionsHtml(allies)}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="category" aria-label="Filtrar por categoría">${categoryFilterOptionsHtml(categories)}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="stock" aria-label="Filtrar por stock">
+          <option value="">Con o sin stock</option>
+          <option value="con">Con stock</option>
+          <option value="sin">Sin stock</option>
+        </select>
+        <div class="tabletools__actions">
+          <button type="button" data-open-dialog="importar-csv-dialog" class="btn btn--add" aria-label="Importar productos por CSV">${ICON_IMPORT} Importar CSV</button>
+          <button type="button" data-open-dialog="nuevo-producto-dialog" class="btn btn--add" aria-label="Agregar producto"><span class="btn--add__plus">+</span> Nuevo producto</button>
+        </div>
       </div>
       <table data-resizable-table="productos">
         <colgroup>
-          <col style="width:7%"><col style="width:17%"><col style="width:14%">
-          <col style="width:14%"><col style="width:20%"><col style="width:20%"><col style="width:8%">
+          <col style="width:7%"><col style="width:24%"><col style="width:13%">
+          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:8%">
         </colgroup>
-        <thead><tr><th>Foto</th><th>Nombre</th><th>Aliado</th><th>Categoría</th><th>Variantes</th><th>Descripción</th><th>Acciones</th></tr></thead>
+        <thead><tr>
+          <th>Foto</th>
+          <th class="sortable" data-sort-key="name">Producto</th>
+          <th class="sortable" data-sort-key="variants">Variantes</th>
+          <th class="sortable" data-sort-key="price">Precio</th>
+          <th class="sortable" data-sort-key="stock">Stock</th>
+          <th class="sortable" data-sort-key="description">Descripción</th>
+          <th>Acciones</th>
+        </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
-      <div class="pager" data-table-pager>
-        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
-        <span class="tabular" data-table-pagelabel>1 / 1</span>
-        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${products.length}</span> de ${products.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
       </div>
     </div>
     ${productoDialogHtml("nuevo-producto-dialog", "Nuevo producto", null, allies, categories)}
+    ${importarCsvDialogHtml(allies)}
+    ${importarCsvPreviewDialogHtml(categories)}
   `;
 
   return layout(`Catálogo (${products.length} productos)`, tenant, body, "productos", admin);
+}
+
+/** Paso 1 de la carga por CSV: elegir aliado + archivo. El botón dispara `previsualizarImportacionCsv` por `fetch()` (ver CLIENT_SCRIPT) y, si todo sale bien, abre `importarCsvPreviewDialogHtml` con el resultado — no navega a ninguna página nueva. */
+function importarCsvDialogHtml(allies: AllyRecord[]): string {
+  return `<dialog id="importar-csv-dialog" class="modal">
+    <div class="blockhead"><h2>Importar productos por CSV</h2></div>
+    <p class="hint">Carga masiva en nombre de un aliado — vas a poder revisar y editar cada fila antes de confirmar la carga.</p>
+    <div class="field">
+      <label for="importar-aliado">Aliado</label>
+      <select id="importar-aliado" data-import-ally-select>${allyOptionsHtml(allies, allies[0]?.id ?? "")}</select>
+      <p class="hint">Los SKU nuevos del archivo se crean bajo este aliado. Los SKU que ya existen no cambian de aliado — solo se actualiza su precio y stock.</p>
+    </div>
+    <div class="field">
+      <label for="importar-archivo">Archivo CSV</label>
+      <input type="file" id="importar-archivo" accept=".csv,text/csv" data-csv-input>
+      <input type="hidden" data-csv-hidden>
+      <p class="hint">Columnas: <code>sku,name,price,stock</code> obligatorias — <code>talla,color,description,imageUrl</code> opcionales. La primera fila debe ser el encabezado. Varias filas nuevas con el mismo <code>name</code> se agrupan como variantes de un mismo producto. La categoría de cada producto nuevo se elige en la previsualización.</p>
+    </div>
+    <p class="hint" data-import-step1-error></p>
+    <div class="formfoot">
+      <button type="button" class="btn btn--primary" data-import-preview-btn>Previsualizar</button>
+      <button type="button" data-close-dialog="importar-csv-dialog" class="btn btn--ghost">Cancelar</button>
+    </div>
+  </dialog>`;
+}
+
+/**
+ * Paso 2: previsualización editable, llenada por JS (`renderImportPreview`
+ * en CLIENT_SCRIPT) a partir del JSON que devuelve `previsualizarImportacionCsv`.
+ * El árbol de categorías viaja embebido como JSON (mismo dato que arma
+ * `categoryOptionsHtml` para el modal de producto) para que el JS pueda
+ * armar un `<select>` de categoría por cada producto nuevo sin otro
+ * round-trip — el CSV no trae categoría, se elige acá antes de confirmar
+ * (ver README de Fase 14, "la carga masiva nunca reasigna categoría de un
+ * producto existente" sigue aplicando para las filas de actualización).
+ * "Confirmar carga" es un submit real (no fetch) para poder mostrar el
+ * resumen final con el mismo patrón de banner que el resto del panel.
+ */
+function importarCsvPreviewDialogHtml(categories: CategoryRecord[]): string {
+  const categoryTree = categoryTreeOrder(categories);
+  return `<dialog id="importar-csv-preview-dialog" class="modal modal--xwide">
+    <div class="blockhead"><h2>Confirmar carga</h2></div>
+    <p class="hint" data-import-summary></p>
+    <script type="application/json" data-import-categories>${JSON.stringify(categoryTree).replace(/</g, "\\u003c")}</script>
+    <form method="POST" action="/admin/productos/importar">
+      <input type="hidden" name="allyId" data-import-ally-hidden>
+      <div class="importpreview" data-import-preview-body></div>
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Confirmar carga</button>
+        <button type="button" data-close-dialog="importar-csv-preview-dialog" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
 }
 
 function parseVariantInputs(body: Record<string, string | string[] | undefined>): {
@@ -2967,83 +3632,156 @@ export async function guardarProducto(
   return { ok: true };
 }
 
-/**
- * Carga masiva de productos por CSV (extensión post-Fase 14, ver
- * docs/fase-14-catalogo-extendido/README.md#extensión-post-fase) — la
- * sube un admin del panel en nombre del aliado (no hay portal propio para
- * que el aliado externo suba su archivo, queda anotado como pendiente).
- * El archivo se lee client-side con FileReader (mismo patrón que el
- * avatar del Perfil, ver CLIENT_SCRIPT) y viaja como texto plano en un
- * campo oculto — evita agregar `@fastify/multipart` al proyecto.
- */
-export async function renderImportarProductosPage(
-  admin: AdminRecord,
-  query: { error?: string; creados?: string; actualizados?: string; errores?: string },
-): Promise<string | null> {
-  const tenant = await getSettings();
-  if (!tenant) {
-    return null;
-  }
-
-  const allies = await listAllies();
-
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.creados !== undefined
-      ? `<div class="banner ${query.errores && query.errores !== "0" ? "banner--error" : "banner--ok"}">
-           Creados: ${escapeHtml(query.creados)} · Actualizados: ${escapeHtml(query.actualizados ?? "0")} · Con error: ${escapeHtml(query.errores ?? "0")}
-           ${query.errores && query.errores !== "0" ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron." : ""}
-         </div>`
-      : "";
-
-  const body = `
-    <div class="pagehead">
-      <p class="eyebrow">Catálogo</p>
-      <h1>Importar productos por CSV</h1>
-      <p>Carga masiva en nombre de un aliado — actualiza el stock/precio si el SKU ya existe, crea el producto si es nuevo.</p>
-    </div>
-    ${banner}
-    <div class="panel connection">
-      <form method="POST" action="/admin/productos/importar">
-        <div class="field">
-          <label for="importar-aliado">Aliado</label>
-          <select id="importar-aliado" name="allyId">${allyOptionsHtml(allies, allies[0]?.id ?? "")}</select>
-          <p class="hint">Los SKU nuevos del archivo se crean bajo este aliado. Los SKU que ya existen no cambian de aliado — solo se actualiza su precio y stock.</p>
-        </div>
-        <div class="field">
-          <label for="importar-archivo">Archivo CSV</label>
-          <input type="file" id="importar-archivo" accept=".csv,text/csv" data-csv-input>
-          <input type="hidden" name="csvText" data-csv-hidden>
-          <p class="hint">Columnas: <code>sku,name,price,stock</code> obligatorias — <code>talla,color,description</code> opcionales. La primera fila debe ser el encabezado.</p>
-        </div>
-        <div class="formfoot"><button type="submit" class="btn btn--primary">Importar</button></div>
-      </form>
-    </div>
-  `;
-
-  return layout("Importar productos", tenant, body, "productos", admin);
+export interface CsvPreviewRow {
+  rowNumber: number;
+  sku: string;
+  name: string;
+  price: string;
+  stock: string;
+  talla: string;
+  color: string;
+  description: string;
+  imageUrl: string;
+  kind: "crear" | "actualizar" | "error";
+  errorMessage?: string;
+  existingPrice?: number;
+  existingStock?: number;
+  existingDescription?: string | null;
+  existingImageUrl?: string | null;
 }
 
-/** Actualiza solo precio/stock si el SKU ya existe (nunca reasigna aliado/categoría/nombre); crea un producto nuevo de una sola variante si no existe. Nunca aborta el archivo completo por una fila mala — la reporta y sigue. */
-export async function importarProductosCsv(
-  allyId: string,
+/**
+ * Previsualización de la carga masiva de CSV (extensión post-Fase 14, ver
+ * docs/fase-14-catalogo-extendido/README.md#extensión-post-fase) — clasifica
+ * cada fila del archivo (crear / actualizar / error) sin escribir nada
+ * todavía, para que el admin revise y edite antes de confirmar la carga
+ * (`confirmarImportacionCsv`). El archivo se lee client-side con FileReader
+ * (mismo patrón que el avatar del Perfil) y viaja como texto plano por
+ * `fetch()` — evita agregar `@fastify/multipart` al proyecto.
+ */
+export async function previsualizarImportacionCsv(
   csvText: string,
-): Promise<{ creados: number; actualizados: number; errores: { row: number; message: string }[] }> {
+): Promise<{ ok: true; rows: CsvPreviewRow[] } | { ok: false; error: string }> {
   const parsed = parseCsv(csvText);
+  if (parsed.rows.length === 0) {
+    return { ok: false, error: "El archivo no tiene filas para importar." };
+  }
+
+  const skus = parsed.rows.map((row) => (row.sku ?? "").trim()).filter((sku) => sku !== "");
+  const existingBySku = await classifySkus(skus);
+
+  const rows: CsvPreviewRow[] = parsed.rows.map((row, i) => {
+    const rowNumber = i + 2; // +1 por el encabezado, +1 por índice base 1
+    const sku = (row.sku ?? "").trim();
+    if (!sku) {
+      return {
+        rowNumber,
+        sku: "",
+        name: "",
+        price: "",
+        stock: "",
+        talla: "",
+        color: "",
+        description: "",
+        imageUrl: "",
+        kind: "error",
+        errorMessage: "Falta el SKU.",
+      };
+    }
+
+    const existing = existingBySku.get(sku);
+    if (existing) {
+      return {
+        rowNumber,
+        sku,
+        name: existing.productName,
+        price: (row.price ?? "").trim() || String(existing.price),
+        stock: (row.stock ?? "").trim() || String(existing.stock),
+        talla: "",
+        color: "",
+        description: "",
+        imageUrl: "",
+        kind: "actualizar",
+        existingPrice: existing.price,
+        existingStock: existing.stock,
+        existingDescription: existing.description,
+        existingImageUrl: existing.imageUrl,
+      };
+    }
+
+    const name = (row.name ?? "").trim();
+    return {
+      rowNumber,
+      sku,
+      name,
+      price: (row.price ?? "").trim(),
+      stock: (row.stock ?? "").trim(),
+      talla: (row.talla ?? "").trim(),
+      color: (row.color ?? "").trim(),
+      description: (row.description ?? "").trim(),
+      imageUrl: (row.imageUrl ?? "").trim(),
+      kind: name ? "crear" : "error",
+      errorMessage: name ? undefined : "Falta el nombre para el SKU nuevo.",
+    };
+  });
+
+  return { ok: true, rows };
+}
+
+/**
+ * Actualiza solo precio/stock si el SKU ya existe (nunca reasigna
+ * aliado/categoría/nombre); las filas con un SKU nuevo se agrupan por
+ * nombre de producto (mismo nombre = mismo producto, una fila por
+ * variante) antes de crear — así un CSV con varias tallas/colores del
+ * mismo producto genera un solo producto con N variantes, igual que el
+ * alta manual, en vez de N productos sueltos de una variante cada uno.
+ * Nunca aborta la carga completa por una fila mala — la reporta y sigue.
+ * Recibe las filas ya revisadas/editadas por el admin en la
+ * previsualización, no vuelve a leer el archivo.
+ */
+export async function confirmarImportacionCsv(
+  allyId: string,
+  rows: {
+    sku: string;
+    name: string;
+    price: string;
+    stock: string;
+    talla: string;
+    color: string;
+    categoryId: string;
+    description: string;
+    imageUrl: string;
+  }[],
+): Promise<{ creados: number; actualizados: number; errores: { row: number; message: string }[] }> {
   const errores: { row: number; message: string }[] = [];
   let creados = 0;
   let actualizados = 0;
 
-  for (let i = 0; i < parsed.rows.length; i++) {
-    const row = parsed.rows[i]!;
-    const rowNumber = i + 2; // +1 por el encabezado, +1 por índice base 1
-    const sku = row.sku?.trim();
+  const gruposNuevos = new Map<
+    string,
+    {
+      rowNumber: number;
+      sku: string;
+      talla: string;
+      color: string;
+      price: number;
+      stock: number;
+      categoryId: string;
+      description: string;
+      imageUrl: string;
+    }[]
+  >();
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const rowNumber = i + 1;
+    const sku = row.sku.trim();
     if (!sku) {
       errores.push({ row: rowNumber, message: "Falta el SKU." });
       continue;
     }
-    const price = Number.parseFloat(row.price ?? "");
-    const stock = Number.parseInt(row.stock ?? "", 10);
+    const price = Number.parseFloat(row.price);
+    const stock = Number.parseInt(row.stock, 10);
     if (!Number.isFinite(price) || price < 0) {
       errores.push({ row: rowNumber, message: `Precio inválido para el SKU ${sku}.` });
       continue;
@@ -3060,23 +3798,52 @@ export async function importarProductosCsv(
       continue;
     }
 
-    const name = row.name?.trim();
+    const name = row.name.trim();
     if (!name) {
       errores.push({ row: rowNumber, message: `Falta el nombre para el SKU nuevo ${sku}.` });
       continue;
     }
+    const grupo = gruposNuevos.get(name) ?? [];
+    grupo.push({
+      rowNumber,
+      sku,
+      talla: row.talla,
+      color: row.color,
+      price,
+      stock,
+      categoryId: row.categoryId,
+      description: row.description,
+      imageUrl: row.imageUrl,
+    });
+    gruposNuevos.set(name, grupo);
+  }
+
+  for (const [name, variantes] of gruposNuevos) {
     try {
+      // La categoría, descripción e imagen del producto son las de la
+      // primera fila del grupo — un producto tiene un solo valor de cada
+      // uno, no uno por variante (ver hint del modal de previsualización).
+      const primera = variantes[0]!;
+      const categoryId = primera.categoryId.trim();
       await createProduct({
         name,
-        description: row.description?.trim() || null,
-        imageUrl: null,
+        description: primera.description.trim() || null,
+        imageUrl: primera.imageUrl.trim() || null,
         allyId,
-        categoryId: null,
-        variants: [{ sku, attributes: buildVariantAttributes(row.talla ?? "", row.color ?? ""), price, stock }],
+        categoryId: categoryId === "" ? null : categoryId,
+        variants: variantes.map((v) => ({
+          sku: v.sku,
+          attributes: buildVariantAttributes(v.talla, v.color),
+          price: v.price,
+          stock: v.stock,
+        })),
       });
-      creados++;
+      creados += variantes.length;
     } catch (error) {
-      errores.push({ row: rowNumber, message: productUniqueViolationMessage(error) });
+      const message = productUniqueViolationMessage(error);
+      for (const v of variantes) {
+        errores.push({ row: v.rowNumber, message });
+      }
     }
   }
 
@@ -3146,7 +3913,6 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, producto, estado…" aria-label="Buscar pedidos">
-        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
       </div>
       <table data-resizable-table="pedidos">
         <colgroup>
@@ -3156,10 +3922,13 @@ export async function renderPedidosPage(admin: AdminRecord): Promise<string | nu
         <thead><tr><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th></tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
-      <div class="pager" data-table-pager>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
+        <div class="pager__controls" data-table-pager>
         <button type="button" data-table-prev aria-label="Página anterior">‹</button>
         <span class="tabular" data-table-pagelabel>1 / 1</span>
         <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
       </div>
     </div>
   `;
@@ -3186,7 +3955,7 @@ export async function renderAliadosPage(
     return null;
   }
 
-  const allies = await listAllies();
+  const [allies, productCounts] = await Promise.all([listAllies(), countProductsPerAlly()]);
 
   const banner = query.error
     ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
@@ -3208,26 +3977,21 @@ export async function renderAliadosPage(
     .map((ally) => {
       const formId = `aliado-${ally.id}`;
       const editarDialogId = `editar-aliado-${ally.id}`;
-      const estadoChip = ally.active
-        ? '<span class="chip chip--go">Activo</span>'
-        : '<span class="chip chip--redline">Inactivo</span>';
-      const estadoAction = `<form method="POST" action="/admin/aliados/${ally.id}/${ally.active ? "desactivar" : "activar"}">
-        <button type="submit" class="btn ${ally.active ? "btn--danger" : "btn--go"} btn--sm">${ally.active ? "Desactivar" : "Activar"}</button>
-      </form>`;
+      const productCount = productCounts[ally.id] ?? 0;
+      const search = [ally.name, ally.contactInfo].filter((v): v is string => Boolean(v)).join(" ").toLowerCase();
 
-      return `<tr>
+      return `<tr data-search="${escapeHtml(search)}" data-filter-estado="${ally.active ? "activo" : "inactivo"}" data-sort-name="${escapeHtml(ally.name.toLowerCase())}" data-sort-contacto="${escapeHtml((ally.contactInfo ?? "").toLowerCase())}" data-sort-productos="${productCount}" data-sort-estado="${ally.active ? 1 : 0}">
         <td class="dblclick-cell">
           <form id="${formId}" method="POST" action="/admin/aliados/${ally.id}">
             <input type="text" name="name" value="${escapeHtml(ally.name)}" required>
           </form>
         </td>
         <td class="dblclick-cell"><input type="text" name="contactInfo" form="${formId}" value="${escapeHtml(ally.contactInfo ?? "")}" placeholder="Teléfono, correo, contacto…"></td>
-        <td><a href="/admin/productos?allyId=${ally.id}">Ver productos</a></td>
-        <td>${estadoChip}</td>
+        <td><a class="countbadge" href="/admin/productos?allyId=${ally.id}"><strong>${productCount}</strong> ${productCount === 1 ? "producto" : "productos"}</a></td>
+        <td>${statusToggleHtml(`/admin/aliados/${ally.id}`, ally.active, `el aliado "${ally.name}"`, "Activo", "Inactivo")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--primary btn--sm">Guardar</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--sm">Editar</button>
-          ${estadoAction}
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
         </div></td>
       </tr>
       <dialog id="${editarDialogId}" class="modal">
@@ -3250,14 +4014,40 @@ export async function renderAliadosPage(
       <p>Proveedores externos de ${escapeHtml(brandName(tenant))} — se les puede asignar un producto o anclar promociones exclusivas.</p>
     </div>
     ${banner}
-    <div class="panel tablewrap">
-      <div class="blockhead blockhead--end">
-        <button type="button" data-open-dialog="nuevo-aliado-dialog" class="btn btn--primary btn--icon" aria-label="Agregar aliado" title="Agregar aliado">${ICON_PLUS}</button>
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por nombre o contacto…" aria-label="Buscar aliados">
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          <option value="activo">Activos</option>
+          <option value="inactivo">Inactivos</option>
+        </select>
+        <div class="tabletools__actions">
+          <button type="button" data-open-dialog="nuevo-aliado-dialog" class="btn btn--add" aria-label="Agregar aliado"><span class="btn--add__plus">+</span> Nuevo aliado</button>
+        </div>
       </div>
       <table>
-        <thead><tr><th>Nombre</th><th>Contacto</th><th>Productos</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <colgroup>
+          <col style="width:28%"><col style="width:26%">
+          <col style="width:16%"><col style="width:16%"><col style="width:14%">
+        </colgroup>
+        <thead><tr>
+          <th class="sortable" data-sort-key="name">Nombre</th>
+          <th class="sortable" data-sort-key="contacto">Contacto</th>
+          <th class="sortable" data-sort-key="productos">Productos</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Acciones</th>
+        </tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${allies.length}</span> de ${allies.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
+      </div>
     </div>
     <dialog id="nuevo-aliado-dialog" class="modal">
       <div class="blockhead"><h2>Nuevo aliado</h2></div>
@@ -3341,6 +4131,55 @@ function isSelfOrDescendant(categories: CategoryRecord[], candidateId: string, o
  * criterio que Colaboradores/Aliados: el estado no se mezcla con el resto
  * de los campos editables).
  */
+/** Modal de edición de categoría — padre/orden/complementarias, campos que ya no viven siempre visibles en la fila (ver renderCategoriasPage). El nombre se edita por doble clic en la fila misma, no acá, para no duplicar el control. */
+function categoriaEditDialogHtml(
+  category: CategoryRecord,
+  categories: CategoryRecord[],
+  selectedComplements: Set<string>,
+): string {
+  const dialogId = `editar-categoria-${category.id}`;
+  const parentOptions =
+    `<option value=""${category.parentId === null ? " selected" : ""}>— Categoría raíz —</option>` +
+    categories
+      .filter((c) => !isSelfOrDescendant(categories, c.id, category.id))
+      .map(
+        (c) =>
+          `<option value="${c.id}"${c.id === category.parentId ? " selected" : ""}>${escapeHtml(categoryPath(categories, c.id).join(" › "))}</option>`,
+      )
+      .join("");
+  const complementOptions = categories
+    .filter((c) => c.id !== category.id)
+    .map(
+      (c) =>
+        `<option value="${c.id}"${selectedComplements.has(c.id) ? " selected" : ""}>${escapeHtml(c.name)}</option>`,
+    )
+    .join("");
+
+  return `<dialog id="${dialogId}" class="modal">
+    <div class="blockhead"><h2>Editar ${escapeHtml(category.name)}</h2></div>
+    <form method="POST" action="/admin/categorias/${category.id}">
+      <input type="hidden" name="name" value="${escapeHtml(category.name)}">
+      <div class="field">
+        <label for="${dialogId}-padre">Categoría padre</label>
+        <select id="${dialogId}-padre" name="parentId">${parentOptions}</select>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-orden">Orden entre hermanas</label>
+        <input type="number" id="${dialogId}-orden" name="sortOrder" value="${category.sortOrder}">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-complementarias">Categorías complementarias</label>
+        <select id="${dialogId}-complementarias" name="complementIds" multiple size="5">${complementOptions}</select>
+        <p class="hint">El asistente las sugiere juntas (ej. Cascos ↔ Guantes). Ctrl/Cmd+clic para elegir varias.</p>
+      </div>
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Guardar cambios</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
 export async function renderCategoriasPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string },
@@ -3350,7 +4189,11 @@ export async function renderCategoriasPage(
     return null;
   }
 
-  const [categories, complementPairs] = await Promise.all([listCategories(), listAllComplementPairs()]);
+  const [categories, complementPairs, productCounts] = await Promise.all([
+    listCategories(),
+    listAllComplementPairs(),
+    countProductsPerCategory(),
+  ]);
 
   const complementsByCategory = new Map<string, string[]>();
   for (const pair of complementPairs) {
@@ -3358,6 +4201,7 @@ export async function renderCategoriasPage(
     list.push(pair.complementaryCategoryId);
     complementsByCategory.set(pair.categoryId, list);
   }
+  const childrenByParent = new Set(categories.filter((c) => c.parentId !== null).map((c) => c.parentId!));
 
   const banner = query.error
     ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
@@ -3367,57 +4211,58 @@ export async function renderCategoriasPage(
 
   const treeOrder = categoryTreeOrder(categories);
   const orderedCategories = treeOrder
-    .map((node) => categories.find((c) => c.id === node.id))
-    .filter((c): c is CategoryRecord => c !== undefined);
+    .map((node) => ({ category: categories.find((c) => c.id === node.id), depth: node.depth }))
+    .filter(
+      (n): n is { category: CategoryRecord; depth: number } => n.category !== undefined,
+    );
 
   const rows = orderedCategories
-    .map((category) => {
+    .map(({ category, depth }) => {
       const formId = `categoria-${category.id}`;
-      const estadoChip = category.active
-        ? '<span class="chip chip--go">Activa</span>'
-        : '<span class="chip chip--redline">Inactiva</span>';
-      const estadoAction = `<form method="POST" action="/admin/categorias/${category.id}/${category.active ? "desactivar" : "activar"}">
-        <button type="submit" class="btn ${category.active ? "btn--danger" : "btn--go"} btn--sm">${category.active ? "Desactivar" : "Activar"}</button>
-      </form>`;
-
-      const parentOptions = `<option value=""${category.parentId === null ? " selected" : ""}>— Categoría raíz —</option>` +
-        categories
-          .filter((c) => !isSelfOrDescendant(categories, c.id, category.id))
-          .map(
-            (c) =>
-              `<option value="${c.id}"${c.id === category.parentId ? " selected" : ""}>${escapeHtml(categoryPath(categories, c.id).join(" › "))}</option>`,
-          )
-          .join("");
-
+      const editarDialogId = `editar-categoria-${category.id}`;
       const selectedComplements = new Set(complementsByCategory.get(category.id) ?? []);
-      const complementOptions = categories
-        .filter((c) => c.id !== category.id)
-        .map(
-          (c) =>
-            `<option value="${c.id}"${selectedComplements.has(c.id) ? " selected" : ""}>${escapeHtml(c.name)}</option>`,
-        )
+      const productCount = productCounts[category.id] ?? 0;
+      const hasChildren = childrenByParent.has(category.id);
+      const guides = Array.from({ length: depth }, () => `<span class="cattree__guide"></span>`).join("");
+      const toggle = hasChildren
+        ? `<button type="button" class="cattree__toggle" data-cat-toggle aria-label="Colapsar o expandir">${ICON_CHEVRON}</button>`
+        : `<span class="cattree__spacer"></span>`;
+      const complementTags = [...selectedComplements]
+        .map((id) => categories.find((c) => c.id === id)?.name)
+        .filter((name): name is string => Boolean(name))
+        .map((name) => `<span class="tag">${escapeHtml(name)}</span>`)
         .join("");
 
-      return `<tr>
-        <td class="mono hint">${escapeHtml(categoryPath(categories, category.id).join(" › "))}</td>
+      return `<tr class="cattree__row" data-cat-row="${category.id}" data-cat-parent="${category.parentId ?? ""}" data-cat-active="${category.active}" data-cat-search="${escapeHtml(category.name.toLowerCase())}">
         <td>
-          <form id="${formId}" method="POST" action="/admin/categorias/${category.id}">
-            <input type="text" name="name" value="${escapeHtml(category.name)}" required>
-          </form>
+          <div class="cattree__branch">${guides}${toggle}
+            <form id="${formId}" method="POST" action="/admin/categorias/${category.id}">
+              <input type="hidden" name="parentId" value="${category.parentId ?? ""}">
+              <input type="hidden" name="sortOrder" value="${category.sortOrder}">
+              ${[...selectedComplements].map((id) => `<input type="hidden" name="complementIds[]" value="${id}">`).join("")}
+              <input type="text" name="name" class="cattree__name" value="${escapeHtml(category.name)}" required>
+            </form>
+          </div>
         </td>
-        <td><select name="parentId" form="${formId}">${parentOptions}</select></td>
-        <td><input type="number" name="sortOrder" form="${formId}" value="${category.sortOrder}" style="width:64px"></td>
-        <td><select name="complementIds" form="${formId}" multiple size="3">${complementOptions}</select></td>
-        <td>${estadoChip}</td>
-        <td><div class="rowactions"><button type="submit" form="${formId}" class="btn btn--primary btn--sm">Guardar</button>${estadoAction}</div></td>
-      </tr>`;
+        <td><a class="countbadge" href="/admin/productos?categoryId=${category.id}"><strong>${productCount}</strong> ${productCount === 1 ? "producto" : "productos"}</a></td>
+        <td>${complementTags || '<span class="hint">—</span>'}</td>
+        <td>${statusToggleHtml(`/admin/categorias/${category.id}`, category.active, `la categoría "${category.name}"`, "Activa", "Inactiva")}</td>
+        <td><div class="rowactions">
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
+        </div></td>
+      </tr>
+      ${categoriaEditDialogHtml(category, categories, selectedComplements)}`;
     })
     .join("\n");
 
   const rootParentOptions =
     `<option value="">— Categoría raíz —</option>` +
     orderedCategories
-      .map((c) => `<option value="${c.id}">${escapeHtml(categoryPath(categories, c.id).join(" › "))}</option>`)
+      .map(
+        ({ category }) =>
+          `<option value="${category.id}">${escapeHtml(categoryPath(categories, category.id).join(" › "))}</option>`,
+      )
       .join("");
 
   const body = `
@@ -3428,12 +4273,24 @@ export async function renderCategoriasPage(
     </div>
     ${banner}
     <div class="panel tablewrap">
-      <div class="blockhead blockhead--end">
-        <button type="button" data-open-dialog="nueva-categoria-dialog" class="btn btn--primary btn--icon" aria-label="Agregar categoría" title="Agregar categoría">${ICON_PLUS}</button>
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-cattree-search placeholder="Buscar categoría…" aria-label="Buscar categorías">
+        <select class="tablefilter" data-cattree-estado aria-label="Filtrar por estado">
+          <option value="">Todas</option>
+          <option value="activas">Activas</option>
+          <option value="inactivas">Inactivas</option>
+        </select>
+        <div class="tabletools__actions">
+          <button type="button" data-open-dialog="nueva-categoria-dialog" class="btn btn--add" aria-label="Agregar categoría"><span class="btn--add__plus">+</span> Nueva categoría</button>
+        </div>
       </div>
-      <table>
-        <thead><tr><th>Ruta</th><th>Nombre</th><th>Categoría padre</th><th>Orden</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
+      <table data-cattree>
+        <colgroup>
+          <col style="width:32%"><col style="width:12%">
+          <col style="width:19%"><col style="width:20%"><col style="width:17%">
+        </colgroup>
+        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
     </div>
     <dialog id="nueva-categoria-dialog" class="modal">
