@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { createWompiPaymentLink, getWompiConfig, withTransaction } from "../../shared/db/index.js";
 import { createPaymentLink, MIN_AMOUNT_COP } from "../../payments/wompiClient.js";
+import { buildIdempotencyKey } from "./idempotency.js";
 
 export type PaymentMethod =
   | "transferencia"
@@ -46,21 +46,6 @@ export interface CrearPedidoOutput {
     municipality: string | null;
     city: string | null;
   } | null;
-}
-
-/**
- * Genera el idempotency_key de forma determinística a partir del quote_id
- * y un identificador estable del intento de confirmación — el
- * message_sid del mensaje de WhatsApp que disparó la llamada (ver
- * docs/fase-6-dominio-comercial/flujo-cotizacion-pedido.md). A propósito
- * NO se expone como parámetro de la tool al LLM (ver
- * orchestrator/toolDefinitions.ts): el mecanismo depende de datos que el
- * modelo nunca ve, y un valor inventado por el LLM no sería estable entre
- * reintentos — igual que conversation_id, lo inyecta el orquestador, no
- * el modelo.
- */
-function buildIdempotencyKey(quoteId: string, messageSid: string): string {
-  return createHash("sha256").update(`${quoteId}:${messageSid}`).digest("hex");
 }
 
 /**
@@ -235,9 +220,16 @@ export async function crearPedido(
   }
 
   const created = await withTransaction(async (client) => {
+    // `orders.status` nace en 'abierto', no 'confirmed' (Fase 15, ver
+    // ADR-033) — todo pedido nuevo puede seguir recibiendo productos via
+    // agregar_item_pedido antes de despacharse, sin importar el método de
+    // pago. El "confirmed" que devuelve esta tool más abajo es el status
+    // del OUTPUT (contrato con el LLM, ver CrearPedidoOutput), no el valor
+    // de esta columna — son conceptos distintos que hoy coinciden en texto
+    // por herencia histórica, no por diseño.
     const order = await client.query<{ id: string }>(
       `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id, delivery_address, delivery_id_document, delivery_full_name, delivery_municipality, delivery_city)
-       VALUES ($1, $2, $3, 'confirmed', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       VALUES ($1, $2, $3, 'abierto', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING id`,
       [

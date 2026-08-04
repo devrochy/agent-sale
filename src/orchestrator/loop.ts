@@ -83,13 +83,18 @@ function buildDifficultySignal(messages: LLMMessage[], state: Record<string, unk
 }
 
 /**
- * "monto_alto" de crear_pedido significa que la tool se negó a confirmar
- * el pedido (ver crearPedido.ts: el chequeo corre *antes* del INSERT, así
- * que si devuelve esto no se creó ningún pedido ni se descontó stock —
+ * "monto_alto" de crear_pedido/agregar_item_pedido significa que la tool
+ * se negó a confirmar el pedido o el lote de items (ver crearPedido.ts/
+ * agregarItemPedido.ts: el chequeo corre *antes* del INSERT, así que si
+ * devuelve esto no se creó ni se modificó nada, ni se descontó stock —
  * evita el problema de escalar después de haber confirmado ya el pedido).
  */
 function isPedidoRechazadoPorMontoAlto(toolName: string, toolResult: ContentBlock): number | null {
-  if (toolName !== "crear_pedido" || toolResult.type !== "tool_result" || toolResult.is_error) {
+  if (
+    (toolName !== "crear_pedido" && toolName !== "agregar_item_pedido") ||
+    toolResult.type !== "tool_result" ||
+    toolResult.is_error
+  ) {
     return null;
   }
   try {
@@ -126,12 +131,17 @@ function extractSingleMatchImageUrl(toolName: string, toolResult: ContentBlock):
 /**
  * Link de pago de Wompi a anexar a la respuesta (Fase 12.4, ver ADR-024):
  * mismo criterio determinístico que extractSingleMatchImageUrl —
- * "crear_pedido" puede devolver "payment_link_url" cuando el método es
- * 'pago_en_linea' y el pedido quedó pendiente de pago; nunca se confía en
- * que el modelo copie el link correctamente en su texto.
+ * "crear_pedido" y "agregar_item_pedido" pueden devolver "payment_link_url"
+ * cuando el método es 'pago_en_linea' y el pedido queda (o sigue) pendiente
+ * de pago con un total actualizado; nunca se confía en que el modelo copie
+ * el link correctamente en su texto.
  */
 function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): string | null {
-  if (toolName !== "crear_pedido" || toolResult.type !== "tool_result" || toolResult.is_error) {
+  if (
+    (toolName !== "crear_pedido" && toolName !== "agregar_item_pedido") ||
+    toolResult.type !== "tool_result" ||
+    toolResult.is_error
+  ) {
     return null;
   }
   try {

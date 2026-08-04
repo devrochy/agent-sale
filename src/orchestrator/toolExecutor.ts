@@ -8,6 +8,10 @@ import {
 } from "../domains/commerce/aplicarPromocion.js";
 import { crearPedido, type CrearPedidoInput } from "../domains/commerce/crearPedido.js";
 import {
+  agregarItemPedido,
+  type AgregarItemPedidoInput,
+} from "../domains/commerce/agregarItemPedido.js";
+import {
   generarCotizacion,
   type GenerarCotizacionInput,
 } from "../domains/commerce/generarCotizacion.js";
@@ -29,10 +33,11 @@ type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>;
  * tool realmente hizo, no lo que el modelo dijo que iba a hacer).
  * `customerId` y `messageSid` son contexto inyectado por el orquestador
  * (nunca expuesto al LLM) — el primero para generar_cotizacion, el
- * segundo para el idempotency_key de crear_pedido. `montoAltoThreshold`
- * también lo inyecta el orquestador, solo lo usa crear_pedido (ver
- * crearPedido.ts) para negarse a confirmar un pedido de monto alto en vez
- * de confirmarlo y recién después decidir escalar.
+ * segundo para el idempotency_key de crear_pedido/agregar_item_pedido.
+ * `montoAltoThreshold` también lo inyecta el orquestador, lo usan
+ * crear_pedido y agregar_item_pedido (ver crearPedido.ts/
+ * agregarItemPedido.ts) para negarse a confirmar un pedido de monto alto
+ * en vez de confirmarlo y recién después decidir escalar.
  */
 export async function executeTool(
   conversationId: string,
@@ -66,6 +71,13 @@ export async function executeTool(
         break;
       case "crear_pedido":
         output = await crearPedido(messageSid, toolUse.input as CrearPedidoInput, montoAltoThreshold);
+        break;
+      case "agregar_item_pedido":
+        output = await agregarItemPedido(
+          messageSid,
+          toolUse.input as AgregarItemPedidoInput,
+          montoAltoThreshold,
+        );
         break;
       case "recomendar_producto":
         output = await recomendarProducto(toolUse.input as RecomendarProductoInput);
