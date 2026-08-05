@@ -451,10 +451,27 @@ describe("panel admin", () => {
       expect(response.body).toContain("Con pedido");
     });
 
-    it("el último mensaje ignora los tool_results vacíos y muestra el texto real del cliente", async () => {
+    it("agrega columna de clasificación, toggle de bot, pedidos/última compra/ciudad y accesos a promoción/detalle por fila (Fase 23, ver ADR-036)", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/leads",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Clasificación");
+      expect(response.body).toContain("<th>Bot</th>");
+      expect(response.body).toContain("<th>Pedidos</th>");
+      expect(response.body).toContain("Última compra");
+      expect(response.body).toContain("<th>Ciudad</th>");
+      expect(response.body).toContain("Crear promoción para este segmento");
+      expect(response.body).toContain("Ver información del cliente");
+      expect(response.body).not.toContain("<th>Último mensaje</th>");
+    });
+
+    it("el último mensaje ignora los tool_results vacíos y muestra el texto real del cliente en el CSV (Fase 23: la tabla en pantalla ya no muestra esta columna, ver ADR-036)", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/leads.csv",
         headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
@@ -470,7 +487,9 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers["content-type"]).toContain("text/csv");
       expect(response.headers["content-disposition"]).toContain("leads.csv");
-      expect(response.body).toContain("nombre,telefono,ultimo_mensaje,estado,cliente_desde");
+      expect(response.body).toContain(
+        "nombre,telefono,ultimo_mensaje,estado,clasificacion,pedidos,ultima_compra,ciudad,cliente_desde",
+      );
       expect(response.body).toContain("Cliente Con Pedido");
       // Regresión: pg parsea timestamptz como objeto Date, no string — un
       // .toString() implícito al armar el CSV a mano produce
