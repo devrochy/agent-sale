@@ -115,13 +115,23 @@ describe("escalarHumano", () => {
 
   it("no falla si no hay ningún admin con recibeTickets ni teléfono legado configurado", async () => {
     // `settings.report_recipient_phone` es un singleton persistente (ver
-    // getReportRecipient()) — se limpia y se restaura acá para no depender
-    // de si ya hay uno configurado en la base de datos de desarrollo.
+    // getReportRecipient()) — en una base de datos recién migrada (CI) puede
+    // no existir ninguna fila todavía, a diferencia de una base de
+    // desarrollo con uso previo, así que esta prueba crea la suya propia si
+    // hace falta (mismo patrón que el resto de los tests de integración) en
+    // vez de asumir que otra prueba ya la dejó creada.
     const previous = await adminPool.query<{ id: string; report_recipient_phone: string | null }>(
       `SELECT id, report_recipient_phone FROM settings LIMIT 1`,
     );
-    const settingsId = previous.rows[0]!.id;
-    const previousPhone = previous.rows[0]!.report_recipient_phone;
+    const settingsId =
+      previous.rows[0]?.id ??
+      (
+        await adminPool.query<{ id: string }>(
+          `INSERT INTO settings (name) VALUES ('Escalar Humano Test') RETURNING id`,
+        )
+      ).rows[0]!.id;
+    const previousPhone = previous.rows[0]?.report_recipient_phone ?? null;
+    const createdBySelf = previous.rows.length === 0;
     await adminPool.query(`UPDATE settings SET report_recipient_phone = NULL WHERE id = $1`, [settingsId]);
 
     try {
@@ -130,10 +140,14 @@ describe("escalarHumano", () => {
       ).resolves.toMatchObject({ status: "queued" });
       expect(sendWhatsAppMessage).not.toHaveBeenCalled();
     } finally {
-      await adminPool.query(`UPDATE settings SET report_recipient_phone = $1 WHERE id = $2`, [
-        previousPhone,
-        settingsId,
-      ]);
+      if (createdBySelf) {
+        await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
+      } else {
+        await adminPool.query(`UPDATE settings SET report_recipient_phone = $1 WHERE id = $2`, [
+          previousPhone,
+          settingsId,
+        ]);
+      }
     }
   });
 
