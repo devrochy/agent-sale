@@ -51,6 +51,12 @@ import {
   type PromotionInput,
   type PromotionRecord,
 } from "../shared/db/promotionsDirectory.js";
+import {
+  setCustomerBotPaused,
+  updateCustomerProfile,
+  type CustomerProfileInput,
+} from "../shared/db/customersDirectory.js";
+import { clasificarCliente, type CustomerSegment } from "../domains/commerce/aplicarPromocion.js";
 import { parseCsv } from "../shared/csv/parseCsv.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
 import {
@@ -374,6 +380,14 @@ const ICON_CALENDARIO =
 
 const ICON_PERSONALIZADO =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h10"/><circle cx="6" cy="4.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="11" cy="8" r="1.3" fill="currentColor" stroke="none"/><circle cx="7" cy="11.5" r="1.3" fill="currentColor" stroke="none"/></svg>';
+
+/** Botón "Crear promoción" por fila (Productos/Aliados/Categorías/Leads, Fase 23 sub-fase 3). */
+const ICON_PERCENT =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 3.5 3.5 12.5"/><circle cx="4.6" cy="4.6" r="1.6"/><circle cx="11.4" cy="11.4" r="1.6"/></svg>';
+
+/** Botón "Ver/editar información del cliente" por fila (Leads, Fase 23 sub-fase 3, ver ADR-036). */
+const ICON_USER =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.2" r="2.4"/><path d="M2.8 13.2c0-2.6 2.3-4.4 5.2-4.4s5.2 1.8 5.2 4.4"/></svg>';
 
 function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminRecord): string {
   const isMaster = admin.role === "master";
@@ -720,6 +734,7 @@ section.block { margin-bottom: 34px; }
 .chip--amber { color: var(--ignition); background: rgba(156, 97, 8, 0.12); }
 @media (prefers-color-scheme: dark) { .chip--amber { background: rgba(232, 163, 61, 0.16); } }
 .chip--muted { color: var(--ink-faint); background: var(--panel-inset); }
+.chip--inactive { color: var(--redline); background: var(--panel-inset); }
 @media (max-width: 560px) { .convrow { grid-template-columns: 1fr; } .convrow__meta { grid-column: 1; justify-content: flex-start; } }
 .empty { padding: 28px 20px; color: var(--ink-faint); font-size: 13px; }
 table { border-collapse: collapse; width: 100%; min-width: 720px; table-layout: fixed; font-size: 13.5px; }
@@ -1006,6 +1021,8 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
 .banner--error { background: var(--redline-soft); color: var(--redline); }
+.banner--warn { background: rgba(156, 97, 8, 0.12); color: var(--ignition); }
+@media (prefers-color-scheme: dark) { .banner--warn { background: rgba(232, 163, 61, 0.16); } }
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
@@ -2496,16 +2513,40 @@ const LEAD_ESTADO_CHIP: Record<LeadEstado, string> = {
   sin_actividad_comercial: "chip--muted",
 };
 
+// Ver ADR-036 — mapeo de color decidido durante la implementación (la ADR
+// no especifica colores puntuales, solo pide reusar `STYLE_BLOCK`
+// existente donde alcance): "frecuente"/"fiel" comparten `chip--go` (se
+// distinguen por el texto), "inactivo" usa `chip--inactive` (nueva, ver
+// STYLE_BLOCK) para no confundirse con el `chip--redline` de "escalada"
+// en la misma fila.
+const SEGMENT_LABEL: Record<CustomerSegment, string> = {
+  nuevo: "Nuevo",
+  ocasional: "Ocasional",
+  frecuente: "Frecuente",
+  fiel: "Fiel",
+  inactivo: "Inactivo",
+};
+const SEGMENT_CHIP: Record<CustomerSegment, string> = {
+  nuevo: "chip--muted",
+  ocasional: "chip--amber",
+  frecuente: "chip--go",
+  fiel: "chip--go",
+  inactivo: "chip--inactive",
+};
+
 const LEADS_QUERY = `
   SELECT
-    c.id, c.name, c.phone_number, c.created_at,
+    c.id, c.name, c.phone_number, c.created_at, c.bot_paused,
+    c.full_name, c.id_document, c.address, c.municipality, c.city,
     m.content AS ultimo_mensaje,
     CASE
       WHEN o.customer_id IS NOT NULL THEN 'con_pedido'
       WHEN h.customer_id IS NOT NULL THEN 'escalada'
       WHEN q.customer_id IS NOT NULL THEN 'con_cotizacion'
       ELSE 'sin_actividad_comercial'
-    END AS estado
+    END AS estado,
+    COALESCE(ord.pedidos, 0) AS pedidos,
+    ord.ultima_compra AS ultima_compra
   FROM customers c
   LEFT JOIN LATERAL (
     SELECT content FROM messages msg
@@ -2519,6 +2560,14 @@ const LEADS_QUERY = `
   ) m ON true
   LEFT JOIN (SELECT DISTINCT customer_id FROM orders) o ON o.customer_id = c.id
   LEFT JOIN (
+    -- mismo filtro que clasificarCliente() (un pedido expirado nunca se
+    -- vendió de verdad, Fase 15/16) — da contexto de por qué el sistema
+    -- asignó cada clasificación, ver ADR-036.
+    SELECT customer_id, count(*) AS pedidos, max(created_at) AS ultima_compra
+    FROM orders WHERE status != 'expirado'
+    GROUP BY customer_id
+  ) ord ON ord.customer_id = c.id
+  LEFT JOIN (
     SELECT DISTINCT conv.customer_id FROM handoff_queue h
     JOIN conversations conv ON conv.id = h.conversation_id
   ) h ON h.customer_id = c.id
@@ -2531,15 +2580,72 @@ interface LeadRow {
   name: string | null;
   phone_number: string;
   created_at: string;
+  bot_paused: boolean;
+  full_name: string | null;
+  id_document: string | null;
+  address: string | null;
+  municipality: string | null;
+  city: string | null;
   ultimo_mensaje: string | null;
   estado: LeadEstado;
+  pedidos: string;
+  ultima_compra: string | null;
 }
 
-async function fetchLeads(): Promise<LeadRow[]> {
+type LeadRowWithSegment = LeadRow & { segment: CustomerSegment };
+
+async function fetchLeads(): Promise<LeadRowWithSegment[]> {
   return withTransaction(async (client) => {
     const result = await client.query<LeadRow>(LEADS_QUERY);
-    return result.rows;
+    // clasificarCliente() dispara varias queries por el mismo client — se
+    // resuelve una fila a la vez (no Promise.all) porque un solo pg.Client
+    // no soporta queries concurrentes.
+    const rows: LeadRowWithSegment[] = [];
+    for (const row of result.rows) {
+      rows.push({ ...row, segment: await clasificarCliente(client, row.id) });
+    }
+    return rows;
   });
+}
+
+/** Modal "ver/editar información del cliente" (Fase 23 sub-fase 3, ver ADR-036) — edita el perfil permanente (`customers.*`), nunca `orders.delivery_*` (esa es la copia congelada de un pedido en curso, Fase 15/ADR-033). */
+function leadDetailDialogHtml(dialogId: string, row: LeadRowWithSegment): string {
+  const who = row.name ?? row.phone_number;
+  return `<dialog id="${dialogId}" class="modal">
+    <div class="blockhead"><h2>Información de ${escapeHtml(who)}</h2></div>
+    <form method="POST" action="/admin/leads/${row.id}">
+      <div class="field">
+        <label for="${dialogId}-nombre">Nombre completo</label>
+        <input type="text" id="${dialogId}-nombre" name="fullName" value="${escapeHtml(row.full_name ?? "")}">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-telefono">Teléfono</label>
+        <input type="text" id="${dialogId}-telefono" value="${escapeHtml(row.phone_number)}" disabled>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-cedula">Cédula</label>
+        <input type="text" id="${dialogId}-cedula" name="idDocument" value="${escapeHtml(row.id_document ?? "")}">
+      </div>
+      <div class="field">
+        <label for="${dialogId}-direccion">Dirección</label>
+        <input type="text" id="${dialogId}-direccion" name="address" value="${escapeHtml(row.address ?? "")}">
+      </div>
+      <div class="fieldgrid">
+        <div class="field">
+          <label for="${dialogId}-municipio">Municipio</label>
+          <input type="text" id="${dialogId}-municipio" name="municipality" value="${escapeHtml(row.municipality ?? "")}">
+        </div>
+        <div class="field">
+          <label for="${dialogId}-ciudad">Ciudad</label>
+          <input type="text" id="${dialogId}-ciudad" name="city" value="${escapeHtml(row.city ?? "")}">
+        </div>
+      </div>
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Guardar cambios</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
 }
 
 /**
@@ -2547,27 +2653,52 @@ async function fetchLeads(): Promise<LeadRow[]> {
  * conversaciones-leads-tickets.md): "resumen" y "estado" se derivan de
  * datos ya existentes, no de un resumen generado por LLM — evita el costo
  * recurrente que mapeo-funcionalidades.md marca fuera de alcance.
+ * Rediseño de columnas y clasificación de cliente en Fase 23 (ver ADR-036).
  */
-export async function renderLeadsPage(admin: AdminRecord): Promise<string | null> {
+export async function renderLeadsPage(
+  admin: AdminRecord,
+  query: { guardado?: string } = {},
+): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
-  const rows = await fetchLeads();
+  const banner = query.guardado ? `<div class="banner banner--ok">Cambios guardados.</div>` : "";
+  const [rows, allies, categories, products] = await Promise.all([
+    fetchLeads(),
+    listAllies(),
+    listCategories(),
+    listProductsSummary(),
+  ]);
 
   const tableRows = rows
     .map((row) => {
       const who = row.name ?? row.phone_number;
-      const search = [row.name, row.phone_number, row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado]]
+      const promoDialogId = `promo-lead-${row.id}`;
+      const detailDialogId = `detalle-lead-${row.id}`;
+      const search = [row.name, row.phone_number, row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
+      // Ver ADR-035 "Leads no puede crear una promoción 1:1": la promoción
+      // queda anclada al segmento del cliente, no al cliente puntual.
+      const warning = `Esta promoción aplicará a todos los clientes clasificados como "${SEGMENT_LABEL[row.segment]}", no solo a ${who}.`;
       return `<tr data-search="${escapeHtml(search)}">
         <td>${escapeHtml(who)}</td>
-        <td>${escapeHtml(row.ultimo_mensaje ?? "")}</td>
+        <td><span class="chip ${SEGMENT_CHIP[row.segment]}">${escapeHtml(SEGMENT_LABEL[row.segment])}</span></td>
+        <td>${toggleSwitchHtml(`/admin/leads/${row.id}`, !row.bot_paused, `el bot para "${who}"`)}</td>
         <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
+        <td class="mono">${row.pedidos}</td>
+        <td>${row.ultima_compra ? formatRelativo(row.ultima_compra) : "—"}</td>
+        <td>${escapeHtml(row.city ?? "—")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
-      </tr>`;
+        <td><div class="rowactions">
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
+          <button type="button" data-open-dialog="${detailDialogId}" class="btn btn--ghost btn--icon" aria-label="Ver información del cliente" title="Ver información del cliente">${ICON_USER}</button>
+        </div></td>
+      </tr>
+      ${promocionDialogHtml(promoDialogId, "/admin/promociones", `Promoción para segmento "${SEGMENT_LABEL[row.segment]}"`, "Crear promoción", null, allies, categories, products, { dimension: "todo", presetSegment: row.segment, warning })}
+      ${leadDetailDialogHtml(detailDialogId, row)}`;
     })
     .join("\n");
 
@@ -2582,16 +2713,22 @@ export async function renderLeadsPage(admin: AdminRecord): Promise<string | null
         <a class="btn" href="/admin/leads.csv">Exportar CSV</a>
       </div>
     </div>
+    ${banner}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
-        <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, mensaje o estado…" aria-label="Buscar leads">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, ciudad, clasificación o estado…" aria-label="Buscar leads">
       </div>
       <table data-resizable-table="leads">
         <colgroup>
-          <col style="width:20%"><col style="width:44%"><col style="width:18%"><col style="width:18%">
+          <col style="width:16%"><col style="width:10%"><col style="width:6%">
+          <col style="width:10%"><col style="width:7%"><col style="width:10%">
+          <col style="width:9%"><col style="width:10%"><col style="width:22%">
         </colgroup>
-        <thead><tr><th>Cliente</th><th>Último mensaje</th><th>Estado</th><th>Cliente desde</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="4">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
+        <thead><tr>
+          <th>Cliente</th><th>Clasificación</th><th>Bot</th><th>Estado</th>
+          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th>Acciones</th>
+        </tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
@@ -2615,19 +2752,41 @@ export async function exportLeadsCsv(): Promise<string | null> {
   }
   const rows = await fetchLeads();
   return toCsv(
-    ["nombre", "telefono", "ultimo_mensaje", "estado", "cliente_desde"],
+    ["nombre", "telefono", "ultimo_mensaje", "estado", "clasificacion", "pedidos", "ultima_compra", "ciudad", "cliente_desde"],
     rows.map((row) => [
       row.name ?? "",
       row.phone_number,
       row.ultimo_mensaje ?? "",
       LEAD_ESTADO_LABEL[row.estado],
+      SEGMENT_LABEL[row.segment],
+      row.pedidos,
       // pg parsea timestamptz como objeto Date, no string, pese al tipo
       // declarado en LeadRow — a diferencia de formatFecha() (que ya
       // tolera Date u string vía `new Date(value)`), acá se serializa a
       // mano, así que hay que normalizar explícito antes de armar el CSV.
+      row.ultima_compra ? new Date(row.ultima_compra).toISOString() : "",
+      row.city ?? "",
       new Date(row.created_at).toISOString(),
     ]),
   );
+}
+
+export async function activarBotLead(customerId: string): Promise<void> {
+  await setCustomerBotPaused(customerId, false);
+}
+
+export async function desactivarBotLead(customerId: string): Promise<void> {
+  await setCustomerBotPaused(customerId, true);
+}
+
+export async function guardarInfoLead(customerId: string, input: CustomerProfileInput): Promise<void> {
+  await updateCustomerProfile(customerId, {
+    fullName: input.fullName?.trim() || null,
+    idDocument: input.idDocument?.trim() || null,
+    address: input.address?.trim() || null,
+    municipality: input.municipality?.trim() || null,
+    city: input.city?.trim() || null,
+  });
 }
 
 const HANDOFF_REASON_LABEL: Record<string, string> = {
@@ -3407,6 +3566,7 @@ export async function renderProductosPage(
         .toLowerCase();
       const rapidoFormId = `rapido-${product.id}`;
       const editarDialogId = `editar-producto-${product.id}`;
+      const promoDialogId = `promo-producto-${product.id}`;
       const expandId = `variantes-${product.id}`;
       const priceRange =
         product.minPrice === product.maxPrice
@@ -3445,12 +3605,21 @@ export async function renderProductosPage(
         <td><div class="rowactions">
           <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
           <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <tr class="expandrow" id="${expandId}"><td colspan="7"><div class="variantgrid">${variantChips}</div></td></tr>
-      ${productoDialogHtml(editarDialogId, `Editar ${product.name}`, detail, allies, categories)}`;
+      ${productoDialogHtml(editarDialogId, `Editar ${product.name}`, detail, allies, categories)}
+      ${promocionDialogHtml(promoDialogId, "/admin/promociones", `Promoción para ${product.name}`, "Crear promoción", null, allies, categories, products, { dimension: "producto", id: product.id, label: product.name })}`;
     })
     .join("\n");
+
+  const promoVariantsByProduct: Record<string, { id: string; sku: string }[]> = {};
+  for (const detail of productDetails) {
+    if (detail) {
+      promoVariantsByProduct[detail.id] = detail.variants.map((v) => ({ id: v.id, sku: v.sku }));
+    }
+  }
 
   const body = `
     <div class="pagehead">
@@ -3503,6 +3672,7 @@ export async function renderProductosPage(
     ${productoDialogHtml("nuevo-producto-dialog", "Nuevo producto", null, allies, categories)}
     ${importarCsvDialogHtml(allies)}
     ${importarCsvPreviewDialogHtml(categories)}
+    <script type="application/json" data-promo-variants-data>${JSON.stringify(promoVariantsByProduct).replace(/</g, "\\u003c")}</script>
   `;
 
   return layout(`Catálogo (${products.length} productos)`, tenant, body, "productos", admin);
@@ -4103,7 +4273,12 @@ export async function renderAliadosPage(
     return null;
   }
 
-  const [allies, productCounts] = await Promise.all([listAllies(), countProductsPerAlly()]);
+  const [allies, productCounts, categories, products] = await Promise.all([
+    listAllies(),
+    countProductsPerAlly(),
+    listCategories(),
+    listProductsSummary(),
+  ]);
 
   const banner = query.error
     ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
@@ -4125,6 +4300,7 @@ export async function renderAliadosPage(
     .map((ally) => {
       const formId = `aliado-${ally.id}`;
       const editarDialogId = `editar-aliado-${ally.id}`;
+      const promoDialogId = `promo-aliado-${ally.id}`;
       const productCount = productCounts[ally.id] ?? 0;
       const search = [ally.name, ally.contactInfo].filter((v): v is string => Boolean(v)).join(" ").toLowerCase();
 
@@ -4140,6 +4316,7 @@ export async function renderAliadosPage(
         <td><div class="rowactions">
           <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
           <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <dialog id="${editarDialogId}" class="modal">
@@ -4151,7 +4328,8 @@ export async function renderAliadosPage(
             <button type="button" data-close-dialog="${editarDialogId}" class="btn btn--ghost">Cancelar</button>
           </div>
         </form>
-      </dialog>`;
+      </dialog>
+      ${promocionDialogHtml(promoDialogId, "/admin/promociones", `Promoción para ${ally.name}`, "Crear promoción", null, allies, categories, products, { dimension: "aliado", id: ally.id, label: ally.name })}`;
     })
     .join("\n");
 
@@ -4337,10 +4515,12 @@ export async function renderCategoriasPage(
     return null;
   }
 
-  const [categories, complementPairs, productCounts] = await Promise.all([
+  const [categories, complementPairs, productCounts, allies, products] = await Promise.all([
     listCategories(),
     listAllComplementPairs(),
     countProductsPerCategory(),
+    listAllies(),
+    listProductsSummary(),
   ]);
 
   const complementsByCategory = new Map<string, string[]>();
@@ -4368,6 +4548,7 @@ export async function renderCategoriasPage(
     .map(({ category, depth }) => {
       const formId = `categoria-${category.id}`;
       const editarDialogId = `editar-categoria-${category.id}`;
+      const promoDialogId = `promo-categoria-${category.id}`;
       const selectedComplements = new Set(complementsByCategory.get(category.id) ?? []);
       const productCount = productCounts[category.id] ?? 0;
       const hasChildren = childrenByParent.has(category.id);
@@ -4398,9 +4579,11 @@ export async function renderCategoriasPage(
         <td><div class="rowactions">
           <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
           <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
-      ${categoriaEditDialogHtml(category, categories, selectedComplements)}`;
+      ${categoriaEditDialogHtml(category, categories, selectedComplements)}
+      ${promocionDialogHtml(promoDialogId, "/admin/promociones", `Promoción para ${category.name}`, "Crear promoción", null, allies, categories, products, { dimension: "categoria", id: category.id, label: categoryPath(categories, category.id).join(" › ") })}`;
     })
     .join("\n");
 
@@ -4547,6 +4730,20 @@ function promocionDimensionLabel(promo: PromotionRecord): string {
   return "Todo el catálogo";
 }
 
+/**
+ * Entrada bloqueada a una sola dimensión (Fase 23 sub-fase 3, ver ADR-035) — permite
+ * abrir el diálogo de promoción desde una fila de Productos/Aliados/Categorías con esa
+ * dimensión pre-fijada, o desde Leads con un segmento pre-marcado (sin fijar dimensión,
+ * ver la limitación explícita "Leads no puede crear una promoción 1:1" en ADR-035).
+ */
+interface PromoEntryLock {
+  dimension: "todo" | "aliado" | "categoria" | "producto";
+  id?: string;
+  label?: string;
+  presetSegment?: string;
+  warning?: string;
+}
+
 function promocionDialogHtml(
   dialogId: string,
   actionUrl: string,
@@ -4556,10 +4753,22 @@ function promocionDialogHtml(
   allies: AllyRecord[],
   categories: CategoryRecord[],
   products: ProductSummary[],
+  lock?: PromoEntryLock,
 ): string {
   const tipo = promo && promo.type !== "volumen" ? promo.type : "temporada";
-  const dimension = promo?.allyId ? "aliado" : promo?.categoryId ? "categoria" : promo?.productId ? "producto" : "todo";
+  const dimension = lock
+    ? lock.dimension
+    : promo?.allyId
+      ? "aliado"
+      : promo?.categoryId
+        ? "categoria"
+        : promo?.productId
+          ? "producto"
+          : "todo";
   const segmentosSeleccionados = new Set(promo?.eligibleSegments ?? []);
+  if (lock?.presetSegment) {
+    segmentosSeleccionados.add(lock.presetSegment);
+  }
 
   const allyOptions = allies
     .map((a) => `<option value="${a.id}"${a.id === promo?.allyId ? " selected" : ""}>${escapeHtml(a.name)}</option>`)
@@ -4580,8 +4789,22 @@ function promocionDialogHtml(
       </label>`,
   ).join("");
 
+  const allyField =
+    lock?.dimension === "aliado"
+      ? `<input type="hidden" name="allyId" value="${lock.id}"><p class="hint">${escapeHtml(lock.label ?? "")}</p>`
+      : `<select id="${dialogId}-aliado" name="allyId">${allyOptions}</select>`;
+  const categoryField =
+    lock?.dimension === "categoria"
+      ? `<input type="hidden" name="categoryId" value="${lock.id}"><p class="hint">${escapeHtml(lock.label ?? "")}</p>`
+      : `<select id="${dialogId}-categoria" name="categoryId">${categoryOptions}</select>`;
+  const productField =
+    lock?.dimension === "producto"
+      ? `<input type="hidden" name="productId" value="${lock.id}" data-promo-product-select><p class="hint">${escapeHtml(lock.label ?? "")}</p>`
+      : `<select id="${dialogId}-producto" name="productId" data-promo-product-select>${productOptions}</select>`;
+
   return `<dialog id="${dialogId}" class="modal" data-promo-dialog>
     <div class="blockhead"><h2>${escapeHtml(title)}</h2></div>
+    ${lock?.warning ? `<div class="banner banner--warn">${escapeHtml(lock.warning)}</div>` : ""}
     <form method="POST" action="${actionUrl}">
       <div class="field">
         <label>Tipo</label>
@@ -4614,7 +4837,7 @@ function promocionDialogHtml(
           <input type="date" id="${dialogId}-hasta" name="validTo" value="${promo?.validTo ?? ""}">
         </div>
       </div>
-      <div class="field">
+      <div class="field"${lock ? ' style="display:none"' : ""}>
         <label>Dimensión</label>
         <div class="radiogroup">
           <label><input type="radio" name="dimension" value="todo"${dimension === "todo" ? " checked" : ""}> Todo el catálogo</label>
@@ -4625,11 +4848,11 @@ function promocionDialogHtml(
       </div>
       <div class="field" data-promo-dim="aliado">
         <label for="${dialogId}-aliado">Aliado</label>
-        <select id="${dialogId}-aliado" name="allyId">${allyOptions}</select>
+        ${allyField}
       </div>
       <div class="field" data-promo-dim="categoria">
         <label for="${dialogId}-categoria">Categoría</label>
-        <select id="${dialogId}-categoria" name="categoryId">${categoryOptions}</select>
+        ${categoryField}
         <label class="permcheck">
           <input type="checkbox" name="includeChildCategories" value="1"${promo?.includeChildCategories !== false ? " checked" : ""}>
           Incluir subcategorías
@@ -4637,7 +4860,7 @@ function promocionDialogHtml(
       </div>
       <div class="field" data-promo-dim="producto">
         <label for="${dialogId}-producto">Producto</label>
-        <select id="${dialogId}-producto" name="productId" data-promo-product-select>${productOptions}</select>
+        ${productField}
         <div data-promo-variant-wrap>
           <label for="${dialogId}-variante">Variante (opcional)</label>
           <select id="${dialogId}-variante" name="variantId" data-promo-variant-select data-selected="${promo?.variantId ?? ""}">
