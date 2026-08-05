@@ -9,6 +9,7 @@ import {
 } from "../advisor/handoffView.js";
 import {
   activarAliado,
+  activarBotLead,
   activarCategoria,
   activarColaborador,
   activarPromocion,
@@ -19,6 +20,7 @@ import {
   crearPromocion,
   crearProducto,
   desactivarAliado,
+  desactivarBotLead,
   desactivarCategoria,
   desactivarColaborador,
   desactivarPromocion,
@@ -27,6 +29,7 @@ import {
   guardarCategoria,
   guardarCobros,
   guardarComportamiento,
+  guardarInfoLead,
   guardarModeloIa,
   guardarPerfil,
   guardarPermisosColaborador,
@@ -188,7 +191,8 @@ export async function buildServer() {
   });
 
   app.get("/admin/leads", async (request, reply) => {
-    const html = await renderLeadsPage(request.admin!);
+    const { guardado } = request.query as { guardado?: string };
+    const html = await renderLeadsPage(request.admin!, { guardado });
     if (!html) {
       return reply.status(404).send();
     }
@@ -204,6 +208,31 @@ export async function buildServer() {
       .type("text/csv")
       .header("content-disposition", 'attachment; filename="leads.csv"')
       .send(csv);
+  });
+
+  app.post("/admin/leads/:customerId", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    const { fullName, idDocument, address, municipality, city } = request.body as {
+      fullName?: string;
+      idDocument?: string;
+      address?: string;
+      municipality?: string;
+      city?: string;
+    };
+    await guardarInfoLead(customerId, { fullName: fullName ?? null, idDocument: idDocument ?? null, address: address ?? null, municipality: municipality ?? null, city: city ?? null });
+    return reply.status(303).redirect("/admin/leads?guardado=1");
+  });
+
+  app.post("/admin/leads/:customerId/activar", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    await activarBotLead(customerId);
+    return reply.status(303).redirect("/admin/leads?guardado=1");
+  });
+
+  app.post("/admin/leads/:customerId/desactivar", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    await desactivarBotLead(customerId);
+    return reply.status(303).redirect("/admin/leads?guardado=1");
   });
 
   app.get("/admin/tickets", async (request, reply) => {
