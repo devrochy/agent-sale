@@ -84,14 +84,13 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // operador lo ve pendiente en el inbox de Conversaciones.
     // Deliberadamente NO pasa por appendInbound (que podría escalar por
     // palabra clave y mandar un mensaje automático de fallback) — un bot
-    // pausado no manda absolutamente nada. `settings.bot_paused` (global) y
-    // `customers.bot_paused` (por cliente) se combinan con OR — pausado en
-    // cualquiera de los dos niveles alcanza para no responder.
-    const [settings, { conversationId: pausedConversationId, customerBotPaused }] = await Promise.all([
-      getSettings(),
-      resolveConversation(customerPhone, customerName),
-    ]);
-    if (settings?.bot_paused || customerBotPaused) {
+    // pausado no manda absolutamente nada. `settings.bot_paused` (global),
+    // `customers.bot_paused` (por cliente) y `conversations.bot_paused`
+    // (por conversación puntual, Fase 18) se combinan con OR — pausado en
+    // cualquiera de los tres niveles alcanza para no responder.
+    const [settings, { conversationId: pausedConversationId, customerBotPaused, conversationBotPaused }] =
+      await Promise.all([getSettings(), resolveConversation(customerPhone, customerName)]);
+    if (settings?.bot_paused || customerBotPaused || conversationBotPaused) {
       await appendMessage(pausedConversationId, "inbound", "customer", message.body ?? "");
       entryLogger.info(
         { event: "orchestrator.bot_pausado" },

@@ -75,6 +75,7 @@ describe("runTurn — guardrail de precios", () => {
       customerId: "customer-1",
       state: {},
       customerBotPaused: false,
+      conversationBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -107,7 +108,6 @@ describe("runTurn — guardrail de precios", () => {
     vi.mocked(escalarHumano).mockResolvedValue({
       handoff_id: "h1",
       status: "queued",
-      assigned_to: null,
     });
 
     const result = await runTurn("+573000000000", "hola", "sid-1");
@@ -185,6 +185,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
       customerId: "customer-1",
       state: {},
       customerBotPaused: false,
+      conversationBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -227,7 +228,6 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     vi.mocked(escalarHumano).mockResolvedValue({
       handoff_id: "h1",
       status: "queued",
-      assigned_to: null,
     });
 
     const result = await runTurn("+573000000000", "tienen cascos?", "sid-6");
@@ -273,6 +273,7 @@ describe("runTurn — regla de monto alto", () => {
       customerId: "customer-1",
       state: {},
       customerBotPaused: false,
+      conversationBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -313,7 +314,6 @@ describe("runTurn — regla de monto alto", () => {
     vi.mocked(escalarHumano).mockResolvedValue({
       handoff_id: "h1",
       status: "queued",
-      assigned_to: null,
     });
 
     await runTurn("+573000000000", "confirmo el pedido", "sid-4");
@@ -356,6 +356,7 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
       customerId: "customer-1",
       state: {},
       customerBotPaused: false,
+      conversationBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -435,6 +436,7 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
       customerId: "customer-1",
       state: {},
       customerBotPaused: false,
+      conversationBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);

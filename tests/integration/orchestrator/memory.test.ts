@@ -62,3 +62,28 @@ describe("resolveConversation — captura de ProfileName", () => {
     expect(result.rows[0]!.name).toBeNull();
   });
 });
+
+describe("resolveConversation — conversationBotPaused (Fase 18)", () => {
+  const PHONE = "whatsapp:+573000000104";
+
+  afterAll(async () => {
+    await adminPool.query(
+      `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = $1)`,
+      [PHONE],
+    );
+    await adminPool.query(`DELETE FROM customers WHERE phone_number = $1`, [PHONE]);
+  });
+
+  it("devuelve conversationBotPaused: true para una conversación pausada puntualmente", async () => {
+    const first = await resolveConversation(PHONE, "Cliente Pausado");
+    expect(first.conversationBotPaused).toBe(false);
+
+    await adminPool.query(`UPDATE conversations SET bot_paused = true WHERE id = $1`, [
+      first.conversationId,
+    ]);
+
+    const second = await resolveConversation(PHONE);
+    expect(second.conversationId).toBe(first.conversationId);
+    expect(second.conversationBotPaused).toBe(true);
+  });
+});

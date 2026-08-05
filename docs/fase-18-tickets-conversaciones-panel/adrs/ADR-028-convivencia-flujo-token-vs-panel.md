@@ -1,7 +1,7 @@
 # ADR-028: Convivencia del flujo de token de asesor (Fase 7) con la acción desde el panel
 
 ## Estado
-Propuesta (pendiente de aceptación antes de iniciar implementación de la Fase 18).
+Aceptada — implementada en la Fase 18 (`feature/fase18-tickets-conversaciones-panel`).
 
 ## Contexto
 
