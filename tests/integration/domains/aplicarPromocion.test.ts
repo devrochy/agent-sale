@@ -1,8 +1,9 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { aplicarPromocion } from "../../../src/domains/commerce/aplicarPromocion.js";
+import { aplicarPromocion, clasificarCliente } from "../../../src/domains/commerce/aplicarPromocion.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
+import { withTransaction } from "../../../src/shared/db/withTransaction.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
 const { Pool } = pg;
@@ -484,8 +485,8 @@ describe("aplicarPromocion", () => {
       const promo = await adminPool.query<{ id: string }>(
         `INSERT INTO promotions (type, rules, active, eligible_segments) VALUES ('temporada', $1, true, $2) RETURNING id`,
         [
-          JSON.stringify({ kind: "temporada", label: "solo_recurrentes", discount_pct: 20 }),
-          ["recurrente", "fiel"],
+          JSON.stringify({ kind: "temporada", label: "solo_frecuentes", discount_pct: 20 }),
+          ["frecuente", "fiel"],
         ],
       );
       promotionId = promo.rows[0]!.id;
@@ -595,5 +596,97 @@ describe("aplicarPromocion", () => {
     await expect(
       aplicarPromocion({ quote_id: "00000000-0000-0000-0000-000000000000" }),
     ).rejects.toThrow(/Cotización no encontrada/);
+  });
+
+  describe("clasificarCliente en 5 niveles (Fase 23, ADR-036)", () => {
+    // Umbrales por defecto del singleton `settings` sembrado en el
+    // beforeAll de arriba: customer_frecuente_min_pedidos=2,
+    // customer_frecuente_intervalo_max_dias=45,
+    // customer_inactivo_dias_sin_comprar=120, customer_fiel_min_pedidos=5.
+    const conversationIds: string[] = [];
+    const customerIds: string[] = [];
+    const quoteIds: string[] = [];
+
+    async function seedCliente(phone: string): Promise<{ customerId: string; conversationId: string; quoteId: string }> {
+      const ctx = await seedContext(phone);
+      const quote = await adminPool.query<{ id: string }>(
+        `INSERT INTO quotes (conversation_id, customer_id, subtotal, total) VALUES ($1, $2, 50000, 50000) RETURNING id`,
+        [ctx.conversationId, ctx.customerId],
+      );
+      conversationIds.push(ctx.conversationId);
+      customerIds.push(ctx.customerId);
+      quoteIds.push(quote.rows[0]!.id);
+      return { customerId: ctx.customerId, conversationId: ctx.conversationId, quoteId: quote.rows[0]!.id };
+    }
+
+    async function seedPedido(quoteId: string, conversationId: string, customerId: string, ageDays: number): Promise<void> {
+      await adminPool.query(
+        `INSERT INTO orders
+           (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, created_at)
+         VALUES ($1, $2, $3, 'abierto', 'efectivo_contraentrega', 'pagado', 'recoger_en_tienda', $4, 50000, now() - ($5 || ' days')::interval)`,
+        [quoteId, conversationId, customerId, `test-clasificacion-${quoteId}-${ageDays}`, ageDays],
+      );
+    }
+
+    async function clasificar(customerId: string): Promise<string> {
+      return withTransaction((client) => clasificarCliente(client, customerId));
+    }
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM orders WHERE quote_id = ANY($1)`, [quoteIds]);
+      await adminPool.query(`DELETE FROM quotes WHERE id = ANY($1)`, [quoteIds]);
+      await adminPool.query(`DELETE FROM conversations WHERE id = ANY($1)`, [conversationIds]);
+      await adminPool.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
+    });
+
+    it("sin pedidos → nuevo", async () => {
+      const { customerId } = await seedCliente("3030000009");
+
+      await expect(clasificar(customerId)).resolves.toBe("nuevo");
+    });
+
+    it("con un solo pedido → nuevo (deja de serlo en el segundo)", async () => {
+      const { customerId, quoteId, conversationId } = await seedCliente("3030000010");
+      await seedPedido(quoteId, conversationId, customerId, 0);
+
+      await expect(clasificar(customerId)).resolves.toBe("nuevo");
+    });
+
+    it("2+ pedidos con intervalo corto (≤45 días) → frecuente", async () => {
+      const { customerId, quoteId, conversationId } = await seedCliente("3030000011");
+      await seedPedido(quoteId, conversationId, customerId, 20);
+      await seedPedido(quoteId, conversationId, customerId, 10);
+      await seedPedido(quoteId, conversationId, customerId, 0);
+
+      await expect(clasificar(customerId)).resolves.toBe("frecuente");
+    });
+
+    it("2+ pedidos con intervalo largo (>45 días) → ocasional", async () => {
+      const { customerId, quoteId, conversationId } = await seedCliente("3030000012");
+      await seedPedido(quoteId, conversationId, customerId, 100);
+      await seedPedido(quoteId, conversationId, customerId, 50);
+      await seedPedido(quoteId, conversationId, customerId, 0);
+
+      await expect(clasificar(customerId)).resolves.toBe("ocasional");
+    });
+
+    it("5+ pedidos (umbral fiel) → fiel sin importar el intervalo", async () => {
+      const { customerId, quoteId, conversationId } = await seedCliente("3030000013");
+      await seedPedido(quoteId, conversationId, customerId, 40);
+      await seedPedido(quoteId, conversationId, customerId, 30);
+      await seedPedido(quoteId, conversationId, customerId, 20);
+      await seedPedido(quoteId, conversationId, customerId, 10);
+      await seedPedido(quoteId, conversationId, customerId, 0);
+
+      await expect(clasificar(customerId)).resolves.toBe("fiel");
+    });
+
+    it("último pedido hace más de 120 días → inactivo, sobrescribe cualquier otra clasificación", async () => {
+      const { customerId, quoteId, conversationId } = await seedCliente("3030000014");
+      await seedPedido(quoteId, conversationId, customerId, 200);
+      await seedPedido(quoteId, conversationId, customerId, 130);
+
+      await expect(clasificar(customerId)).resolves.toBe("inactivo");
+    });
   });
 });

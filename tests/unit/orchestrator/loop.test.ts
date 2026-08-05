@@ -74,6 +74,7 @@ describe("runTurn — guardrail de precios", () => {
       conversationId: "conv-1",
       customerId: "customer-1",
       state: {},
+      customerBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -183,6 +184,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
       conversationId: "conv-1",
       customerId: "customer-1",
       state: {},
+      customerBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -270,6 +272,7 @@ describe("runTurn — regla de monto alto", () => {
       conversationId: "conv-1",
       customerId: "customer-1",
       state: {},
+      customerBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -352,6 +355,7 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
       conversationId: "conv-1",
       customerId: "customer-1",
       state: {},
+      customerBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
@@ -430,6 +434,7 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
       conversationId: "conv-1",
       customerId: "customer-1",
       state: {},
+      customerBotPaused: false,
     });
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);

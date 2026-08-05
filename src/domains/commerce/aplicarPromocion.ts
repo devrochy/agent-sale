@@ -69,41 +69,74 @@ interface QuoteLineItem {
   quantity: number;
 }
 
-type CustomerSegment = "nuevo" | "recurrente" | "fiel";
+export type CustomerSegment = "nuevo" | "ocasional" | "frecuente" | "fiel" | "inactivo";
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+interface ClassificationThresholds {
+  customer_frecuente_min_pedidos: number;
+  customer_frecuente_intervalo_max_dias: number;
+  customer_inactivo_dias_sin_comprar: number;
+  customer_fiel_min_pedidos: number;
+}
+
+const MS_POR_DIA = 1000 * 60 * 60 * 24;
+
 /**
- * Clasifica al cliente por cantidad de pedidos reales (no expirados) contra
- * los umbrales configurados en `settings` (ver ADR-027, Fase 17). Un pedido
- * `expirado` nunca se vendió de verdad, por eso no cuenta — no existe (ni
- * existió) un literal `orders.status = 'confirmed'`, solo `'abierto'` y
- * `'expirado'` (Fase 15/16).
+ * Clasifica al cliente en 5 niveles (ver ADR-036, Fase 23): conteo de
+ * pedidos reales (no expirados, un `expirado` nunca se vendió de verdad —
+ * Fase 15/16) + periodicidad (intervalo promedio entre pedidos, distingue
+ * "frecuente" de "ocasional") + recencia del último pedido, evaluada
+ * siempre al final como override de "inactivo" — un cliente `fiel` u
+ * `ocasional` que deja de comprar por mucho tiempo es el mismo riesgo de
+ * fuga que un `frecuente` que deja de volver, por eso el override no se
+ * restringe solo a esos dos segmentos.
  */
-async function clasificarCliente(client: PoolClient, customerId: string | null): Promise<CustomerSegment> {
+export async function clasificarCliente(client: PoolClient, customerId: string | null): Promise<CustomerSegment> {
   if (!customerId) {
     return "nuevo";
   }
-  const [countResult, thresholdsResult] = await Promise.all([
-    client.query<{ count: string }>(
-      `SELECT count(*) FROM orders WHERE customer_id = $1 AND status != 'expirado'`,
+  const [ordersResult, thresholdsResult] = await Promise.all([
+    client.query<{ created_at: Date }>(
+      `SELECT created_at FROM orders WHERE customer_id = $1 AND status != 'expirado' ORDER BY created_at`,
       [customerId],
     ),
-    client.query<{ customer_recurrente_min_pedidos: number; customer_fiel_min_pedidos: number }>(
-      `SELECT customer_recurrente_min_pedidos, customer_fiel_min_pedidos FROM settings`,
+    client.query<ClassificationThresholds>(
+      `SELECT customer_frecuente_min_pedidos, customer_frecuente_intervalo_max_dias,
+              customer_inactivo_dias_sin_comprar, customer_fiel_min_pedidos
+       FROM settings`,
     ),
   ]);
-  const orderCount = Number(countResult.rows[0]!.count);
+  const orderDates = ordersResult.rows.map((r) => new Date(r.created_at));
+  const count = orderDates.length;
+  if (count === 0) {
+    return "nuevo";
+  }
   const thresholds = thresholdsResult.rows[0]!;
-  if (orderCount >= thresholds.customer_fiel_min_pedidos) {
-    return "fiel";
+
+  let segment: CustomerSegment;
+  if (count === 1) {
+    segment = "nuevo";
+  } else if (count >= thresholds.customer_fiel_min_pedidos) {
+    segment = "fiel";
+  } else if (count >= thresholds.customer_frecuente_min_pedidos) {
+    const gaps: number[] = [];
+    for (let i = 1; i < orderDates.length; i++) {
+      gaps.push((orderDates[i]!.getTime() - orderDates[i - 1]!.getTime()) / MS_POR_DIA);
+    }
+    const intervaloPromedioDias = gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length;
+    segment = intervaloPromedioDias <= thresholds.customer_frecuente_intervalo_max_dias ? "frecuente" : "ocasional";
+  } else {
+    segment = "ocasional";
   }
-  if (orderCount >= thresholds.customer_recurrente_min_pedidos) {
-    return "recurrente";
+
+  const diasDesdeUltimoPedido = (Date.now() - orderDates[count - 1]!.getTime()) / MS_POR_DIA;
+  if (diasDesdeUltimoPedido > thresholds.customer_inactivo_dias_sin_comprar) {
+    return "inactivo";
   }
-  return "nuevo";
+  return segment;
 }
 
 /**

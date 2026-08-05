@@ -9,24 +9,31 @@ import {
 } from "../advisor/handoffView.js";
 import {
   activarAliado,
+  activarBotLead,
   activarCategoria,
   activarColaborador,
+  activarPromocion,
   confirmarImportacionCsv,
   crearAliado,
   crearCategoria,
   crearColaborador,
+  crearPromocion,
   crearProducto,
   desactivarAliado,
+  desactivarBotLead,
   desactivarCategoria,
   desactivarColaborador,
+  desactivarPromocion,
   exportLeadsCsv,
   guardarAliado,
   guardarCategoria,
   guardarCobros,
   guardarComportamiento,
+  guardarInfoLead,
   guardarModeloIa,
   guardarPerfil,
   guardarPermisosColaborador,
+  guardarPromocion,
   guardarProducto,
   guardarReporteDiario,
   guardarReviewLink,
@@ -47,6 +54,7 @@ import {
   renderPedidosPage,
   renderPerfilPage,
   renderProductosPage,
+  renderPromocionesPage,
   renderTicketsPage,
 } from "../admin/adminPanel.js";
 import { isUsernameTaken, type AdminRecord } from "../admin/auth/adminsDirectory.js";
@@ -183,7 +191,8 @@ export async function buildServer() {
   });
 
   app.get("/admin/leads", async (request, reply) => {
-    const html = await renderLeadsPage(request.admin!);
+    const { guardado } = request.query as { guardado?: string };
+    const html = await renderLeadsPage(request.admin!, { guardado });
     if (!html) {
       return reply.status(404).send();
     }
@@ -199,6 +208,31 @@ export async function buildServer() {
       .type("text/csv")
       .header("content-disposition", 'attachment; filename="leads.csv"')
       .send(csv);
+  });
+
+  app.post("/admin/leads/:customerId", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    const { fullName, idDocument, address, municipality, city } = request.body as {
+      fullName?: string;
+      idDocument?: string;
+      address?: string;
+      municipality?: string;
+      city?: string;
+    };
+    await guardarInfoLead(customerId, { fullName: fullName ?? null, idDocument: idDocument ?? null, address: address ?? null, municipality: municipality ?? null, city: city ?? null });
+    return reply.status(303).redirect("/admin/leads?guardado=1");
+  });
+
+  app.post("/admin/leads/:customerId/activar", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    await activarBotLead(customerId);
+    return reply.status(303).redirect("/admin/leads?guardado=1");
+  });
+
+  app.post("/admin/leads/:customerId/desactivar", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    await desactivarBotLead(customerId);
+    return reply.status(303).redirect("/admin/leads?guardado=1");
   });
 
   app.get("/admin/tickets", async (request, reply) => {
@@ -664,6 +698,44 @@ export async function buildServer() {
     const { categoryId } = request.params as { categoryId: string };
     await desactivarCategoria(categoryId);
     return reply.status(303).redirect("/admin/categorias?guardado=1");
+  });
+
+  app.get("/admin/promociones", async (request, reply) => {
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderPromocionesPage(request.admin!, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/promociones", async (request, reply) => {
+    const result = await crearPromocion(request.body as Parameters<typeof crearPromocion>[0]);
+    const redirectUrl = result.ok
+      ? "/admin/promociones?guardado=1"
+      : `/admin/promociones?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/promociones/:promotionId", async (request, reply) => {
+    const { promotionId } = request.params as { promotionId: string };
+    const result = await guardarPromocion(promotionId, request.body as Parameters<typeof crearPromocion>[0]);
+    const redirectUrl = result.ok
+      ? "/admin/promociones?guardado=1"
+      : `/admin/promociones?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/promociones/:promotionId/activar", async (request, reply) => {
+    const { promotionId } = request.params as { promotionId: string };
+    await activarPromocion(promotionId);
+    return reply.status(303).redirect("/admin/promociones?guardado=1");
+  });
+
+  app.post("/admin/promociones/:promotionId/desactivar", async (request, reply) => {
+    const { promotionId } = request.params as { promotionId: string };
+    await desactivarPromocion(promotionId);
+    return reply.status(303).redirect("/admin/promociones?guardado=1");
   });
 
   app.post(

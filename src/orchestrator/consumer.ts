@@ -75,19 +75,24 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // pendiente o no.
     await tryCaptureSurveyReply(customerPhone, message.body ?? "", entryLogger);
 
-    // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md): se
-    // chequea ACÁ, antes de invocar el orquestador — así se evita
-    // resolver el proveedor de LLM (y su costo) con el bot pausado. El
-    // mensaje del cliente se guarda igual (mismo par de llamadas que usa
-    // appendInbound) para no perder historial mientras el bot está
-    // pausado; si se reactiva, el operador lo ve pendiente en el inbox de
-    // Conversaciones. Deliberadamente NO pasa por appendInbound (que
-    // podría escalar por palabra clave y mandar un mensaje automático de
-    // fallback) — un bot pausado no manda absolutamente nada.
-    const settings = await getSettings();
-    if (settings?.bot_paused) {
-      const { conversationId } = await resolveConversation(customerPhone, customerName);
-      await appendMessage(conversationId, "inbound", "customer", message.body ?? "");
+    // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md; extendido
+    // en Fase 23/ADR-036 con un segundo nivel por cliente): se chequea ACÁ,
+    // antes de invocar el orquestador — así se evita resolver el proveedor
+    // de LLM (y su costo) con el bot pausado. El mensaje del cliente se
+    // guarda igual (mismo par de llamadas que usa appendInbound) para no
+    // perder historial mientras el bot está pausado; si se reactiva, el
+    // operador lo ve pendiente en el inbox de Conversaciones.
+    // Deliberadamente NO pasa por appendInbound (que podría escalar por
+    // palabra clave y mandar un mensaje automático de fallback) — un bot
+    // pausado no manda absolutamente nada. `settings.bot_paused` (global) y
+    // `customers.bot_paused` (por cliente) se combinan con OR — pausado en
+    // cualquiera de los dos niveles alcanza para no responder.
+    const [settings, { conversationId: pausedConversationId, customerBotPaused }] = await Promise.all([
+      getSettings(),
+      resolveConversation(customerPhone, customerName),
+    ]);
+    if (settings?.bot_paused || customerBotPaused) {
+      await appendMessage(pausedConversationId, "inbound", "customer", message.body ?? "");
       entryLogger.info(
         { event: "orchestrator.bot_pausado" },
         "Bot pausado — mensaje guardado sin respuesta automática",

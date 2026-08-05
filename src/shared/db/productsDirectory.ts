@@ -291,6 +291,16 @@ export async function countProductsPerCategory(): Promise<Record<string, number>
   });
 }
 
+/** Todas las variantes activas de todos los productos, con su `productId` — usado por el selector producto→variante del modal de promociones (Fase 23), que filtra en el cliente sin round-trip por producto elegido. */
+export async function listAllVariantsForPicker(): Promise<{ id: string; sku: string; productId: string }[]> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{ id: string; sku: string; product_id: string }>(
+      `SELECT id, sku, product_id FROM product_variants WHERE active = true ORDER BY sku`,
+    );
+    return result.rows.map((row) => ({ id: row.id, sku: row.sku, productId: row.product_id }));
+  });
+}
+
 export async function findVariantBySku(sku: string): Promise<{ id: string; productId: string } | null> {
   return withTransaction(async (client) => {
     const result = await client.query<{ id: string; product_id: string }>(
