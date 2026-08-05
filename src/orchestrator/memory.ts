@@ -6,6 +6,7 @@ export interface ResolvedConversation {
   customerId: string;
   state: Record<string, unknown>;
   customerBotPaused: boolean;
+  conversationBotPaused: boolean;
 }
 
 /**
@@ -36,23 +37,35 @@ export async function resolveConversation(
     const customerId = customer.rows[0]!.id;
     const customerBotPaused = customer.rows[0]!.bot_paused;
 
-    const existing = await client.query<{ id: string; state: Record<string, unknown> }>(
-      `SELECT id, state FROM conversations
+    const existing = await client.query<{ id: string; state: Record<string, unknown>; bot_paused: boolean }>(
+      `SELECT id, state, bot_paused FROM conversations
        WHERE customer_id = $1 AND status = 'open'
        ORDER BY started_at DESC LIMIT 1`,
       [customerId],
     );
     if (existing.rows[0]) {
-      return { conversationId: existing.rows[0].id, customerId, state: existing.rows[0].state, customerBotPaused };
+      return {
+        conversationId: existing.rows[0].id,
+        customerId,
+        state: existing.rows[0].state,
+        customerBotPaused,
+        conversationBotPaused: existing.rows[0].bot_paused,
+      };
     }
 
-    const created = await client.query<{ id: string; state: Record<string, unknown> }>(
+    const created = await client.query<{ id: string; state: Record<string, unknown>; bot_paused: boolean }>(
       `INSERT INTO conversations (customer_id, status, state)
        VALUES ($1, 'open', '{}'::jsonb)
-       RETURNING id, state`,
+       RETURNING id, state, bot_paused`,
       [customerId],
     );
-    return { conversationId: created.rows[0]!.id, customerId, state: created.rows[0]!.state, customerBotPaused };
+    return {
+      conversationId: created.rows[0]!.id,
+      customerId,
+      state: created.rows[0]!.state,
+      customerBotPaused,
+      conversationBotPaused: created.rows[0]!.bot_paused,
+    };
   });
 }
 

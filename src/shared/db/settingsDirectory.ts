@@ -190,10 +190,10 @@ export async function saveBehaviorConfig(config: Record<string, unknown>): Promi
  * Número de WhatsApp que recibe el Reporte diario (Fase 12.2, ver
  * migrations/0024_tenants_report_recipient.cjs) — `null` si no se
  * configuró, en cuyo caso `src/jobs/dailyReport.ts` no manda reporte (no
- * es un error). Deliberadamente separado de `human_agents` (esa tabla es
- * para notificaciones de escalamiento, un rol distinto) y de `admins`
- * (permisos por colaborador, Fase 13 — este campo queda como fallback,
- * ver ADR-025).
+ * es un error). Deliberadamente separado de `admins`/`admin_permissions`
+ * (permisos por colaborador, Fase 13 — este campo queda como fallback
+ * cuando ningún admin tiene el permiso marcado, ver ADR-025 y
+ * `resolveNotificationRecipients` en adminsDirectory.ts).
  */
 export async function getReportRecipient(): Promise<string | null> {
   const result = await pool.query<{ report_recipient_phone: string | null }>(

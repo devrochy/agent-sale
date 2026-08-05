@@ -1,4 +1,3 @@
-import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { resolveHandoffToken } from "../shared/db/index.js";
 import { withTransaction } from "../shared/db/withTransaction.js";
 
@@ -70,8 +69,19 @@ export function renderMessageBody(row: MessageRow): string {
     .join("<br>");
 }
 
+// Labels legibles del paso del flujo comercial (ver
+// src/orchestrator/*, `conversations.state.step`) — reemplaza el
+// `JSON.stringify(conversation.state)` crudo que mostraba esta vista
+// (Fase 18, DoD #2). Un paso no mapeado (o ausente) simplemente no
+// muestra la línea, no es un error.
+const FLOW_STEP_LABEL: Record<string, string> = {
+  escalado: "Escalada a un humano",
+  cotizando: "Cotizando",
+  confirmando_pedido: "Confirmando pedido",
+  esperando_pago: "Esperando pago",
+};
+
 function renderPage(
-  token: string,
   handoff: HandoffRow,
   conversation: ConversationRow,
   customer: CustomerRow,
@@ -87,12 +97,8 @@ function renderPage(
     )
     .join("\n");
 
-  const actionHtml =
-    handoff.status === "queued"
-      ? `<form method="POST" action="/asesor/${token}/tomar"><button type="submit">Tomar conversación</button></form>`
-      : handoff.status === "en_atencion"
-        ? `<form method="POST" action="/asesor/${token}/resolver"><button type="submit">Marcar como resuelto</button></form>`
-        : "";
+  const step = typeof conversation.state.step === "string" ? conversation.state.step : null;
+  const stepLabel = step ? (FLOW_STEP_LABEL[step] ?? step) : null;
 
   return `<!doctype html>
 <html lang="es">
@@ -105,7 +111,7 @@ function renderPage(
     .msg.inbound { background: #f0f0f0; }
     .msg.outbound { background: #e6f0ff; }
     .meta { font-size: 0.75rem; color: #666; }
-    button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
+    a.button { display: inline-block; padding: 0.5rem 1rem; font-size: 1rem; text-decoration: none; background: #1a1a1a; color: #fff; border-radius: 6px; }
   </style>
 </head>
 <body>
@@ -114,8 +120,8 @@ function renderPage(
      <strong>Estado:</strong> ${escapeHtml(handoff.status)}<br>
      <strong>Cliente:</strong> ${escapeHtml(customer.phone_number)}${customer.name ? ` (${escapeHtml(customer.name)})` : ""}</p>
   <p><strong>Resumen:</strong> ${escapeHtml(handoff.summary ?? "")}</p>
-  <p><strong>Estado del flujo comercial:</strong> ${escapeHtml(JSON.stringify(conversation.state))}</p>
-  ${actionHtml}
+  ${stepLabel ? `<p><strong>Paso del flujo comercial:</strong> ${escapeHtml(stepLabel)}</p>` : ""}
+  <p><a class="button" href="/admin/conversaciones?estado=escaladas&c=${handoff.conversation_id}">Ver y actuar en el panel →</a></p>
   <h2>Historial de la conversación</h2>
   ${messagesHtml}
 </body>
@@ -128,11 +134,12 @@ export interface HandoffViewResult {
 }
 
 /**
- * Vista mínima de solo lectura del asesor (ver
- * docs/fase-7-escalamiento-humano/vista-asesor.md): datos del cliente,
- * motivo + resumen del escalamiento, historial completo (incluye qué
- * tools se ejecutaron), estado estructurado y el botón de acción
- * correspondiente al estado actual del caso.
+ * Vista de solo lectura del asesor (ver docs/fase-7-escalamiento-humano/
+ * vista-asesor.md y ADR-028, Fase 18): datos del cliente, motivo +
+ * resumen del escalamiento, historial completo (incluye qué tools se
+ * ejecutaron) y el paso del flujo comercial en texto legible. Tomar y
+ * resolver el ticket ya no ocurre acá — el enlace solo da contexto y
+ * dirige al panel autenticado (`/admin/conversaciones`).
  */
 export async function renderHandoffView(token: string): Promise<HandoffViewResult> {
   const lookup = await resolveHandoffToken(token);
@@ -178,81 +185,6 @@ export async function renderHandoffView(token: string): Promise<HandoffViewResul
 
   return {
     status: 200,
-    html: renderPage(token, data.handoff, data.conversation, data.customer, data.messages),
+    html: renderPage(data.handoff, data.conversation, data.customer, data.messages),
   };
-}
-
-export interface HandoffActionResult {
-  status: number;
-}
-
-/**
- * "Tomar conversación" (ver vista-asesor.md): pasa `handoff_queue.status`
- * a `en_atencion` y asigna al asesor dueño del enlace (`human_agent_id`
- * del token, ver handoffTokenDirectory.ts) — no hay sistema de login, el
- * enlace único ya identifica implícitamente a quién se le notificó.
- */
-export async function tomarConversacion(token: string): Promise<HandoffActionResult> {
-  const lookup = await resolveHandoffToken(token);
-  if (!lookup) {
-    return { status: 404 };
-  }
-
-  const updated = await withTransaction(async (client) => {
-    const result = await client.query(
-      `UPDATE handoff_queue SET status = 'en_atencion', assigned_to = $1
-       WHERE id = $2 AND status = 'queued'
-       RETURNING id`,
-      [lookup.humanAgentId, lookup.handoffId],
-    );
-    return result.rows.length > 0;
-  });
-
-  return { status: updated ? 200 : 409 };
-}
-
-/**
- * Cierre del caso (ver docs/fase-7-escalamiento-humano/handoff-queue.md,
- * "reasignación y cierre"): la conversación NO vuelve automáticamente al
- * agente — sigue en `conversations.state.step = "escalado"` para siempre,
- * un mensaje nuevo del cliente más adelante abre una conversación nueva.
- */
-export async function resolverConversacion(token: string): Promise<HandoffActionResult> {
-  const lookup = await resolveHandoffToken(token);
-  if (!lookup) {
-    return { status: 404 };
-  }
-
-  const closedConversationId = await withTransaction(async (client) => {
-    const result = await client.query<{ conversation_id: string }>(
-      `UPDATE handoff_queue SET status = 'resuelto', resolved_at = now()
-       WHERE id = $1 AND status = 'en_atencion'
-       RETURNING conversation_id`,
-      [lookup.handoffId],
-    );
-    const row = result.rows[0];
-    if (!row) {
-      return null;
-    }
-    // Cierra la conversación (ver handoff-queue.md, "reasignación y
-    // cierre"): así resolveConversation() ya no la reutiliza y el
-    // próximo mensaje del cliente abre una conversación nueva desde
-    // cero, en vez de quedar "muda" para siempre en step: "escalado".
-    await client.query(
-      `UPDATE conversations SET status = 'closed', closed_at = now() WHERE id = $1`,
-      [row.conversation_id],
-    );
-    return row.conversation_id;
-  });
-
-  if (!closedConversationId) {
-    return { status: 409 };
-  }
-
-  // Encuesta de satisfacción (Fase 12.2, ver satisfactionSurvey.ts):
-  // best-effort, fuera de la transacción de arriba — un fallo al mandarla
-  // no debe revertir el cierre, que ya quedó confirmado.
-  await sendSurveyOnClose(closedConversationId);
-
-  return { status: 200 };
 }

@@ -2,13 +2,10 @@ import fastifyCookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
 import Fastify from "fastify";
-import {
-  renderHandoffView,
-  resolverConversacion,
-  tomarConversacion,
-} from "../advisor/handoffView.js";
+import { renderHandoffView } from "../advisor/handoffView.js";
 import {
   activarAliado,
+  activarBotConversacion,
   activarBotLead,
   activarCategoria,
   activarColaborador,
@@ -20,10 +17,12 @@ import {
   crearPromocion,
   crearProducto,
   desactivarAliado,
+  desactivarBotConversacion,
   desactivarBotLead,
   desactivarCategoria,
   desactivarColaborador,
   desactivarPromocion,
+  enviarMensajeHumano,
   exportLeadsCsv,
   guardarAliado,
   guardarCategoria,
@@ -40,6 +39,7 @@ import {
   pausarBot,
   previsualizarImportacionCsv,
   reactivarBot,
+  reasignarTicketABot,
   renderAliadosPage,
   renderAnaliticaPage,
   renderCategoriasPage,
@@ -56,6 +56,8 @@ import {
   renderProductosPage,
   renderPromocionesPage,
   renderTicketsPage,
+  resolverTicket,
+  tomarTicket,
 } from "../admin/adminPanel.js";
 import { isUsernameTaken, type AdminRecord } from "../admin/auth/adminsDirectory.js";
 import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
@@ -188,6 +190,56 @@ export async function buildServer() {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/conversaciones/:handoffId/tomar", async (request, reply) => {
+    const { handoffId } = request.params as { handoffId: string };
+    const conversationId = await tomarTicket(handoffId, request.admin!);
+    const suffix = conversationId ? `&c=${conversationId}` : "";
+    return reply.status(303).redirect(`/admin/conversaciones?estado=escaladas${suffix}`);
+  });
+
+  app.post("/admin/conversaciones/:handoffId/resolver", async (request, reply) => {
+    const { handoffId } = request.params as { handoffId: string };
+    const conversationId = await resolverTicket(handoffId, request.admin!);
+    const suffix = conversationId ? `&c=${conversationId}` : "";
+    // resolverTicket cierra la conversación (conversations.status = 'closed')
+    // — el filtro debe reflejar eso, no "escaladas" (que ya no aplica).
+    return reply.status(303).redirect(`/admin/conversaciones?estado=cerradas${suffix}`);
+  });
+
+  app.post("/admin/conversaciones/:handoffId/reasignar-bot", async (request, reply) => {
+    const { handoffId } = request.params as { handoffId: string };
+    const conversationId = await reasignarTicketABot(handoffId, request.admin!);
+    const suffix = conversationId ? `&c=${conversationId}` : "";
+    // reasignarTicketABot deja la conversación abierta en manos del bot,
+    // ya no "escalada" (handoff_queue.status pasó a 'resuelto').
+    return reply.status(303).redirect(`/admin/conversaciones?estado=abiertas${suffix}`);
+  });
+
+  // Pausar/reactivar el bot no cambia ni el estado de la conversación ni
+  // el filtro que el admin tenía abierto (pedido explícito del usuario) —
+  // `estado` viaja en la querystring del propio botón (ver toggleSwitchHtml)
+  // y solo se usa para volver adonde ya estaba, nunca para decidir algo.
+  app.post("/admin/conversaciones/:conversationId/bot/activar", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const { estado } = request.query as { estado?: string };
+    await activarBotConversacion(conversationId);
+    return reply.status(303).redirect(`/admin/conversaciones?estado=${estado ?? "abiertas"}&c=${conversationId}`);
+  });
+
+  app.post("/admin/conversaciones/:conversationId/bot/desactivar", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const { estado } = request.query as { estado?: string };
+    await desactivarBotConversacion(conversationId);
+    return reply.status(303).redirect(`/admin/conversaciones?estado=${estado ?? "abiertas"}&c=${conversationId}`);
+  });
+
+  app.post("/admin/conversaciones/:conversationId/mensaje", async (request, reply) => {
+    const { conversationId } = request.params as { conversationId: string };
+    const { mensaje, estado } = request.body as { mensaje?: string; estado?: string };
+    await enviarMensajeHumano(conversationId, mensaje ?? "");
+    return reply.status(303).redirect(`/admin/conversaciones?estado=${estado ?? "escaladas"}&c=${conversationId}`);
   });
 
   app.get("/admin/leads", async (request, reply) => {
@@ -766,16 +818,17 @@ export async function buildServer() {
     return reply.status(result.status).type("text/html").send(result.html);
   });
 
-  app.post("/asesor/:token/tomar", async (request, reply) => {
-    const { token } = request.params as { token: string };
-    await tomarConversacion(token);
-    return reply.status(303).redirect(`/asesor/${token}`);
+  // ADR-028 (Fase 18, Opción 3): tomar/resolver ya no vive en el enlace de
+  // token — la vista pasó a ser de solo lectura. Las rutas se conservan
+  // registradas (no se retiran) para no romper enlaces de WhatsApp ya
+  // enviados, pero cualquier intento de acción redirige al login del panel
+  // en vez de devolver un error crudo.
+  app.post("/asesor/:token/tomar", async (_request, reply) => {
+    return reply.status(303).redirect("/login");
   });
 
-  app.post("/asesor/:token/resolver", async (request, reply) => {
-    const { token } = request.params as { token: string };
-    await resolverConversacion(token);
-    return reply.status(303).redirect(`/asesor/${token}`);
+  app.post("/asesor/:token/resolver", async (_request, reply) => {
+    return reply.status(303).redirect("/login");
   });
 
   app.get("/resena/:token", async (request, reply) => {

@@ -116,7 +116,6 @@ describe("executeTool", () => {
     vi.mocked(escalarHumano).mockResolvedValue({
       handoff_id: "h1",
       status: "queued",
-      assigned_to: null,
     });
 
     const result = await run("escalar_a_humano", { reason: "queja", summary: "resumen" });

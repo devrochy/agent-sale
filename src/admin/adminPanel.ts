@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import {
   createAdmin,
@@ -11,6 +12,10 @@ import {
 } from "./auth/adminsDirectory.js";
 import { hashPassword } from "./auth/passwordHash.js";
 import { env } from "../config/env.js";
+import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import { appendMessage } from "../orchestrator/memory.js";
+import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
+import { logger } from "../shared/observability/logger.js";
 import {
   createAlly,
   listAllies,
@@ -389,6 +394,22 @@ const ICON_PERCENT =
 const ICON_USER =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.2" r="2.4"/><path d="M2.8 13.2c0-2.6 2.3-4.4 5.2-4.4s5.2 1.8 5.2 4.4"/></svg>';
 
+/** Botón "Tomar ticket" por fila (Tickets, Fase 18). */
+const ICON_HAND =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.8 8.6V3.6a1 1 0 1 1 2 0v3.8"/><path d="M7.8 7.3V2.9a1 1 0 1 1 2 0v4.4"/><path d="M9.8 7.4V3.9a1 1 0 1 1 2 0v5.6"/><path d="M11.8 9.5V5.6a1 1 0 1 1 2 0v5c0 2.7-1.9 4.9-4.7 4.9-1.9 0-3.3-.8-4.2-2.2L3 10.3a1.1 1.1 0 0 1 1.7-1.4l1.1 1.3"/></svg>';
+
+/** Botón "Marcar como resuelto" por fila (Tickets, Fase 18). */
+const ICON_CHECK =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4"/></svg>';
+
+/** Botón "Reasignar al asistente" por fila (Tickets, Fase 18) — devuelve la conversación al bot para que siga la venta. */
+const ICON_BOT =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5.8" width="10" height="7" rx="1.8"/><path d="M8 5.8V3.4"/><circle cx="8" cy="2.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="6.1" cy="9.2" r="0.9" fill="currentColor" stroke="none"/><circle cx="9.9" cy="9.2" r="0.9" fill="currentColor" stroke="none"/><path d="M1.6 7.8v3M14.4 7.8v3"/></svg>';
+
+/** Botón "Enviar" del composer de mensajes (Conversaciones, Fase 18). */
+const ICON_SEND =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2 2 7.2l4.8 1.9L9 14 14 2Z"/><path d="M6.8 9.1 14 2"/></svg>';
+
 function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminRecord): string {
   const isMaster = admin.role === "master";
   const item = (
@@ -544,6 +565,8 @@ const STYLE_BLOCK = `
   --redline-soft: rgba(180, 54, 42, 0.1);
   --go: #2E7D4F;
   --go-soft: rgba(46, 125, 79, 0.1);
+  --violet: #6E4EA6;
+  --violet-soft: rgba(110, 78, 166, 0.1);
   --shadow: 0 1px 2px rgba(20, 24, 29, 0.04), 0 8px 24px rgba(20, 24, 29, 0.06);
   --font-display: "Oxanium", ui-monospace, monospace;
   --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
@@ -555,6 +578,7 @@ const STYLE_BLOCK = `
     --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
     --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
     --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
+    --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);
   }
 }
@@ -735,6 +759,8 @@ section.block { margin-bottom: 34px; }
 @media (prefers-color-scheme: dark) { .chip--amber { background: rgba(232, 163, 61, 0.16); } }
 .chip--muted { color: var(--ink-faint); background: var(--panel-inset); }
 .chip--inactive { color: var(--redline); background: var(--panel-inset); }
+.chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
+.chip--violet { color: var(--violet); background: var(--violet-soft); }
 @media (max-width: 560px) { .convrow { grid-template-columns: 1fr; } .convrow__meta { grid-column: 1; justify-content: flex-start; } }
 .empty { padding: 28px 20px; color: var(--ink-faint); font-size: 13px; }
 table { border-collapse: collapse; width: 100%; min-width: 720px; table-layout: fixed; font-size: 13.5px; }
@@ -966,6 +992,7 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .toggleswitch--on .toggleswitch__knob { transform: translateX(16px); background: var(--go); }
 .toggleswitch:hover .toggleswitch__track { filter: brightness(1.15); }
 .toggleswitch:focus-visible { outline: 2px solid var(--chrome); outline-offset: 2px; border-radius: 10px; }
+.toggleswitch--locked { cursor: not-allowed; opacity: 0.55; }
 /* Columna Estado con el switch — el texto acompaña el color del track (verde/gris) en vez de vivir en un chip aparte, sin duplicar la señal de estado dos veces en la misma fila. */
 .statustoggle { display: flex; align-items: center; gap: 8px; }
 .statustoggle__label { font-size: 12.5px; font-weight: 600; color: var(--go); }
@@ -1010,6 +1037,18 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--go:hover { filter: brightness(1.08); }
 .btn--icon { width: 34px; height: 34px; padding: 0; justify-content: center; flex-shrink: 0; }
 .btn--icon svg { width: 15px; height: 15px; }
+/* Botones icono de acción sobre tickets (Fase 18): minimalistas — color
+   solo en el icono/borde en reposo, se rellenan suave al pasar el mouse. */
+.btn--icon-go { color: var(--go); border-color: var(--go-soft); }
+.btn--icon-go:hover { background: var(--go-soft); border-color: var(--go); }
+.btn--icon-amber { color: var(--ignition); border-color: rgba(156, 97, 8, 0.22); }
+.btn--icon-amber:hover { background: rgba(156, 97, 8, 0.12); border-color: var(--ignition); }
+@media (prefers-color-scheme: dark) {
+  .btn--icon-amber { border-color: rgba(232, 163, 61, 0.28); }
+  .btn--icon-amber:hover { background: rgba(232, 163, 61, 0.16); }
+}
+.btn--icon-chrome { color: var(--chrome); border-color: var(--chrome-soft); }
+.btn--icon-chrome:hover { background: var(--chrome-soft); border-color: var(--chrome); }
 .btn--sm { padding: 6px 11px; font-size: 11.5px; }
 .permform { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 /* Columna "Acciones" de Colaboradores: agrupa el botón Guardar de
@@ -1030,6 +1069,15 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .convtabs a { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 6px 13px; border-radius: 20px; color: var(--ink-muted); text-decoration: none; border: 1px solid transparent; }
 .convtabs a:hover { color: var(--ink); }
 .convtabs a.tab--active { background: var(--panel-inset); color: var(--ink); border-color: var(--border-strong); font-weight: 600; }
+/* Cada tab lleva el mismo color que su chip de estado (pedido explícito
+   del usuario) — siempre con el tinte visible, no solo cuando está activa,
+   así se distinguen entre sí de un vistazo. */
+.convtabs a.tab--chrome { color: var(--chrome); }
+.convtabs a.tab--chrome.tab--active { background: var(--chrome-soft); color: var(--chrome); border-color: var(--chrome); }
+.convtabs a.tab--redline { color: var(--redline); }
+.convtabs a.tab--redline.tab--active { background: var(--redline-soft); color: var(--redline); border-color: var(--redline); }
+.convtabs a.tab--go { color: var(--go); }
+.convtabs a.tab--go.tab--active { background: var(--go-soft); color: var(--go); border-color: var(--go); }
 .inbox { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 @media (max-width: 860px) { .inbox { grid-template-columns: 1fr; } }
 .inbox__list { max-height: 74vh; overflow-y: auto; }
@@ -1044,15 +1092,27 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .convitem__msg { display: block; margin-top: 3px; font-size: 12.5px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .convitem__chips { display: flex; gap: 4px; margin-top: 6px; }
 .inbox__detail { min-height: 74vh; display: flex; flex-direction: column; }
-.thread__head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.thread__head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .thread__head h2 { font-family: var(--font-display); font-size: 16px; font-weight: 700; }
-.thread__meta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+.thread__metarow { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+/* Ícono del ticket + toggle del bot arriba, acciones del ticket
+   (tomar/resolver/reasignar) debajo, ambas filas pegadas a la derecha
+   (pedido explícito del usuario: separarlas del teléfono, que queda a la
+   izquierda sin competir por espacio con la gestión del ticket). */
+.thread__headactions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+.thread__headactions-row { display: flex; align-items: center; gap: 8px; }
+.thread__meta { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; flex-wrap: wrap; }
 .thread__body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; max-height: 64vh; }
 .bubble { max-width: 72%; padding: 9px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
 .bubble.inbound { align-self: flex-start; background: var(--panel-inset); border-bottom-left-radius: 4px; }
 .bubble.outbound { align-self: flex-end; background: var(--chrome-soft); border-bottom-right-radius: 4px; }
 .bubble .meta { display: block; margin-top: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); }
 .thread__empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--ink-faint); font-size: 13px; padding: 40px; text-align: center; }
+.composer { display: flex; gap: 8px; align-items: flex-end; padding: 14px 20px; border-top: 1px solid var(--border); }
+.composer__input { flex: 1; resize: vertical; min-height: 38px; max-height: 140px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-inset); font-family: inherit; font-size: 13px; color: var(--ink); }
+.composer__input:focus { outline: none; border-color: var(--chrome); }
+.composer__send { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
+.composer__send svg { width: 14px; height: 14px; }
 .emptystate { padding: 52px 24px; text-align: center; }
 .emptystate__icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; margin: 0 auto 14px; color: var(--ink-faint); }
 .emptystate__title { font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--ink); margin: 0 0 6px; }
@@ -2329,24 +2389,47 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
 
 type ConversacionesEstado = "todas" | "abiertas" | "escaladas" | "cerradas";
 
-const CONVERSACIONES_TABS: { key: ConversacionesEstado; label: string }[] = [
-  { key: "todas", label: "Todas" },
-  { key: "abiertas", label: "Abiertas" },
-  { key: "escaladas", label: "Escaladas" },
-  { key: "cerradas", label: "Cerradas" },
+// Orden y color pedidos explícitamente por el usuario: Abiertas primero
+// (es además el filtro por defecto al entrar a la página, ver más abajo),
+// Todas al final — cada tab lleva el mismo color que su chip de estado
+// (azul/rojo/verde, ver conversacionEstadoChip) salvo "Todas", que es
+// neutra por no representar un estado puntual.
+const CONVERSACIONES_TABS: { key: ConversacionesEstado; label: string; colorClass: string }[] = [
+  { key: "abiertas", label: "Abiertas", colorClass: "tab--chrome" },
+  { key: "escaladas", label: "Escaladas", colorClass: "tab--redline" },
+  { key: "cerradas", label: "Cerradas", colorClass: "tab--go" },
+  { key: "todas", label: "Todas", colorClass: "" },
 ];
 
 // Cada filtro es una condición SQL independiente sobre columnas fijas
 // (nunca interpola el `estado` de la URL) — ver conversaciones-leads-tickets.md,
-// "Filtros por tab": Abiertas y Escaladas no son mutuamente excluyentes
-// (escalar no cierra la conversación), a propósito.
+// "Filtros por tab". Pedido explícito del usuario: Abiertas y Escaladas
+// pasan a ser mutuamente excluyentes (antes una conversación escalada
+// también aparecía en Abiertas, lo cual confundía al admin).
 const CONVERSACIONES_FILTRO_SQL: Record<ConversacionesEstado, string> = {
   todas: "",
-  abiertas: "AND conv.status = 'open'",
+  abiertas:
+    "AND conv.status = 'open' AND NOT exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
   escaladas:
     "AND exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
   cerradas: "AND conv.status = 'closed'",
 };
+
+// Un solo chip de estado por conversación (pedido explícito del usuario:
+// mismo estilo para Abierta/Escalada/Cerrada, con Azul/Rojo/Verde), usado
+// tanto en la lista como en el detalle. Precedencia deliberada: escalada
+// primero — "abierta" y "escalada" no son mutuamente excluyentes (ver
+// CONVERSACIONES_FILTRO_SQL más arriba), pero como resumen de una sola
+// palabra, un ticket activo pesa más que el status crudo de la fila.
+function conversacionEstadoChip(status: string, escalada: boolean): string {
+  if (escalada) {
+    return `<span class="chip chip--redline">Escalada</span>`;
+  }
+  if (status === "closed") {
+    return `<span class="chip chip--go">Cerrada</span>`;
+  }
+  return `<span class="chip chip--chrome">Abierta</span>`;
+}
 
 interface ConversacionListRow {
   id: string;
@@ -2363,8 +2446,15 @@ interface ConversacionDetalleRow {
   status: string;
   started_at: string;
   closed_at: string | null;
+  bot_paused: boolean;
   customer_name: string | null;
   phone_number: string;
+  handoff_id: string | null;
+  handoff_reason: string | null;
+  handoff_status: string | null;
+  handoff_summary: string | null;
+  handoff_assigned_to: string | null;
+  escalada: boolean;
 }
 
 /**
@@ -2384,9 +2474,11 @@ export async function renderConversacionesPage(
   if (!tenant) {
     return null;
   }
+  // Pedido explícito del usuario: al abrir la sección sin filtro en la URL,
+  // mostrar Abiertas por defecto (antes era Todas).
   const estado: ConversacionesEstado = CONVERSACIONES_TABS.some((t) => t.key === estadoParam)
     ? (estadoParam as ConversacionesEstado)
-    : "todas";
+    : "abiertas";
 
   const { lista, detalle, mensajes } = await withTransaction(async (client) => {
     const listaResult = await client.query<ConversacionListRow>(
@@ -2410,10 +2502,20 @@ export async function renderConversacionesPage(
     }
 
     const detalleResult = await client.query<ConversacionDetalleRow>(
-      `SELECT conv.id, conv.status, conv.started_at, conv.closed_at,
-              c.name AS customer_name, c.phone_number
+      `SELECT conv.id, conv.status, conv.started_at, conv.closed_at, conv.bot_paused,
+              c.name AS customer_name, c.phone_number,
+              h.id AS handoff_id, h.reason AS handoff_reason, h.status AS handoff_status,
+              h.summary AS handoff_summary, a.username AS handoff_assigned_to,
+              exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada
        FROM conversations conv
        JOIN customers c ON c.id = conv.customer_id
+       LEFT JOIN LATERAL (
+         SELECT id, reason, status, summary, assigned_admin_id
+         FROM handoff_queue
+         WHERE conversation_id = conv.id
+         ORDER BY created_at DESC LIMIT 1
+       ) h ON true
+       LEFT JOIN admins a ON a.id = h.assigned_admin_id
        WHERE conv.id = $1`,
       [selectedId],
     );
@@ -2433,18 +2535,12 @@ export async function renderConversacionesPage(
 
   const tabsHtml = CONVERSACIONES_TABS.map(
     (tab) =>
-      `<a class="tab${tab.key === estado ? " tab--active" : ""}" href="/admin/conversaciones?estado=${tab.key}">${escapeHtml(tab.label)}</a>`,
+      `<a class="tab ${tab.colorClass}${tab.key === estado ? " tab--active" : ""}" href="/admin/conversaciones?estado=${tab.key}">${escapeHtml(tab.label)}</a>`,
   ).join("\n");
 
   const listaHtml = lista
     .map((row) => {
       const who = row.customer_name ?? row.phone_number;
-      const chips = [
-        row.escalada ? '<span class="chip chip--redline">Escalada</span>' : "",
-        row.status === "closed" ? '<span class="chip">Cerrada</span>' : "",
-      ]
-        .filter(Boolean)
-        .join("");
       return `<li>
         <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/conversaciones?estado=${estado}&c=${row.id}">
           <div class="convitem__row">
@@ -2452,7 +2548,7 @@ export async function renderConversacionesPage(
             <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
           </div>
           <span class="convitem__msg">${escapeHtml(truncate(row.ultimo_mensaje, 64))}</span>
-          ${chips ? `<div class="convitem__chips">${chips}</div>` : ""}
+          <div class="convitem__chips">${conversacionEstadoChip(row.status, row.escalada)}</div>
         </a>
       </li>`;
     })
@@ -2467,12 +2563,109 @@ export async function renderConversacionesPage(
           `<div class="bubble ${row.direction}"><div>${renderMessageBody(row)}</div><span class="meta">${escapeHtml(row.sender_type)} · ${formatFecha(row.created_at)}</span></div>`,
       )
       .join("\n");
+    let ticketModalButton = "";
+    let ticketModalHtml = "";
+    let ticketStatusInline = "";
+    let asignadoInline = "";
+    let actionsHtml = "";
+    if (detalle.handoff_id && detalle.handoff_status) {
+      const reasonLabel = detalle.handoff_reason
+        ? (HANDOFF_REASON_LABEL[detalle.handoff_reason] ?? detalle.handoff_reason)
+        : "";
+      const statusLabel = HANDOFF_STATUS_LABEL[detalle.handoff_status] ?? detalle.handoff_status;
+      const statusChip = HANDOFF_STATUS_CHIP[detalle.handoff_status] ?? "chip--muted";
+
+      // Ícono junto al toggle del bot que abre la info del ticket en una
+      // modal (pedido explícito del usuario) — reemplaza la caja fija que
+      // antes se mostraba siempre en el detalle, más minimalista.
+      const ticketModalId = `ticket-modal-${detalle.id}`;
+      ticketModalButton = `<button type="button" data-open-dialog="${ticketModalId}" class="btn btn--ghost btn--icon" aria-label="Ver ticket" title="Ver ticket">${ICON_TICKETS}</button>`;
+      ticketModalHtml = `<dialog id="${ticketModalId}" class="modal">
+        <div class="blockhead"><h2>Ticket</h2></div>
+        <div class="ticketbox__row">
+          <span class="chip ${statusChip}">${escapeHtml(statusLabel)}</span>
+          ${reasonLabel ? `<span>${escapeHtml(reasonLabel)}</span>` : ""}
+        </div>
+        <p>${escapeHtml(detalle.handoff_summary ?? "Sin resumen.")}</p>
+        <p class="hint">Asignado a: ${escapeHtml(detalle.handoff_assigned_to ?? "Sin asignar")}</p>
+        <div class="formfoot">
+          <button type="button" data-close-dialog="${ticketModalId}" class="btn btn--ghost">Cerrar</button>
+        </div>
+      </dialog>`;
+
+      // El estado del ticket y quién lo tomó solo importan mientras el
+      // ticket sigue activo (pedido explícito: "cuando una conversación
+      // está escalada") — un ticket resuelto ya no aporta nada en esa
+      // línea, su historial queda igual disponible en la modal.
+      if (detalle.escalada) {
+        ticketStatusInline = `<span class="chip ${statusChip}">${escapeHtml(statusLabel)}</span>`;
+        asignadoInline = detalle.handoff_assigned_to ? `<span>Tomó: ${escapeHtml(detalle.handoff_assigned_to)}</span>` : "";
+      }
+
+      // Mismos íconos y colores que la sección de Tickets (pedido
+      // explícito del usuario), movidos a la línea del teléfono en vez de
+      // vivir en la caja del ticket.
+      if (detalle.handoff_status === "queued") {
+        actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
+          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+        </form>`;
+      } else if (detalle.handoff_status === "en_atencion") {
+        actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
+          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+        </form>
+        <form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
+          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+        </form>`;
+      }
+    }
+
+    // Mientras el ticket está en atención, el bot de esta conversación
+    // pausa solo (tomarTicket) y el switch manual queda bloqueado — lo
+    // controla el ciclo de vida del ticket, no el admin a mano (pedido
+    // explícito del usuario, evita que el bot le siga hablando al cliente
+    // mientras un humano ya lo está atendiendo).
+    const ticketEnAtencion = detalle.handoff_status === "en_atencion";
+    const botToggleHtml = ticketEnAtencion
+      ? lockedToggleSwitchHtml(
+          "El bot está pausado mientras el ticket esté en atención — se reactiva solo al resolver o reasignar el ticket.",
+        )
+      : toggleSwitchHtml(
+          `/admin/conversaciones/${detalle.id}/bot`,
+          !detalle.bot_paused,
+          `el bot para esta conversación`,
+          `estado=${estado}&c=${detalle.id}`,
+        );
+
+    // Composer (pedido explícito del usuario): mientras el ticket está en
+    // atención, el admin puede responder por acá mismo sin salir del
+    // panel — mismo canal de WhatsApp, guardado como sender_type "human".
+    const composerHtml = ticketEnAtencion
+      ? `<form class="composer" method="POST" action="/admin/conversaciones/${detalle.id}/mensaje">
+          <input type="hidden" name="estado" value="${estado}">
+          <textarea name="mensaje" class="composer__input" rows="2" placeholder="Escribile al cliente…" required></textarea>
+          <button type="submit" class="btn btn--primary composer__send">${ICON_SEND}<span>Enviar</span></button>
+        </form>`
+      : "";
+
     detalleHtml = `
       <div class="thread__head">
-        <h2>${escapeHtml(who)}</h2>
-        <span class="thread__meta">${escapeHtml(detalle.phone_number)} · ${detalle.status === "closed" ? "cerrada" : "abierta"}</span>
+        <div>
+          <h2>${escapeHtml(who)}</h2>
+          <div class="thread__metarow">
+            <span class="thread__meta">${escapeHtml(detalle.phone_number)} ${conversacionEstadoChip(detalle.status, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
+          </div>
+        </div>
+        <div class="thread__headactions">
+          <div class="thread__headactions-row">
+            ${ticketModalButton}
+            ${botToggleHtml}
+          </div>
+          ${actionsHtml ? `<div class="rowactions">${actionsHtml}</div>` : ""}
+        </div>
       </div>
+      ${ticketModalHtml}
       <div class="thread__body">${bubbles || '<div class="thread__empty">Sin mensajes todavía.</div>'}</div>
+      ${composerHtml}
     `;
   }
 
@@ -2789,6 +2982,211 @@ export async function guardarInfoLead(customerId: string, input: CustomerProfile
   });
 }
 
+async function setConversacionBotPaused(conversationId: string, paused: boolean): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE conversations SET bot_paused = $1 WHERE id = $2`, [paused, conversationId]);
+  });
+}
+
+export async function activarBotConversacion(conversationId: string): Promise<void> {
+  await setConversacionBotPaused(conversationId, false);
+}
+
+export async function desactivarBotConversacion(conversationId: string): Promise<void> {
+  await setConversacionBotPaused(conversationId, true);
+}
+
+/** Único punto que resuelve el teléfono del cliente dueño de una conversación — reusado por tomarTicket/resolverTicket/reasignarTicketABot para notificarlo por WhatsApp. */
+async function getConversationCustomerPhone(client: PoolClient, conversationId: string): Promise<string | null> {
+  const result = await client.query<{ phone_number: string }>(
+    `SELECT c.phone_number FROM customers c
+     JOIN conversations conv ON conv.customer_id = c.id
+     WHERE conv.id = $1`,
+    [conversationId],
+  );
+  return result.rows[0]?.phone_number ?? null;
+}
+
+/** Best-effort (mismo criterio que escalarHumano.ts): un fallo al notificar no debe revertir la acción sobre el ticket, que ya quedó confirmada. */
+async function notificarClienteBestEffort(
+  phoneNumber: string | null,
+  message: string,
+  conversationId: string,
+  handoffId: string,
+  logMessage: string,
+): Promise<void> {
+  if (!phoneNumber) {
+    return;
+  }
+  try {
+    await sendWhatsAppMessage(phoneNumber, message);
+  } catch (error) {
+    logger.child({ conversation_id: conversationId }).warn({ error, handoff_id: handoffId }, logMessage);
+  }
+}
+
+/**
+ * Toma el ticket (Fase 18, ver docs/fase-18-tickets-conversaciones-panel/README.md):
+ * reemplaza a `tomarConversacion` del enlace de token (ADR-028), ahora
+ * asignando a un `admins.id` en vez de a `human_agents`. Notifica al
+ * cliente quién lo va a atender (DoD #1) — antes esta acción no avisaba
+ * nada, a diferencia de resolverTicket que sí lo hacía desde el inicio.
+ */
+export async function tomarTicket(handoffId: string, admin: AdminRecord): Promise<string | null> {
+  const result = await withTransaction(async (client) => {
+    const updateResult = await client.query<{ conversation_id: string }>(
+      `UPDATE handoff_queue SET status = 'en_atencion', assigned_admin_id = $1
+       WHERE id = $2 AND status = 'queued'
+       RETURNING conversation_id`,
+      [admin.id, handoffId],
+    );
+    const row = updateResult.rows[0];
+    if (!row) {
+      return null;
+    }
+    // Mientras el ticket esté en atención, el bot de esta conversación
+    // queda pausado (pedido explícito del usuario: hoy el asistente le
+    // seguía hablando al cliente después de escalar a humano) — se
+    // reactiva solo desde resolverTicket/reasignarTicketABot.
+    await client.query(`UPDATE conversations SET bot_paused = true WHERE id = $1`, [row.conversation_id]);
+    const phoneNumber = await getConversationCustomerPhone(client, row.conversation_id);
+    return { conversationId: row.conversation_id, phoneNumber };
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  await notificarClienteBestEffort(
+    result.phoneNumber,
+    `${admin.username} tomó tu caso y te va a contactar en breve.`,
+    result.conversationId,
+    handoffId,
+    "No se pudo notificar al cliente que tomaron su ticket",
+  );
+
+  return result.conversationId;
+}
+
+/**
+ * Cierre del caso (ver docs/fase-7-escalamiento-humano/handoff-queue.md,
+ * "reasignación y cierre"): la conversación NO vuelve automáticamente al
+ * agente — sigue en `conversations.state.step = "escalado"` para siempre,
+ * un mensaje nuevo del cliente más adelante abre una conversación nueva.
+ * Reemplaza a `resolverConversacion` del enlace de token (ADR-028); a
+ * diferencia de ese flujo, este sí notifica al cliente por WhatsApp quién
+ * lo atendió (Fase 18, DoD #1).
+ */
+export async function resolverTicket(handoffId: string, admin: AdminRecord): Promise<string | null> {
+  const result = await withTransaction(async (client) => {
+    const updateResult = await client.query<{ conversation_id: string }>(
+      `UPDATE handoff_queue SET status = 'resuelto', resolved_at = now()
+       WHERE id = $1 AND status = 'en_atencion'
+       RETURNING conversation_id`,
+      [handoffId],
+    );
+    const row = updateResult.rows[0];
+    if (!row) {
+      return null;
+    }
+    // Cierra la conversación (ver handoff-queue.md, "reasignación y
+    // cierre"): así resolveConversation() ya no la reutiliza y el
+    // próximo mensaje del cliente abre una conversación nueva desde
+    // cero, en vez de quedar "muda" para siempre en step: "escalado".
+    await client.query(`UPDATE conversations SET status = 'closed', closed_at = now() WHERE id = $1`, [
+      row.conversation_id,
+    ]);
+    const phoneNumber = await getConversationCustomerPhone(client, row.conversation_id);
+    return { conversationId: row.conversation_id, phoneNumber };
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  // Encuesta de satisfacción (Fase 12.2, ver satisfactionSurvey.ts):
+  // best-effort, fuera de la transacción de arriba — un fallo al mandarla
+  // no debe revertir el cierre, que ya quedó confirmado.
+  await sendSurveyOnClose(result.conversationId);
+
+  await notificarClienteBestEffort(
+    result.phoneNumber,
+    `Te atiende ${admin.username}, gracias por tu paciencia. Este caso ya quedó resuelto.`,
+    result.conversationId,
+    handoffId,
+    "No se pudo notificar al cliente el cierre del ticket",
+  );
+
+  return result.conversationId;
+}
+
+/**
+ * Devuelve el ticket al asistente (Fase 18, pedido explícito del usuario:
+ * "escalarlo de nuevo al asistente para que siga la venta") — a
+ * diferencia de resolverTicket, acá la conversación NO se cierra ni se
+ * manda encuesta de satisfacción: sigue abierta y el bot retoma el
+ * control. `status = 'resuelto'` es deliberado (mismo valor que el cierre
+ * humano): es lo que ya usan los filtros de "conversación con ticket
+ * abierto" (`adminPanel.ts`, `status <> 'resuelto'`) para considerar que
+ * ya no hay un ticket pendiente — acá tampoco lo hay, solo que el caso
+ * sigue vivo en manos del bot en vez de cerrado.
+ */
+export async function reasignarTicketABot(handoffId: string, admin: AdminRecord): Promise<string | null> {
+  const result = await withTransaction(async (client) => {
+    const updateResult = await client.query<{ conversation_id: string }>(
+      `UPDATE handoff_queue SET status = 'resuelto', resolved_at = now()
+       WHERE id = $1 AND status = 'en_atencion'
+       RETURNING conversation_id`,
+      [handoffId],
+    );
+    const row = updateResult.rows[0];
+    if (!row) {
+      return null;
+    }
+    // Por si el admin había pausado el bot de esta conversación puntual
+    // (Fase 18, toggle del detalle) — sin esto, devolver el ticket al
+    // bot no serviría de nada, seguiría sin responder.
+    await client.query(`UPDATE conversations SET bot_paused = false WHERE id = $1`, [row.conversation_id]);
+    const phoneNumber = await getConversationCustomerPhone(client, row.conversation_id);
+    return { conversationId: row.conversation_id, phoneNumber };
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  await notificarClienteBestEffort(
+    result.phoneNumber,
+    `${admin.username} te devolvió la conversación a nuestro asistente virtual — seguimos ayudándote por acá con tu pedido.`,
+    result.conversationId,
+    handoffId,
+    "No se pudo notificar al cliente la reasignación del ticket al asistente",
+  );
+
+  return result.conversationId;
+}
+
+/**
+ * Composer del detalle de conversación (Fase 18, pedido explícito del
+ * usuario: atender por esta misma interfaz sin salir del panel). Se manda
+ * por el mismo canal de WhatsApp que usa el bot y queda guardado como
+ * sender_type "human" — mismo valor ya usado en la vista de solo lectura
+ * del token (ver handoffView.ts).
+ */
+export async function enviarMensajeHumano(conversationId: string, mensaje: string): Promise<boolean> {
+  const texto = mensaje.trim();
+  if (!texto) {
+    return false;
+  }
+  const phoneNumber = await withTransaction((client) => getConversationCustomerPhone(client, conversationId));
+  if (!phoneNumber) {
+    return false;
+  }
+  await sendWhatsAppMessage(phoneNumber, texto);
+  await appendMessage(conversationId, "outbound", "human", texto);
+  return true;
+}
+
 const HANDOFF_REASON_LABEL: Record<string, string> = {
   compatibilidad_tecnica: "Compatibilidad técnica",
   monto_alto: "Monto alto",
@@ -2805,6 +3203,20 @@ const HANDOFF_REASON_LABEL: Record<string, string> = {
 // faltaba era poder distinguirlos a simple vista en el listado de
 // Tickets. "queja" = cliente se enoja; "monto_alto" = venta en riesgo.
 const RISKY_REASONS = new Set(["queja", "monto_alto"]);
+
+// Un color por motivo (pedido explícito del usuario: "mismo estilo que
+// queja con diferentes colores para diferenciar la clasificación") — los
+// dos motivos de riesgo comparten chip--redline (ya se distinguen entre sí
+// con el ⚠, ver reasonCell más abajo); el resto usa un color propio.
+const HANDOFF_REASON_CHIP: Record<string, string> = {
+  compatibilidad_tecnica: "chip--chrome",
+  monto_alto: "chip--redline",
+  solicitud_cliente: "chip--go",
+  intentos_fallidos: "chip--amber",
+  queja: "chip--redline",
+  guardrail_precio: "chip--violet",
+  fuera_de_alcance: "chip--muted",
+};
 
 const HANDOFF_STATUS_LABEL: Record<string, string> = {
   queued: "En cola",
@@ -2828,6 +3240,7 @@ interface TicketRow {
   summary: string | null;
   customer_name: string | null;
   phone_number: string;
+  conversation_status: string;
 }
 
 /**
@@ -2845,15 +3258,20 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
   const rows = await withTransaction(async (client) => {
     const result = await client.query<TicketRow>(
       `SELECT h.id, h.conversation_id, h.reason, h.status, h.created_at, h.resolved_at, h.summary,
-              ha.name AS assigned_to_name, c.name AS customer_name, c.phone_number
+              a.username AS assigned_to_name, c.name AS customer_name, c.phone_number,
+              conv.status AS conversation_status
        FROM handoff_queue h
        JOIN conversations conv ON conv.id = h.conversation_id
        JOIN customers c ON c.id = conv.customer_id
-       LEFT JOIN human_agents ha ON ha.id = h.assigned_to
+       LEFT JOIN admins a ON a.id = h.assigned_admin_id
        ORDER BY h.created_at DESC`,
     );
     return result.rows;
   });
+
+  // Orden operativo (no alfabético): en cola primero, resuelto al final —
+  // mismo criterio que usaría un supervisor priorizando qué mirar primero.
+  const STATUS_SORT_ORDER: Record<string, number> = { queued: 0, en_atencion: 1, resuelto: 2 };
 
   const tableRows = rows
     .map((row) => {
@@ -2866,17 +3284,40 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
+      const reasonChip = HANDOFF_REASON_CHIP[row.reason] ?? "chip--muted";
       const reasonCell = isRisky
-        ? `<span class="chip chip--redline" title="Vigilante: cliente en riesgo">⚠ ${escapeHtml(reasonLabel)}</span>`
-        : escapeHtml(reasonLabel);
-      return `<tr data-search="${escapeHtml(search)}">
+        ? `<span class="chip ${reasonChip}" title="Vigilante: cliente en riesgo">⚠ ${escapeHtml(reasonLabel)}</span>`
+        : `<span class="chip ${reasonChip}">${escapeHtml(reasonLabel)}</span>`;
+      // Acción contextual al estado (pedido explícito del usuario): en
+      // cola → tomar; en atención → resolver o devolver al bot; resuelto
+      // → ninguna, ya no hay nada que hacer sobre ese ticket.
+      let actionsHtml = "";
+      if (row.status === "queued") {
+        actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
+          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+        </form>`;
+      } else if (row.status === "en_atencion") {
+        actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
+          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+        </form>
+        <form method="POST" action="/admin/conversaciones/${row.id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
+          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+        </form>`;
+      }
+      // El filtro del enlace debe reflejar dónde va a aparecer realmente
+      // esa conversación en el inbox, no asumir siempre "escalada": un
+      // ticket resuelto puede dejar la conversación cerrada (resolverTicket)
+      // o abierta de nuevo en manos del bot (reasignarTicketABot).
+      const conversacionFiltro =
+        row.conversation_status === "closed" ? "cerradas" : row.status === "resuelto" ? "abiertas" : "escaladas";
+      return `<tr data-search="${escapeHtml(search)}" data-filter-estado="${row.status}" data-filter-motivo="${row.reason}" data-sort-cliente="${escapeHtml(who.toLowerCase())}" data-sort-motivo="${escapeHtml(reasonLabel.toLowerCase())}" data-sort-estado="${STATUS_SORT_ORDER[row.status] ?? 9}" data-sort-asignado="${escapeHtml((row.assigned_to_name ?? "").toLowerCase())}" data-sort-creado="${new Date(row.created_at).getTime()}">
         <td>${escapeHtml(who)}</td>
         <td>${reasonCell}</td>
         <td><span class="chip ${statusChip}">${escapeHtml(statusLabel)}</span></td>
-        <td>${escapeHtml(row.assigned_to_name ?? "Sin asignar")}</td>
+        <td><div class="rowactions">${row.assigned_to_name ? `<span>${escapeHtml(row.assigned_to_name)}</span>` : `<span class="hint">Sin asignar</span>`}${actionsHtml}</div></td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td>${escapeHtml(row.summary ?? "")}</td>
-        <td><a class="linklike" href="/admin/conversaciones?estado=escaladas&c=${row.conversation_id}">Ver conversación →</a></td>
+        <td><a class="btn btn--ghost btn--icon" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></td>
       </tr>`;
     })
     .join("\n");
@@ -2890,13 +3331,33 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, motivo, estado o asesor…" aria-label="Buscar tickets">
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          <option value="queued">En cola</option>
+          <option value="en_atencion">En atención</option>
+          <option value="resuelto">Resuelto</option>
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="motivo" aria-label="Filtrar por motivo">
+          <option value="">Todos los motivos</option>
+          ${Object.entries(HANDOFF_REASON_LABEL)
+            .map(([key, label]) => `<option value="${key}">${escapeHtml(label)}</option>`)
+            .join("")}
+        </select>
       </div>
       <table data-resizable-table="tickets">
         <colgroup>
-          <col style="width:15%"><col style="width:14%"><col style="width:10%">
-          <col style="width:13%"><col style="width:11%"><col style="width:25%"><col style="width:12%">
+          <col style="width:14%"><col style="width:13%"><col style="width:9%">
+          <col style="width:21%"><col style="width:10%"><col style="width:27%"><col style="width:56px">
         </colgroup>
-        <thead><tr><th>Cliente</th><th>Motivo</th><th>Estado</th><th>Asignado a</th><th>Creado</th><th>Resumen</th><th></th></tr></thead>
+        <thead><tr>
+          <th class="sortable" data-sort-key="cliente">Cliente</th>
+          <th class="sortable" data-sort-key="motivo">Motivo</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th class="sortable" data-sort-key="asignado">Asignado a</th>
+          <th class="sortable" data-sort-key="creado">Creado</th>
+          <th>Resumen</th>
+          <th></th>
+        </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
@@ -3471,7 +3932,12 @@ function attributeTag(label: string, value: unknown): string {
 }
 
 /** Switch compacto de Activar/Desactivar (Aliados/Categorías) — reemplaza el botón de texto condicional, mismo verde/rojo pero sin competir en ancho con Guardar/Editar. `actionUrlBase` es la URL sin el segmento final ("activar"/"desactivar"), ej. "/admin/aliados/{id}". */
-function toggleSwitchHtml(actionUrlBase: string, active: boolean, subjectLabel: string): string {
+function toggleSwitchHtml(
+  actionUrlBase: string,
+  active: boolean,
+  subjectLabel: string,
+  redirectQuery?: string,
+): string {
   const nextAction = active ? "desactivar" : "activar";
   // El switch reemplazó un botón de texto explícito ("Desactivar") por un
   // control mucho más chico y fácil de tocar sin querer — `data-confirm`
@@ -3482,11 +3948,30 @@ function toggleSwitchHtml(actionUrlBase: string, active: boolean, subjectLabel: 
     nextAction === "desactivar"
       ? `¿Desactivar ${subjectLabel}? Deja de estar disponible para el asistente.`
       : `¿Activar ${subjectLabel} de nuevo?`;
-  return `<form method="POST" action="${actionUrlBase}/${nextAction}" data-confirm="${escapeHtml(confirmMsg)}">
+  // redirectQuery (Conversaciones): sin esto, activar/desactivar el bot
+  // siempre volvía a un filtro fijo distinto al que el admin tenía abierto
+  // — se lleva el estado actual de la página como querystring para que el
+  // servidor redirija exactamente adonde ya estaba.
+  const action = `${actionUrlBase}/${nextAction}${redirectQuery ? `?${redirectQuery}` : ""}`;
+  return `<form method="POST" action="${action}" data-confirm="${escapeHtml(confirmMsg)}">
     <button type="submit" class="toggleswitch${active ? " toggleswitch--on" : ""}" aria-label="${nextAction === "activar" ? "Activar" : "Desactivar"}" title="${nextAction === "activar" ? "Activar" : "Desactivar"}">
       <span class="toggleswitch__track"><span class="toggleswitch__knob"></span></span>
     </button>
   </form>`;
+}
+
+/**
+ * Versión no interactiva del switch (Fase 18, pedido explícito del
+ * usuario): mientras un ticket está en atención, el bot de esa
+ * conversación lo controla el ciclo de vida del ticket
+ * (tomarTicket/resolverTicket/reasignarTicketABot), no el admin a mano —
+ * el switch se ve apagado y con el cursor bloqueado, sin `<form>` que
+ * pueda enviarse.
+ */
+function lockedToggleSwitchHtml(title: string): string {
+  return `<span class="toggleswitch toggleswitch--locked" title="${escapeHtml(title)}" aria-disabled="true">
+    <span class="toggleswitch__track"><span class="toggleswitch__knob"></span></span>
+  </span>`;
 }
 
 /** Columna Estado (Aliados/Categorías) — el switch de Activar/Desactivar vive acá directo, con su propio texto de estado al lado, en vez de un chip de solo lectura separado de la acción que lo cambia. */

@@ -1,8 +1,15 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../src/gateway/sendMessage.js", () => ({
+  sendWhatsAppMessage: vi.fn(),
+  getWhatsAppMessageStatus: vi.fn(),
+}));
+
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
+import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
@@ -23,6 +30,15 @@ function cookieValueFrom(setCookieHeader: string | string[] | undefined): string
 }
 
 let settingsId: string;
+// `settings` es un singleton sin constraint que lo obligue en la base de
+// datos (ver settingsDirectory.ts) — en la DB de desarrollo persistente ya
+// puede existir una fila real (config manual del negocio). Insertar una
+// segunda rompería getSettings()'s `LIMIT 1` sin ORDER BY, que puede
+// devolver cualquiera de las dos. Por eso se reusa la fila existente si la
+// hay, guardando sus valores para restaurarlos en el afterAll.
+let settingsCreated = false;
+let previousSettingsName: string;
+let previousSettingsDisplayName: string | null;
 let productId: string;
 let agentId: string;
 let conversacionAbierta: string;
@@ -44,10 +60,25 @@ const adminEmails = [
 const app = await buildServer();
 
 beforeAll(async () => {
-  const settings = await adminPool.query<{ id: string }>(
-    `INSERT INTO settings (name) VALUES ('Admin Panel Test') RETURNING id`,
+  const existing = await adminPool.query<{ id: string; name: string; display_name: string | null }>(
+    `SELECT id, name, display_name FROM settings LIMIT 1`,
   );
-  settingsId = settings.rows[0]!.id;
+  if (existing.rows[0]) {
+    settingsId = existing.rows[0].id;
+    previousSettingsName = existing.rows[0].name;
+    previousSettingsDisplayName = existing.rows[0].display_name;
+    await adminPool.query(`UPDATE settings SET name = 'Admin Panel Test', display_name = NULL WHERE id = $1`, [
+      settingsId,
+    ]);
+  } else {
+    settingsCreated = true;
+    previousSettingsName = "Admin Panel Test";
+    previousSettingsDisplayName = null;
+    const settings = await adminPool.query<{ id: string }>(
+      `INSERT INTO settings (name) VALUES ('Admin Panel Test') RETURNING id`,
+    );
+    settingsId = settings.rows[0]!.id;
+  }
 
   const product = await seedProduct(adminPool, {
     sku: "ADMIN-A",
@@ -100,12 +131,10 @@ beforeAll(async () => {
       ]),
     ],
   );
-  const agent = await adminPool.query<{ id: string }>(
-    `INSERT INTO human_agents (name, contact) VALUES ('Laura Vélez', 'laura@formotos.test') RETURNING id`,
-  );
-  agentId = agent.rows[0]!.id;
+  const agentPasswordHash = await hashPassword("clave-de-prueba-laura-velez");
+  agentId = await createAdmin("Laura Vélez", "laura@formotos-test.com", agentPasswordHash, "colaborador", null);
   await adminPool.query(
-    `INSERT INTO handoff_queue (conversation_id, reason, status, assigned_to)
+    `INSERT INTO handoff_queue (conversation_id, reason, status, assigned_admin_id)
      VALUES ($1, 'solicitud_cliente', 'en_atencion', $2)`,
     [conversationEscalada.rows[0]!.id, agentId],
   );
@@ -245,12 +274,21 @@ afterAll(async () => {
   await adminPool.query(`DELETE FROM handoff_queue WHERE conversation_id = ANY($1)`, [
     conversationIds,
   ]);
-  await adminPool.query(`DELETE FROM human_agents WHERE id = $1`, [agentId]);
+  await adminPool.query(`DELETE FROM admin_permissions WHERE admin_id = $1`, [agentId]);
+  await adminPool.query(`DELETE FROM admins WHERE id = $1`, [agentId]);
   await adminPool.query(`DELETE FROM messages WHERE conversation_id = ANY($1)`, [conversationIds]);
   await adminPool.query(`DELETE FROM conversations WHERE id = ANY($1)`, [conversationIds]);
   await adminPool.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
   await deleteProduct(adminPool, productId);
-  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
+  if (settingsCreated) {
+    await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
+  } else {
+    await adminPool.query(`UPDATE settings SET name = $1, display_name = $2 WHERE id = $3`, [
+      previousSettingsName,
+      previousSettingsDisplayName,
+      settingsId,
+    ]);
+  }
   await app.close();
   await adminPool.end();
   await appPool.end();
@@ -365,10 +403,28 @@ describe("panel admin", () => {
   });
 
   describe("conversaciones", () => {
-    it("lista las conversaciones con el nombre real del cliente", async () => {
+    it("sin filtro en la URL muestra por defecto las conversaciones abiertas, con el nombre real del cliente", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/conversaciones",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Overview");
+      // Pedido explícito del usuario: Abiertas y Escaladas pasan a ser
+      // mutuamente excluyentes — una conversación con ticket activo ya no
+      // aparece en el filtro por defecto (Abiertas).
+      expect(response.body).not.toContain("Cliente Escalado");
+      // La conversación cerrada (whatsapp:+573000000002) tampoco aparece
+      // por defecto — pedido explícito del usuario: Abiertas es el filtro
+      // inicial, ya no Todas.
+      expect(response.body).not.toContain("whatsapp:+573000000002");
+    });
+
+    it("el tab Todas sí incluye la conversación cerrada, con el fallback al teléfono cuando no hay nombre", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=todas",
         headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
@@ -377,6 +433,30 @@ describe("panel admin", () => {
       // Sin cliente sembrado como número puro (whatsapp:+573000000002)
       // cae al fallback de mostrar el teléfono.
       expect(response.body).toContain("whatsapp:+573000000002");
+    });
+
+    it("cada conversación de la lista muestra un chip de estado con su color propio (azul/rojo/verde)", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=todas",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('<span class="chip chip--chrome">Abierta</span>');
+      expect(response.body).toContain('<span class="chip chip--redline">Escalada</span>');
+      expect(response.body).toContain('<span class="chip chip--go">Cerrada</span>');
+    });
+
+    it("el detalle de una conversación escalada muestra el estado del ticket, quién lo tomó y el botón para ver el ticket", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/conversaciones?estado=escaladas&c=${conversacionEscalada}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("En atención");
+      expect(response.body).toContain("Tomó: Laura Vélez");
+      expect(response.body).toContain('aria-label="Ver ticket"');
     });
 
     it("el tab Escaladas solo muestra conversaciones con handoff abierto", async () => {
@@ -525,7 +605,7 @@ describe("panel admin", () => {
       expect(response.body).not.toMatch(/⚠ Solicitud del cliente/);
     });
 
-    it("enlaza cada ticket a su conversación en el inbox", async () => {
+    it("enlaza cada ticket a su conversación en el inbox mediante un botón icono", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/tickets",
@@ -535,6 +615,295 @@ describe("panel admin", () => {
       expect(response.body).toContain(
         `/admin/conversaciones?estado=escaladas&c=${conversacionEscalada}`,
       );
+      expect(response.body).toContain('aria-label="Ver conversación"');
+      expect(response.body).not.toContain("Ver conversación →");
+    });
+
+    it("agrega filtros por estado y motivo, y encabezados ordenables por columna", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-filter-key="estado"');
+      expect(response.body).toContain('data-filter-key="motivo"');
+      expect(response.body).toContain('data-sort-key="cliente"');
+      expect(response.body).toContain('data-sort-key="estado"');
+      expect(response.body).toContain('data-sort-key="asignado"');
+      expect(response.body).toContain('data-sort-key="creado"');
+    });
+
+    it("muestra el botón de tomar para un ticket en cola, y de resolver/reasignar para uno en atención", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('aria-label="Tomar ticket"');
+      expect(response.body).toContain('aria-label="Marcar como resuelto"');
+      expect(response.body).toContain('aria-label="Reasignar al asistente"');
+    });
+  });
+
+  describe("tickets desde conversaciones (Fase 18, ADR-028)", () => {
+    let customerId: string;
+    let conversationId: string;
+    let handoffId: string;
+
+    beforeAll(async () => {
+      const customer = await adminPool.query<{ id: string }>(
+        `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000007', 'Cliente Fase 18') RETURNING id`,
+      );
+      customerId = customer.rows[0]!.id;
+      const conversation = await adminPool.query<{ id: string }>(
+        `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+        [customerId],
+      );
+      conversationId = conversation.rows[0]!.id;
+      await adminPool.query(
+        `INSERT INTO messages (conversation_id, direction, sender_type, content)
+         VALUES ($1, 'inbound', 'customer', 'Necesito hablar con alguien')`,
+        [conversationId],
+      );
+      const handoff = await adminPool.query<{ id: string }>(
+        `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
+         VALUES ($1, 'solicitud_cliente', 'queued', 'Cliente pide un humano')
+         RETURNING id`,
+        [conversationId],
+      );
+      handoffId = handoff.rows[0]!.id;
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM handoff_tokens WHERE handoff_id = $1`, [handoffId]);
+      await adminPool.query(`DELETE FROM handoff_queue WHERE id = $1`, [handoffId]);
+      await adminPool.query(`DELETE FROM messages WHERE conversation_id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
+    });
+
+    it("el detalle de una conversación con ticket en cola muestra el botón de tomar, sin JSON crudo del estado", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/conversaciones?estado=escaladas&c=${conversationId}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Tomar ticket");
+      // El layout comparte JS de columnas/CSV que sí usa JSON.stringify
+      // (adminPanel.ts) — lo que no debe pasar es que el estado del flujo
+      // comercial (`conversations.state`) se sirva serializado tal cual
+      // dentro del detalle. Ver ADR-028 / DoD #2.
+      const threadSection = response.body.match(
+        /<div class="thread__head">[\s\S]*?<div class="thread__body">[\s\S]*?<\/div>/,
+      )?.[0];
+      expect(threadSection).toBeTruthy();
+      expect(threadSection).not.toContain("JSON.stringify");
+    });
+
+    it("tomar el ticket lo pasa a en_atencion, lo asigna al admin de la sesión, pausa el bot de esa conversación y avisa al cliente por WhatsApp", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${handoffId}/tomar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain(`c=${conversationId}`);
+
+      const row = await adminPool.query<{ status: string; assigned_admin_id: string | null }>(
+        `SELECT status, assigned_admin_id FROM handoff_queue WHERE id = $1`,
+        [handoffId],
+      );
+      expect(row.rows[0]!.status).toBe("en_atencion");
+      expect(row.rows[0]!.assigned_admin_id).toBeTruthy();
+
+      // El bot de esta conversación puntual queda pausado al tomar el
+      // ticket — antes seguía respondiéndole al cliente aunque un humano
+      // ya lo estuviera atendiendo.
+      const conversation = await adminPool.query<{ bot_paused: boolean }>(
+        `SELECT bot_paused FROM conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(conversation.rows[0]!.bot_paused).toBe(true);
+
+      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+        "whatsapp:+573000000007",
+        expect.stringContaining(ADMIN_USERNAME),
+      );
+    });
+
+    it("con el ticket en atención, el detalle bloquea el toggle del bot, ofrece reasignar al asistente y muestra el composer para responder", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin/conversaciones?estado=escaladas&c=${conversationId}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("toggleswitch--locked");
+      expect(response.body).toContain("Reasignar al asistente");
+      expect(response.body).toContain(`action="/admin/conversaciones/${conversationId}/mensaje"`);
+    });
+
+    it("enviar un mensaje desde el composer lo manda por WhatsApp y lo guarda como sender_type human", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${conversationId}/mensaje`,
+        headers: { cookie: sessionCookie },
+        payload: { mensaje: "Ya reviso tu caso, dame un momento." },
+      });
+      expect(response.statusCode).toBe(303);
+
+      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+        "whatsapp:+573000000007",
+        "Ya reviso tu caso, dame un momento.",
+      );
+
+      const message = await adminPool.query<{ direction: string; sender_type: string; content: string }>(
+        `SELECT direction, sender_type, content FROM messages
+         WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 1`,
+        [conversationId],
+      );
+      expect(message.rows[0]).toMatchObject({
+        direction: "outbound",
+        sender_type: "human",
+        content: "Ya reviso tu caso, dame un momento.",
+      });
+    });
+
+    it("resolver el ticket lo cierra, cierra la conversación y notifica al cliente por WhatsApp quién lo atendió", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${handoffId}/resolver`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+
+      const row = await adminPool.query<{ status: string; resolved_at: string | null }>(
+        `SELECT status, resolved_at FROM handoff_queue WHERE id = $1`,
+        [handoffId],
+      );
+      expect(row.rows[0]!.status).toBe("resuelto");
+      expect(row.rows[0]!.resolved_at).not.toBeNull();
+
+      const conversation = await adminPool.query<{ status: string }>(
+        `SELECT status FROM conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(conversation.rows[0]!.status).toBe("closed");
+
+      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+        "whatsapp:+573000000007",
+        expect.stringContaining(ADMIN_USERNAME),
+      );
+    });
+
+    it("reasignar un ticket en atención al bot lo deja resuelto sin cerrar la conversación, y avisa al cliente", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const handoff = await adminPool.query<{ id: string }>(
+        `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
+         VALUES ($1, 'solicitud_cliente', 'en_atencion', 'Cliente pide un humano')
+         RETURNING id`,
+        [conversationId],
+      );
+      const reasignarHandoffId = handoff.rows[0]!.id;
+      await adminPool.query(`UPDATE conversations SET status = 'active', bot_paused = true WHERE id = $1`, [
+        conversationId,
+      ]);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${reasignarHandoffId}/reasignar-bot`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+
+      const row = await adminPool.query<{ status: string }>(
+        `SELECT status FROM handoff_queue WHERE id = $1`,
+        [reasignarHandoffId],
+      );
+      expect(row.rows[0]!.status).toBe("resuelto");
+
+      const conversation = await adminPool.query<{ status: string; bot_paused: boolean }>(
+        `SELECT status, bot_paused FROM conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(conversation.rows[0]!.status).toBe("active");
+      expect(conversation.rows[0]!.bot_paused).toBe(false);
+
+      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
+        "whatsapp:+573000000007",
+        expect.stringContaining(ADMIN_USERNAME),
+      );
+
+      await adminPool.query(`DELETE FROM handoff_queue WHERE id = $1`, [reasignarHandoffId]);
+    });
+
+    it("una segunda resolución sobre el mismo ticket no rompe (no-op)", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${handoffId}/resolver`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+
+      const row = await adminPool.query<{ status: string }>(
+        `SELECT status FROM handoff_queue WHERE id = $1`,
+        [handoffId],
+      );
+      expect(row.rows[0]!.status).toBe("resuelto");
+    });
+
+    it("pausar el bot de una conversación puntual actualiza conversations.bot_paused, y reactivarlo lo revierte", async () => {
+      const desactivar = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${conversationId}/bot/desactivar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(desactivar.statusCode).toBe(303);
+
+      const paused = await adminPool.query<{ bot_paused: boolean }>(
+        `SELECT bot_paused FROM conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(paused.rows[0]!.bot_paused).toBe(true);
+
+      const activar = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${conversationId}/bot/activar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(activar.statusCode).toBe(303);
+
+      const resumed = await adminPool.query<{ bot_paused: boolean }>(
+        `SELECT bot_paused FROM conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(resumed.rows[0]!.bot_paused).toBe(false);
+    });
+
+    it("activar/desactivar el bot de una conversación puntual no cambia el filtro desde el que se hizo la acción", async () => {
+      // El botón viaja con el `estado` de la página actual en su propia
+      // querystring (ver toggleSwitchHtml) — antes el redirect siempre
+      // caía en "escaladas" sin importar de dónde vino el admin.
+      const desactivar = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${conversationId}/bot/desactivar?estado=todas`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(desactivar.statusCode).toBe(303);
+      expect(desactivar.headers.location).toBe(`/admin/conversaciones?estado=todas&c=${conversationId}`);
+
+      const activar = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${conversationId}/bot/activar?estado=todas`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(activar.statusCode).toBe(303);
+      expect(activar.headers.location).toBe(`/admin/conversaciones?estado=todas&c=${conversationId}`);
     });
   });
 
