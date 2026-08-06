@@ -2,6 +2,7 @@ export { pool } from "./pool.js";
 export { withTransaction } from "./withTransaction.js";
 export {
   getBehaviorConfig,
+  getBrandVoiceConfig,
   getEscalationConfig,
   getLlmConfig,
   getReportFrequencyDays,

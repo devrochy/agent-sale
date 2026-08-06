@@ -36,6 +36,7 @@ import {
   guardarProducto,
   guardarReporteDiario,
   guardarReviewLink,
+  guardarVozMarca,
   pausarBot,
   previsualizarImportacionCsv,
   reactivarBot,
@@ -477,6 +478,27 @@ export async function buildServer() {
       tono: tono ?? "",
       estiloMensajes: estiloMensajes ?? "",
       velocidadRespuesta: velocidadRespuesta ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/configuracion/voz-marca", async (request, reply) => {
+    const { nombreAsistente, mision, vision, valores, nomenclatura } = request.body as {
+      nombreAsistente?: string;
+      mision?: string;
+      vision?: string;
+      valores?: string;
+      nomenclatura?: string;
+    };
+    const result = await guardarVozMarca({
+      nombreAsistente: nombreAsistente ?? "",
+      mision: mision ?? "",
+      vision: vision ?? "",
+      valores: valores ?? "",
+      nomenclatura: nomenclatura ?? "",
     });
     const redirectUrl = result.ok
       ? "/admin/configuracion?guardado=1"

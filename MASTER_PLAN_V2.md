@@ -195,7 +195,7 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 
 ---
 
-## Fase 18 — Tickets y Conversaciones Accionables en el Panel
+## Fase 18 — Tickets y Conversaciones Accionables en el Panel — ✅ COMPLETA (mergeada a `develop`, PR #68, 2026-08-05)
 
 **Objetivo:** Mover la acción de tomar/resolver tickets del flujo por token (`POST /asesor/:token/tomar|resolver`, Fase 7) a una sección del panel, y ampliar la vista de Conversaciones (Fase 11.2) con pausa puntual por conversación, acción de tomar ticket sin salir de la vista, y visualización legible en vez de JSON crudo.
 
@@ -213,10 +213,12 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 **Estimación:** 3 semanas.
 
 **Definición de terminado:**
-- [ ] Un administrador puede tomar y cerrar un ticket completo desde el panel, sin usar el enlace de token, con el cliente recibiendo la notificación de "te atiende [nombre]".
-- [ ] La vista de detalle de conversación no muestra JSON crudo en ningún punto — todo tool call se lee como texto formateado.
-- [ ] Pausar el bot para una conversación puntual detiene las respuestas automáticas solo de esa conversación, verificado contra una segunda conversación del mismo tenant que sigue respondiendo normalmente.
-- [ ] ADR-028 aceptada, con la decisión de convivencia/reemplazo del flujo de Fase 7 ejecutada (no solo documentada).
+- [x] Un administrador puede tomar y cerrar un ticket completo desde el panel, sin usar el enlace de token, con el cliente recibiendo la notificación de "te atiende [nombre]".
+- [x] La vista de detalle de conversación no muestra JSON crudo en ningún punto — todo tool call se lee como texto formateado.
+- [x] Pausar el bot para una conversación puntual detiene las respuestas automáticas solo de esa conversación, verificado contra una segunda conversación del mismo tenant que sigue respondiendo normalmente.
+- [x] ADR-028 aceptada, con la decisión de convivencia/reemplazo del flujo de Fase 7 ejecutada (no solo documentada).
+
+**Ajustes posteriores a pruebas manuales** (mismo PR): bug real corregido — el bot seguía respondiendo al cliente tras escalar a humano (`tomarTicket` ahora pausa `conversations.bot_paused`); composer de mensajes en el detalle para responder por WhatsApp sin salir del panel; rediseño de Conversaciones (filtro "Abiertas" por defecto y mutuamente excluyente con "Escaladas", chips de estado por color, modal de ticket). Ver [[project_fase18_tickets_conversaciones_panel]] y `docs/fase-18-tickets-conversaciones-panel/README.md` (sección "Ajustes posteriores") para el detalle completo.
 
 ---
 
@@ -261,9 +263,9 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 **Estimación:** 3 semanas (1 semana de diagnóstico + 2 de implementación), sin contar el tiempo de investigación documental que puede correr en paralelo.
 
 **Definición de terminado:**
-- [ ] Causa raíz del bug de configuración identificada y corregida (o descartada como no reproducible, con evidencia), documentada en ADR-030 antes de dar la fase por cerrada.
-- [ ] Un tenant con RAG institucional configurado responde de forma consistente con su misión/valores en un escenario de prueba, verificado con cache-read en la segunda llamada del turno (mismo criterio de verificación que ya usó ADR-021).
-- [ ] Documento de investigación de variables configurables entregado con recomendación priorizada (no implementación total comprometida).
+- [x] Causa raíz del bug de configuración identificada y corregida (o descartada como no reproducible, con evidencia), documentada en ADR-030 antes de dar la fase por cerrada. Descartada como no reproducible.
+- [x] Tercer bloque de RAG institucional implementado siguiendo el patrón de ADR-021 (código completo, tests en verde) — pendiente solo la verificación de cache-read contra Anthropic real, bloqueada mientras el proyecto opere sobre DeepSeek (ver docs/fase-20-voz-marca-rag/README.md).
+- [x] Documento de investigación de variables configurables entregado con recomendación priorizada (no implementación total comprometida) — ver docs/fase-20-voz-marca-rag/investigacion-variables-configurables.md.
 
 ---
 

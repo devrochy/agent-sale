@@ -948,6 +948,68 @@ describe("panel admin", () => {
     });
   });
 
+  describe("configuración — voz de marca (Fase 20, ADR-030)", () => {
+    it("guarda los campos configurados y los precarga en el formulario", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/voz-marca",
+        payload: new URLSearchParams({
+          nombreAsistente: "Sofía",
+          mision: "Vender con confianza.",
+          vision: "",
+          valores: "Cercanía, honestidad",
+          nomenclatura: "",
+        }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/configuracion?guardado=1");
+
+      try {
+        const row = await adminPool.query<{ brand_voice_config: Record<string, string> }>(
+          `SELECT brand_voice_config FROM settings`,
+        );
+        expect(row.rows[0]!.brand_voice_config).toMatchObject({
+          nombreAsistente: "Sofía",
+          mision: "Vender con confianza.",
+          valores: "Cercanía, honestidad",
+        });
+
+        const configPage = await app.inject({
+          method: "GET",
+          url: "/admin/configuracion",
+          headers: { cookie: sessionCookie },
+        });
+        expect(configPage.body).toContain("Sofía");
+        expect(configPage.body).toContain("Vender con confianza.");
+      } finally {
+        await adminPool.query(`UPDATE settings SET brand_voice_config = NULL`);
+      }
+    });
+
+    it("rechaza un campo que supera el largo máximo, sin guardar nada", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/voz-marca",
+        payload: new URLSearchParams({
+          nombreAsistente: "",
+          mision: "x".repeat(501),
+          vision: "",
+          valores: "",
+          nomenclatura: "",
+        }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+
+      const row = await adminPool.query<{ brand_voice_config: Record<string, string> | null }>(
+        `SELECT brand_voice_config FROM settings`,
+      );
+      expect(row.rows[0]!.brand_voice_config).toBeNull();
+    });
+  });
+
   describe("colaboradores", () => {
     it("un master ve la lista de colaboradores existentes", async () => {
       const response = await app.inject({
