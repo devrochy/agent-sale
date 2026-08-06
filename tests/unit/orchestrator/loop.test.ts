@@ -18,6 +18,7 @@ vi.mock("../../../src/orchestrator/memory.js", () => ({
 }));
 vi.mock("../../../src/shared/db/index.js", () => ({
   getBehaviorConfig: vi.fn(),
+  getBrandVoiceConfig: vi.fn(),
   getEscalationConfig: vi.fn(),
 }));
 vi.mock("../../../src/shared/audit/auditLog.js", () => ({
@@ -36,7 +37,7 @@ import {
   updateState,
 } from "../../../src/orchestrator/memory.js";
 import { executeTool } from "../../../src/orchestrator/toolExecutor.js";
-import { getBehaviorConfig, getEscalationConfig } from "../../../src/shared/db/index.js";
+import { getBehaviorConfig, getBrandVoiceConfig, getEscalationConfig } from "../../../src/shared/db/index.js";
 import { recordAudit } from "../../../src/shared/audit/auditLog.js";
 
 const USAGE = { inputTokens: 10, outputTokens: 10 };
@@ -63,6 +64,7 @@ describe("runTurn — guardrail de precios", () => {
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
     vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(getBrandVoiceConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProvider).mockResolvedValue({
@@ -80,6 +82,7 @@ describe("runTurn — guardrail de precios", () => {
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
     vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
   });
 
   it("responde normalmente cuando el monto del texto coincide con el resultado real de una tool", async () => {
@@ -173,6 +176,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
     vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(getBrandVoiceConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProvider).mockResolvedValue({
@@ -190,6 +194,7 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
     vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
   });
 
   it("responde normalmente cuando la cantidad de stock del texto coincide con el resultado real de una tool", async () => {
@@ -261,6 +266,7 @@ describe("runTurn — regla de monto alto", () => {
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
     vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(getBrandVoiceConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProvider).mockResolvedValue({
@@ -278,6 +284,7 @@ describe("runTurn — regla de monto alto", () => {
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
     vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
   });
 
   it("no escala en generar_cotizacion aunque el subtotal supere el umbral (todavía no es el monto final, puede bajar con una promoción)", async () => {
@@ -344,6 +351,7 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
     vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(getBrandVoiceConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProvider).mockResolvedValue({
@@ -361,6 +369,7 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
     vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
   });
 
   it("menciona un descuento sin que el cliente lo haya pedido, llamando aplicar_promocion junto con generar_cotizacion", async () => {
@@ -424,6 +433,7 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
     vi.mocked(updateState).mockReset();
     vi.mocked(getEscalationConfig).mockReset();
     vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(getBrandVoiceConfig).mockReset();
     vi.mocked(recordAudit).mockReset();
 
     vi.mocked(resolveLlmProvider).mockResolvedValue({
@@ -441,6 +451,7 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
     vi.mocked(loadHistory).mockResolvedValue([]);
     vi.mocked(getEscalationConfig).mockResolvedValue(null);
     vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
     // El id que appendMessage devuelve para el mensaje del agente — usado
     // para corregir `content` con el link ya al final del turno (ver
     // updateMessageContent en memory.ts).

@@ -187,6 +187,24 @@ export async function saveBehaviorConfig(config: Record<string, unknown>): Promi
 }
 
 /**
+ * Voz de marca + RAG institucional — tercer bloque de `system` (Fase 20,
+ * ver docs/fase-20-voz-marca-rag/adrs/ADR-030-rag-institucional-tercer-bloque-cache-y-diagnostico-bug.md).
+ * Mismo patrón que `getBehaviorConfig`: `null` si no se configuró nada,
+ * en cuyo caso `src/orchestrator/brandVoiceBlock.ts` no agrega bloque.
+ */
+export async function getBrandVoiceConfig(): Promise<Record<string, unknown> | null> {
+  const result = await pool.query<{ brand_voice_config: Record<string, unknown> | null }>(
+    "SELECT brand_voice_config FROM settings",
+  );
+  return result.rows[0]?.brand_voice_config ?? null;
+}
+
+/** Guarda el override de voz de marca — reemplaza el objeto completo, sin merge (mismo criterio que saveBehaviorConfig). */
+export async function saveBrandVoiceConfig(config: Record<string, unknown>): Promise<void> {
+  await pool.query("UPDATE settings SET brand_voice_config = $1", [JSON.stringify(config)]);
+}
+
+/**
  * Número de WhatsApp que recibe el Reporte diario (Fase 12.2, ver
  * migrations/0024_tenants_report_recipient.cjs) — `null` si no se
  * configuró, en cuyo caso `src/jobs/dailyReport.ts` no manda reporte (no

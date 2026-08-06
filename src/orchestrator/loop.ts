@@ -1,7 +1,7 @@
 import type { EscalationReason } from "../domains/escalation/escalarHumano.js";
 import { escalarHumano } from "../domains/escalation/escalarHumano.js";
 import { recordAudit } from "../shared/audit/auditLog.js";
-import { getBehaviorConfig, getEscalationConfig } from "../shared/db/index.js";
+import { getBehaviorConfig, getBrandVoiceConfig, getEscalationConfig } from "../shared/db/index.js";
 import { withTransaction } from "../shared/db/withTransaction.js";
 import { logger } from "../shared/observability/logger.js";
 import {
@@ -12,6 +12,7 @@ import {
 } from "../shared/observability/priceGuardrail.js";
 import { calculateCost } from "../shared/pricing.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
+import { buildBrandVoiceBlock, resolveBrandVoiceConfig } from "./brandVoiceBlock.js";
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import type { DifficultySignal } from "./llm/difficultyRouting.js";
 import { resolveLlmProvider, type ContentBlock, type LLMMessage } from "./llm/index.js";
@@ -240,7 +241,15 @@ export async function processConversation(
   // Tono de voz del negocio (Fase 11.4 extendida, ver ADR-021) — segundo
   // bloque de `system`, con su propio cache_control en AnthropicProvider.
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
+  // Voz de marca + RAG institucional (Fase 20, ver ADR-030) — tercer
+  // bloque, solo se agrega (y solo entonces se paga un breakpoint más)
+  // cuando el negocio configuró algo.
+  const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
+  const brandVoiceBlock = buildBrandVoiceBlock(brandVoiceConfig);
   const systemPrompt = [SYSTEM_PROMPT, TONE_BLOCKS[behaviorConfig.tono]];
+  if (brandVoiceBlock) {
+    systemPrompt.push(brandVoiceBlock);
+  }
 
   const messages = await loadHistory(conversationId);
   // Se resuelve una sola vez por turno (Fase 11.4, ver ADR-020) — un turno

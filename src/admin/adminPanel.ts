@@ -64,6 +64,7 @@ import {
 import { clasificarCliente, type CustomerSegment } from "../domains/commerce/aplicarPromocion.js";
 import { parseCsv } from "../shared/csv/parseCsv.js";
 import { isEstiloMensajes, isVelocidadRespuesta, resolveBehaviorConfig } from "../orchestrator/behaviorConfig.js";
+import { resolveBrandVoiceConfig } from "../orchestrator/brandVoiceBlock.js";
 import {
   isLlmRoutingMode,
   isProviderKey,
@@ -76,6 +77,7 @@ import { createPaymentLink, MIN_AMOUNT_COP } from "../payments/wompiClient.js";
 import {
   clearLlmConfig,
   getBehaviorConfig,
+  getBrandVoiceConfig,
   getLlmConfig,
   getReportFrequencyDays,
   getReportRecipient,
@@ -83,6 +85,7 @@ import {
   getSettings,
   getWompiConfig,
   saveBehaviorConfig,
+  saveBrandVoiceConfig,
   saveLlmConfig,
   saveReportFrequencyDays,
   saveReportRecipient,
@@ -5973,6 +5976,7 @@ export async function renderConfiguracionPage(
   }
   const llmConfig = await getLlmConfig();
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
+  const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
   const reportRecipient = await getReportRecipient();
   const reportFrequencyDays = await getReportFrequencyDays();
   const reportFrequencyPreset =
@@ -6099,6 +6103,36 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
+    <section class="block block--narrow" aria-label="Voz de marca">
+      <div class="blockhead"><h2>Voz de marca</h2></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/configuracion/voz-marca">
+          <div class="field">
+            <label for="voz-nombre-asistente">Nombre del asistente</label>
+            <input type="text" id="voz-nombre-asistente" name="nombreAsistente" value="${escapeHtml(brandVoiceConfig.nombreAsistente)}" placeholder="Ej: Sofía">
+            <p class="hint">Con qué nombre se presenta el asistente al cliente. Dejar vacío para no darle nombre propio.</p>
+          </div>
+          <div class="field">
+            <label for="voz-mision">Misión</label>
+            <textarea id="voz-mision" name="mision" rows="2" placeholder="Qué busca lograr la empresa para sus clientes.">${escapeHtml(brandVoiceConfig.mision)}</textarea>
+          </div>
+          <div class="field">
+            <label for="voz-vision">Visión</label>
+            <textarea id="voz-vision" name="vision" rows="2" placeholder="Hacia dónde va la empresa.">${escapeHtml(brandVoiceConfig.vision)}</textarea>
+          </div>
+          <div class="field">
+            <label for="voz-valores">Valores</label>
+            <textarea id="voz-valores" name="valores" rows="2" placeholder="Ej: Cercanía, honestidad, rapidez.">${escapeHtml(brandVoiceConfig.valores)}</textarea>
+          </div>
+          <div class="field">
+            <label for="voz-nomenclatura">Nomenclatura propia</label>
+            <textarea id="voz-nomenclatura" name="nomenclatura" rows="2" placeholder="Ej: acá a los pedidos les decimos 'órdenes'.">${escapeHtml(brandVoiceConfig.nomenclatura)}</textarea>
+            <p class="hint">Términos o formas de nombrar cosas propias del negocio, si las hay.</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+        </form>
+      </div>
+    </section>
     <section class="block block--narrow" aria-label="Reporte del asistente">
       <div class="blockhead"><h2>Reporte del asistente</h2></div>
       <div class="panel connection">
@@ -6199,6 +6233,33 @@ export async function guardarComportamiento(
     estiloMensajes: input.estiloMensajes,
     velocidadRespuesta: input.velocidadRespuesta,
   });
+  return { ok: true };
+}
+
+// Tope por campo de Voz de marca (Fase 20, ver ADR-030): son bloques de
+// `system prompt` con cache_control — texto excesivamente largo no rompe
+// nada, pero infla el costo de escritura de caché en cada cambio sin
+// aportar valor proporcional. 500 caracteres alcanza sobra para una
+// misión/visión/valores redactados con naturalidad.
+const BRAND_VOICE_FIELD_MAX_LENGTH = 500;
+
+/** Voz de marca + RAG institucional (Fase 20, ver ADR-030) — mismo criterio que guardarComportamiento: se valida y se guarda entero, sin merge. */
+export async function guardarVozMarca(
+  input: { nombreAsistente: string; mision: string; vision: string; valores: string; nomenclatura: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const fields = {
+    nombreAsistente: input.nombreAsistente.trim(),
+    mision: input.mision.trim(),
+    vision: input.vision.trim(),
+    valores: input.valores.trim(),
+    nomenclatura: input.nomenclatura.trim(),
+  };
+  for (const value of Object.values(fields)) {
+    if (value.length > BRAND_VOICE_FIELD_MAX_LENGTH) {
+      return { ok: false, error: `Cada campo de Voz de marca admite hasta ${BRAND_VOICE_FIELD_MAX_LENGTH} caracteres.` };
+    }
+  }
+  await saveBrandVoiceConfig(fields);
   return { ok: true };
 }
 

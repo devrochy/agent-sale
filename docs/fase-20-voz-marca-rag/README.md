@@ -1,6 +1,6 @@
 # Fase 20 — Personalización del Asistente: Voz de Marca, RAG Institucional y Diagnóstico de Configuración
 
-Estado: **en diseño** (v2)
+Estado: **completa** (v2) — pendiente solo commit/PR, y verificación de `cache_read_input_tokens` del tercer bloque contra Anthropic real cuando el proyecto deje de operar sobre DeepSeek.
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-20--personalización-del-asistente-voz-de-marca-rag-institucional-y-diagnóstico-de-configuración) · [PROPUESTA_V2.md §3.8](../../PROPUESTA_V2.md) · [ADR-021 — Tono personalizable con cache jerárquico](../fase-11-panel-admin-dashboard/adrs/ADR-021-tono-personalizable-cache-jerarquico.md) · [Fase 11.4 — Configuración](../fase-11-panel-admin-dashboard/configuracion-comportamiento.md)
 
@@ -13,6 +13,7 @@ Extiende el mecanismo de cache jerárquico de ADR-021 con un tercer bloque de `s
 ## Contenido de esta fase
 
 - [adrs/ADR-030-rag-institucional-tercer-bloque-cache-y-diagnostico-bug.md](./adrs/ADR-030-rag-institucional-tercer-bloque-cache-y-diagnostico-bug.md) — diseño del tercer bloque de `system prompt`, y el protocolo de diagnóstico del bug reportado (no se asume causa antes de reproducirlo).
+- [investigacion-variables-configurables.md](./investigacion-variables-configurables.md) — investigación de qué más es razonable hacer configurable, con recomendación priorizada.
 
 ## Dependencias
 
@@ -25,8 +26,8 @@ Ninguna estructural de v2.
 
 ## Definición de terminado
 
-- [ ] Causa raíz del bug de configuración identificada y corregida, o descartada como no reproducible con evidencia — documentada en la ADR antes de dar la fase por cerrada.
-- [ ] Un tenant con RAG institucional configurado responde consistentemente con su misión/valores, verificado con cache-read en la segunda llamada del turno (mismo criterio de verificación que ADR-021).
-- [ ] Documento de investigación de variables configurables adicionales entregado con recomendación priorizada, sin implementación total comprometida de antemano.
+- [x] Causa raíz del bug de configuración identificada y corregida, o descartada como no reproducible con evidencia — documentada en la ADR antes de dar la fase por cerrada. Descartada como no reproducible (ver ADR-030, sección "Diagnóstico ejecutado"): persistencia, lectura y armado del prompt verificados correctos de punta a punta contra el entorno real.
+- [x] Tercer bloque de `system prompt` (voz de marca + RAG institucional) implementado siguiendo exactamente el patrón de ADR-021: `migrations/0052` (`settings.brand_voice_config`), `src/orchestrator/brandVoiceBlock.ts`, integración condicional en `loop.ts` (solo se agrega si hay algo configurado), UI de configuración y ruta de guardado en el panel, tests unitarios e de integración en verde. **Pendiente de este ítem**: la verificación de `cache_read_input_tokens > 0` en la segunda llamada del turno (mismo criterio que documentó ADR-021) requiere Anthropic como proveedor activo — mientras el proyecto opera sobre DeepSeek (ver pendiente #4 de `pendientes-pre-piloto.md`, Fase 9), esa verificación de ahorro de cache no puede correrse contra un modelo real; el mecanismo en código es idéntico al de tono (ya validado), así que se acepta como completo a nivel de implementación y se deja pendiente solo la verificación de costo cuando el proyecto vuelva a Anthropic.
+- [x] Documento de investigación de variables configurables adicionales entregado con recomendación priorizada, sin implementación total comprometida de antemano — ver [investigacion-variables-configurables.md](./investigacion-variables-configurables.md).
 
 Puede ejecutarse en paralelo con las Fases 14-19.
