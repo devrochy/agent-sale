@@ -1,0 +1,244 @@
+import pg from "pg";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import {
+  ensureConnectionsFromEnv,
+  findConnectionByExternalId,
+  getConnection,
+  getPrimaryConnection,
+  invalidateConnectionsCache,
+  listConnections,
+  saveConnection,
+  setConnectionActive,
+  setPrimaryConnection,
+} from "../../../../src/shared/db/connectionsDirectory.js";
+import { pool as appPool } from "../../../../src/shared/db/pool.js";
+
+const { Pool } = pg;
+const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
+
+// Etiqueta única por archivo: `channel_connections` es, como `settings`, una
+// tabla chica que varios tests podrían pisarse entre sí (vitest corre con
+// fileParallelism:false pero sin truncado entre archivos). Todo lo que este
+// archivo crea se borra por external_id en afterEach, y ningún caso afirma
+// "hay exactamente N conexiones".
+const EXTERNAL_IDS = [
+  "whatsapp:+570000000001",
+  "whatsapp:+570000000002",
+  "test-meta-phone-id-0001",
+];
+
+async function limpiar(): Promise<void> {
+  await adminPool.query("DELETE FROM channel_connections WHERE external_id = ANY($1)", [
+    EXTERNAL_IDS,
+  ]);
+  invalidateConnectionsCache();
+}
+
+afterEach(limpiar);
+
+afterAll(async () => {
+  await limpiar();
+  await adminPool.end();
+  await appPool.end();
+});
+
+describe("connectionsDirectory", () => {
+  it("guarda y devuelve credenciales descifradas, sin exponerlas en el listado", async () => {
+    const id = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "WhatsApp Test",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "ACtest1234", authToken: "token-secreto" },
+    });
+
+    const resolved = await getConnection(id);
+    expect(resolved?.credentials).toEqual({ accountSid: "ACtest1234", authToken: "token-secreto" });
+
+    // En la columna vive cifrado, no en claro.
+    const raw = await adminPool.query<{ credentials_encrypted: string }>(
+      "SELECT credentials_encrypted FROM channel_connections WHERE id = $1",
+      [id],
+    );
+    expect(raw.rows[0]!.credentials_encrypted).not.toContain("token-secreto");
+    expect(raw.rows[0]!.credentials_encrypted).toMatch(/^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/);
+
+    // El listado del panel no debe traer credenciales ni siquiera cifradas.
+    const listada = (await listConnections()).find((c) => c.id === id);
+    expect(listada).toBeDefined();
+    expect(JSON.stringify(listada)).not.toContain("token-secreto");
+    expect(listada).not.toHaveProperty("credentials");
+  });
+
+  it("resuelve la conexión por clave de ruteo entrante", async () => {
+    const id = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "WhatsApp Test",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "ACtest1234", authToken: "t" },
+    });
+
+    expect((await findConnectionByExternalId("twilio", EXTERNAL_IDS[0]!))?.id).toBe(id);
+    // La clave de ruteo es (provider, external_id): el mismo id bajo otro
+    // proveedor no debe matchear.
+    expect(await findConnectionByExternalId("meta", EXTERNAL_IDS[0]!)).toBeNull();
+    expect(await findConnectionByExternalId("twilio", "no-existe")).toBeNull();
+  });
+
+  it("actualiza en vez de duplicar cuando se reguarda la misma clave de ruteo", async () => {
+    const primero = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Etiqueta vieja",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "ACviejo", authToken: "viejo" },
+    });
+    const segundo = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Etiqueta nueva",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "ACnuevo", authToken: "nuevo" },
+    });
+
+    expect(segundo).toBe(primero);
+    const resolved = await getConnection(primero);
+    expect(resolved?.label).toBe("Etiqueta nueva");
+    expect(resolved?.credentials.authToken).toBe("nuevo");
+  });
+
+  it("una credencial rotada se ve sin reiniciar el proceso (la caché se invalida al guardar)", async () => {
+    const id = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "WhatsApp Test",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "ACtest1234", authToken: "token-viejo" },
+    });
+    // Poblar la caché antes de rotar.
+    expect((await getConnection(id))?.credentials.authToken).toBe("token-viejo");
+
+    await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "WhatsApp Test",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "ACtest1234", authToken: "token-nuevo" },
+    });
+
+    expect((await getConnection(id))?.credentials.authToken).toBe("token-nuevo");
+  });
+
+  it("solo permite una conexión primary por canal", async () => {
+    const primera = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Primera",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "AC1", authToken: "t" },
+    });
+    const segunda = await saveConnection({
+      channel: "whatsapp",
+      provider: "meta",
+      label: "Segunda",
+      externalId: EXTERNAL_IDS[2]!,
+      displayAddress: "+57 300 000 0002",
+      credentials: { accessToken: "t" },
+    });
+
+    await setPrimaryConnection(primera);
+    expect((await getPrimaryConnection("whatsapp"))?.id).toBe(primera);
+
+    // Mover la marca no puede dejar dos primarys: el índice único parcial de
+    // la migración 0053 rechazaría el estado intermedio si no fuera atómico.
+    await setPrimaryConnection(segunda);
+    expect((await getPrimaryConnection("whatsapp"))?.id).toBe(segunda);
+
+    const cuantas = await adminPool.query<{ count: string }>(
+      "SELECT count(*) FROM channel_connections WHERE channel = 'whatsapp' AND is_primary AND external_id = ANY($1)",
+      [EXTERNAL_IDS],
+    );
+    expect(cuantas.rows[0]!.count).toBe("1");
+  });
+
+  it("rechaza dos conexiones del mismo proveedor con la misma clave de ruteo", async () => {
+    await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Primera",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "AC1", authToken: "t" },
+    });
+
+    // Un INSERT crudo (sin el ON CONFLICT de saveConnection) debe chocar
+    // contra UNIQUE(provider, external_id).
+    await expect(
+      adminPool.query(
+        `INSERT INTO channel_connections (channel, provider, label, external_id, credentials_encrypted)
+         VALUES ('whatsapp', 'twilio', 'Duplicada', $1, 'x')`,
+        [EXTERNAL_IDS[0]!],
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("permite dos conexiones del mismo canal y proveedor con claves de ruteo distintas", async () => {
+    // Dos números de Twilio (ventas y soporte) es un caso legítimo — por eso
+    // la unicidad es (provider, external_id) y no (channel, provider).
+    const ventas = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Ventas",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "AC1", authToken: "t" },
+    });
+    const soporte = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Soporte",
+      externalId: EXTERNAL_IDS[1]!,
+      displayAddress: EXTERNAL_IDS[1]!,
+      credentials: { accountSid: "AC1", authToken: "t" },
+    });
+
+    expect(ventas).not.toBe(soporte);
+  });
+
+  it("desactivar no borra la conexión, solo la marca inactiva", async () => {
+    const id = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "WhatsApp Test",
+      externalId: EXTERNAL_IDS[0]!,
+      displayAddress: EXTERNAL_IDS[0]!,
+      credentials: { accountSid: "AC1", authToken: "t" },
+    });
+    expect((await getConnection(id))?.active).toBe(true);
+
+    await setConnectionActive(id, false);
+    expect((await getConnection(id))?.active).toBe(false);
+  });
+
+  it("ensureConnectionsFromEnv es idempotente: correrla dos veces no duplica", async () => {
+    await ensureConnectionsFromEnv();
+    const despuesDeLaPrimera = await adminPool.query<{ count: string }>(
+      "SELECT count(*) FROM channel_connections WHERE provider = 'twilio'",
+    );
+
+    await ensureConnectionsFromEnv();
+    const despuesDeLaSegunda = await adminPool.query<{ count: string }>(
+      "SELECT count(*) FROM channel_connections WHERE provider = 'twilio'",
+    );
+
+    expect(despuesDeLaSegunda.rows[0]!.count).toBe(despuesDeLaPrimera.rows[0]!.count);
+  });
+});
