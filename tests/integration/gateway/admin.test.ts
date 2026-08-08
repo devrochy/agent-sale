@@ -3,13 +3,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  sendToConversation: vi.fn(),
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
-import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
@@ -704,7 +705,7 @@ describe("panel admin", () => {
     });
 
     it("tomar el ticket lo pasa a en_atencion, lo asigna al admin de la sesión, pausa el bot de esa conversación y avisa al cliente por WhatsApp", async () => {
-      vi.mocked(sendWhatsAppMessage).mockClear();
+      vi.mocked(sendToConversation).mockClear();
       const response = await app.inject({
         method: "POST",
         url: `/admin/conversaciones/${handoffId}/tomar`,
@@ -729,8 +730,8 @@ describe("panel admin", () => {
       );
       expect(conversation.rows[0]!.bot_paused).toBe(true);
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         expect.stringContaining(ADMIN_USERNAME),
       );
     });
@@ -748,7 +749,7 @@ describe("panel admin", () => {
     });
 
     it("enviar un mensaje desde el composer lo manda por WhatsApp y lo guarda como sender_type human", async () => {
-      vi.mocked(sendWhatsAppMessage).mockClear();
+      vi.mocked(sendToConversation).mockClear();
       const response = await app.inject({
         method: "POST",
         url: `/admin/conversaciones/${conversationId}/mensaje`,
@@ -757,8 +758,8 @@ describe("panel admin", () => {
       });
       expect(response.statusCode).toBe(303);
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         "Ya reviso tu caso, dame un momento.",
       );
 
@@ -795,14 +796,14 @@ describe("panel admin", () => {
       );
       expect(conversation.rows[0]!.status).toBe("closed");
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         expect.stringContaining(ADMIN_USERNAME),
       );
     });
 
     it("reasignar un ticket en atención al bot lo deja resuelto sin cerrar la conversación, y avisa al cliente", async () => {
-      vi.mocked(sendWhatsAppMessage).mockClear();
+      vi.mocked(sendToConversation).mockClear();
       const handoff = await adminPool.query<{ id: string }>(
         `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
          VALUES ($1, 'solicitud_cliente', 'en_atencion', 'Cliente pide un humano')
@@ -834,8 +835,8 @@ describe("panel admin", () => {
       expect(conversation.rows[0]!.status).toBe("active");
       expect(conversation.rows[0]!.bot_paused).toBe(false);
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         expect.stringContaining(ADMIN_USERNAME),
       );
 

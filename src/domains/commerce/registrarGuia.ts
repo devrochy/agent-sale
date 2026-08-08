@@ -1,4 +1,4 @@
-import { sendWhatsAppMessage } from "../../gateway/sendMessage.js";
+import { sendToConversation } from "../../gateway/sendMessage.js";
 import { appendMessage } from "../../orchestrator/memory.js";
 import { withTransaction } from "../../shared/db/index.js";
 
@@ -70,7 +70,7 @@ export async function registrarGuia(orderId: string, input: RegistrarGuiaInput):
       `¡Buenas noticias! Tu pedido ${updated.publicOrderNumber} ya está en camino. ` +
       `Guía ${trackingNumber} (${carrier}).`;
     try {
-      await sendWhatsAppMessage(updated.phoneNumber, text);
+      await sendToConversation(updated.conversationId, text);
       await appendMessage(updated.conversationId, "outbound", "agent", text);
     } catch {
       // Best-effort — un fallo de WhatsApp o de historial no debe romper el

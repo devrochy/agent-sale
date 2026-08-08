@@ -12,7 +12,7 @@ import {
 } from "./auth/adminsDirectory.js";
 import { hashPassword } from "./auth/passwordHash.js";
 import { env } from "../config/env.js";
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import { sendToConversation } from "../gateway/sendMessage.js";
 import { appendMessage } from "../orchestrator/memory.js";
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { logger } from "../shared/observability/logger.js";
@@ -3022,7 +3022,10 @@ async function notificarClienteBestEffort(
     return;
   }
   try {
-    await sendWhatsAppMessage(phoneNumber, message);
+    // Por la conexión de la conversación, no por la primary (Fase 19): el
+    // cliente escribió a un número concreto y la respuesta tiene que salir
+    // de ahí.
+    await sendToConversation(conversationId, message);
   } catch (error) {
     logger.child({ conversation_id: conversationId }).warn({ error, handoff_id: handoffId }, logMessage);
   }
@@ -3185,7 +3188,7 @@ export async function enviarMensajeHumano(conversationId: string, mensaje: strin
   if (!phoneNumber) {
     return false;
   }
-  await sendWhatsAppMessage(phoneNumber, texto);
+  await sendToConversation(conversationId, texto);
   await appendMessage(conversationId, "outbound", "human", texto);
   return true;
 }

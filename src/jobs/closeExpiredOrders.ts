@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import { sendToConversation } from "../gateway/sendMessage.js";
 import { appendMessage } from "../orchestrator/memory.js";
 import { withTransaction } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
@@ -102,7 +102,7 @@ async function processCandidate(candidate: CandidateRow, jobLogger: Logger): Pro
   const text = formatExpiredText(candidate.public_order_number);
   let sid: string;
   try {
-    sid = await sendWhatsAppMessage(candidate.phone_number, text);
+    sid = await sendToConversation(candidate.conversation_id, text);
   } catch (error) {
     candidateLogger.warn(
       { error },

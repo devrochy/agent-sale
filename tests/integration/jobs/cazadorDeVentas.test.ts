@@ -3,10 +3,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  sendToConversation: vi.fn(),
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
-import { getWhatsAppMessageStatus, sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
+import { getWhatsAppMessageStatus, sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { runCazadorDeVentas } from "../../../src/jobs/cazadorDeVentas.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
@@ -125,7 +126,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendToConversation).mockReset();
   vi.mocked(getWhatsAppMessageStatus).mockReset();
 });
 
@@ -173,8 +174,8 @@ afterAll(async () => {
 
 describe("runCazadorDeVentas", () => {
   it("manda el reenganche solo a la cotización que cumple todas las condiciones", async () => {
-    vi.mocked(sendWhatsAppMessage).mockImplementation(async (to) => {
-      if (to === PHONES.envioFalla) {
+    vi.mocked(sendToConversation).mockImplementation(async (conversationId) => {
+      if (conversationId === setups.envioFalla.conversationId) {
         throw new Error("Twilio no disponible (simulado)");
       }
       return "SM_TEST_SID";
@@ -185,20 +186,20 @@ describe("runCazadorDeVentas", () => {
 
     // Único candidato que debía recibir el mensaje: cotización de 5h, sin
     // pedido, cliente activo hace 2h, sin follow_up_sent_at previo.
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(2); // "valido" + "envioFalla" (este último lanza)
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-      PHONES.valido,
+    expect(sendToConversation).toHaveBeenCalledTimes(2); // "valido" + "envioFalla" (este último lanza)
+    expect(sendToConversation).toHaveBeenCalledWith(
+      setups.valido.conversationId,
       expect.stringContaining("Guantes de prueba"),
     );
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONES.envioFalla, expect.any(String));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONES.conPedido, expect.any(String));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONES.muyReciente, expect.any(String));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONES.vencida, expect.any(String));
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(
-      PHONES.clienteInactivo,
+    expect(sendToConversation).toHaveBeenCalledWith(setups.envioFalla.conversationId, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(setups.conPedido.conversationId, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(setups.muyReciente.conversationId, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(setups.vencida.conversationId, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(
+      setups.clienteInactivo.conversationId,
       expect.any(String),
     );
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONES.yaEnviado, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(setups.yaEnviado.conversationId, expect.any(String));
   });
 
   it("marca follow_up_sent_at solo para el envío que no lanzó", async () => {
@@ -228,11 +229,11 @@ describe("runCazadorDeVentas", () => {
   });
 
   it("una segunda corrida no vuelve a mandarle a la cotización ya marcada", async () => {
-    vi.mocked(sendWhatsAppMessage).mockResolvedValue("SM_TEST_SID_2");
+    vi.mocked(sendToConversation).mockResolvedValue("SM_TEST_SID_2");
     vi.mocked(getWhatsAppMessageStatus).mockResolvedValue({ status: "delivered", errorCode: null });
 
     await runCazadorDeVentas();
 
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONES.valido, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(setups.valido.conversationId, expect.any(String));
   });
 });

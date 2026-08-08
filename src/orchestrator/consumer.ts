@@ -113,7 +113,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     );
 
     if (escalatedNow) {
-      await sendTurnBubbles(customerPhone, escalatedNow, entryLogger, receivedAt);
+      await sendTurnBubbles(conversationId, escalatedNow, entryLogger, receivedAt);
       await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
       return;
     }
@@ -121,7 +121,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
     if (behaviorConfig.velocidadRespuesta === "inmediato") {
       const result = await processConversation(customerPhone, messageSid, customerName, origin);
-      await sendTurnBubbles(customerPhone, result, entryLogger, receivedAt);
+      await sendTurnBubbles(conversationId, result, entryLogger, receivedAt);
     } else {
       // Velocidad de respuesta (Fase 11.4 extendida, ver ADR-022): difiere
       // el disparo del turno — si llega otro mensaje de esta conversación

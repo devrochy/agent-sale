@@ -3,10 +3,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  sendToConversation: vi.fn(),
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
-import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { registrarGuia } from "../../../src/domains/commerce/registrarGuia.js";
@@ -71,7 +72,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendToConversation).mockReset();
 });
 
 afterAll(async () => {
@@ -92,7 +93,7 @@ afterAll(async () => {
 
 describe("registrarGuia", () => {
   it("primera vez: setea shipped_at, notifica por WhatsApp y guarda en el historial", async () => {
-    vi.mocked(sendWhatsAppMessage).mockResolvedValue("SM_TEST_SID");
+    vi.mocked(sendToConversation).mockResolvedValue("SM_TEST_SID");
 
     const result = await registrarGuia(orderId, { trackingNumber: "GUIA-001", carrier: "Servientrega" });
 
@@ -107,9 +108,9 @@ describe("registrarGuia", () => {
     expect(order.rows[0]!.carrier).toBe("Servientrega");
     expect(order.rows[0]!.shipped_at).not.toBeNull();
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining(publicOrderNumber));
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONE, expect.stringContaining("GUIA-001"));
+    expect(sendToConversation).toHaveBeenCalledTimes(1);
+    expect(sendToConversation).toHaveBeenCalledWith(conversationId, expect.stringContaining(publicOrderNumber));
+    expect(sendToConversation).toHaveBeenCalledWith(conversationId, expect.stringContaining("GUIA-001"));
 
     const messages = await adminPool.query<{ content: string; sender_type: string }>(
       `SELECT content, sender_type FROM messages WHERE conversation_id = $1 AND direction = 'outbound'`,
@@ -128,7 +129,7 @@ describe("registrarGuia", () => {
     const result = await registrarGuia(orderId, { trackingNumber: "GUIA-002", carrier: "Coordinadora" });
 
     expect(result).toEqual({ ok: true });
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendToConversation).not.toHaveBeenCalled();
 
     const order = await adminPool.query<{
       tracking_number: string;

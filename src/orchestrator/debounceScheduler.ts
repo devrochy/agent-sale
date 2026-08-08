@@ -61,7 +61,7 @@ async function fireConversation(conversationId: string, payload: DebouncePayload
       payload.customerName,
       { connectionId: payload.connectionId, channel: payload.channel },
     );
-    await sendTurnBubbles(payload.customerPhone, result, turnLogger);
+    await sendTurnBubbles(conversationId, result, turnLogger);
   } catch (error) {
     // Sin backing de Redis Streams acá (el mensaje ya se hizo ACK al
     // ingerirse, ver consumer.ts) — un fallo en este punto no se

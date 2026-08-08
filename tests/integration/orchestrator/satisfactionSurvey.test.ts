@@ -3,10 +3,11 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  sendToConversation: vi.fn(),
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
-import { sendWhatsAppMessage, getWhatsAppMessageStatus } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation, getWhatsAppMessageStatus } from "../../../src/gateway/sendMessage.js";
 import { tryCaptureSurveyReply } from "../../../src/orchestrator/satisfactionSurvey.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { logger } from "../../../src/shared/observability/logger.js";
@@ -56,7 +57,7 @@ async function seedConversation(
 }
 
 afterEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendToConversation).mockReset();
   vi.mocked(getWhatsAppMessageStatus).mockReset();
 });
 
@@ -87,7 +88,7 @@ afterAll(async () => {
 
 describe("tryCaptureSurveyReply", () => {
   beforeEach(() => {
-    vi.mocked(sendWhatsAppMessage).mockResolvedValue("SM_TEST_SID");
+    vi.mocked(sendToConversation).mockResolvedValue("SM_TEST_SID");
     vi.mocked(getWhatsAppMessageStatus).mockResolvedValue({ status: "delivered", errorCode: null });
   });
 
@@ -107,11 +108,11 @@ describe("tryCaptureSurveyReply", () => {
 
     // El link va a nuestra propia página de reseña (/resena/:token), no
     // directo a la plataforma externa — ver satisfactionSurvey.ts.
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-      PHONES.conCalificacion,
+    expect(sendToConversation).toHaveBeenCalledWith(
+      conversationId,
       expect.stringContaining("/resena/"),
     );
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0]!;
+    const [, text] = vi.mocked(sendToConversation).mock.calls[0]!;
     const token = text.match(/\/resena\/(\S+)/)?.[1];
     expect(token).toBeTruthy();
     const tokenRow = await adminPool.query<{ conversation_id: string }>(
@@ -134,7 +135,7 @@ describe("tryCaptureSurveyReply", () => {
     ]);
     expect(row.rows[0]!.satisfaction_score).toBeNull();
     expect(row.rows[0]!.survey_reply_processed_at).not.toBeNull();
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendToConversation).not.toHaveBeenCalled();
   });
 
   it("sin encuesta pendiente: no hace nada", async () => {
@@ -144,7 +145,7 @@ describe("tryCaptureSurveyReply", () => {
 
     await tryCaptureSurveyReply(PHONES.sinEncuestaPendiente, "5", logger);
 
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendToConversation).not.toHaveBeenCalled();
   });
 
   it("encuesta ya procesada: no se reprocesa ni se pisa el score existente", async () => {
@@ -161,30 +162,30 @@ describe("tryCaptureSurveyReply", () => {
       [conversationId],
     );
     expect(row.rows[0]!.satisfaction_score).toBe(3);
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendToConversation).not.toHaveBeenCalled();
   });
 
   it("score alto: manda el link de reseña propio (independiente de cualquier link externo configurado)", async () => {
     // satisfactionSurvey.ts nunca lee settings.review_link — el link
     // externo (Google) es un paso posterior opcional DENTRO de la página
     // de reseña, no una condición para ofrecer la reseña interna.
-    await seedConversation(PHONES.scoreAlto, { surveyHoursAgo: 2 });
+    const conversationId = await seedConversation(PHONES.scoreAlto, { surveyHoursAgo: 2 });
 
     await tryCaptureSurveyReply(PHONES.scoreAlto, "5", logger);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-      PHONES.scoreAlto,
+    expect(sendToConversation).toHaveBeenCalledWith(
+      conversationId,
       expect.stringContaining("/resena/"),
     );
   });
 
   it("score bajo: agradece sin link", async () => {
-    await seedConversation(PHONES.scoreBajo, { surveyHoursAgo: 2 });
+    const conversationId = await seedConversation(PHONES.scoreBajo, { surveyHoursAgo: 2 });
 
     await tryCaptureSurveyReply(PHONES.scoreBajo, "2", logger);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(PHONES.scoreBajo, expect.any(String));
-    const [, text] = vi.mocked(sendWhatsAppMessage).mock.calls[0]!;
+    expect(sendToConversation).toHaveBeenCalledWith(conversationId, expect.any(String));
+    const [, text] = vi.mocked(sendToConversation).mock.calls[0]!;
     expect(text).not.toContain("http");
   });
 
@@ -193,6 +194,6 @@ describe("tryCaptureSurveyReply", () => {
 
     await tryCaptureSurveyReply(PHONES.ventanaVencida, "5", logger);
 
-    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+    expect(sendToConversation).not.toHaveBeenCalled();
   });
 });

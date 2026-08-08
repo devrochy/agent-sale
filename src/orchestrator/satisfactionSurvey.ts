@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import { env } from "../config/env.js";
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import { sendToConversation } from "../gateway/sendMessage.js";
 import { verifyDelivery } from "../jobs/verifyDelivery.js";
 import { createReviewToken, withTransaction } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
@@ -26,26 +26,11 @@ const SURVEY_REPLY_WINDOW_HOURS = 48;
 export async function sendSurveyOnClose(conversationId: string): Promise<void> {
   const surveyLogger = logger.child({ conversation_id: conversationId });
   try {
-    const phone = await withTransaction(async (client) => {
-      const conversation = await client.query<{ customer_id: string }>(
-        `SELECT customer_id FROM conversations WHERE id = $1`,
-        [conversationId],
-      );
-      const customerId = conversation.rows[0]?.customer_id;
-      if (!customerId) {
-        return null;
-      }
-      const customer = await client.query<{ phone_number: string }>(
-        `SELECT phone_number FROM customers WHERE id = $1`,
-        [customerId],
-      );
-      return customer.rows[0]?.phone_number ?? null;
-    });
-    if (!phone) {
-      return;
-    }
-
-    const sid = await sendWhatsAppMessage(phone, SURVEY_TEXT);
+    // La búsqueda del teléfono que había acá la hace ahora
+    // `sendToConversation`, que además resuelve por qué conexión responder
+    // (Fase 19). Una conversación inexistente lanza y cae en el catch de
+    // abajo, igual de best-effort que antes.
+    const sid = await sendToConversation(conversationId, SURVEY_TEXT);
     await withTransaction((client) =>
       client.query(`UPDATE conversations SET survey_sent_at = now() WHERE id = $1`, [
         conversationId,
@@ -152,7 +137,7 @@ export async function tryCaptureSurveyReply(
     const reviewFormLink =
       score >= 4 ? buildReviewFormLink(await createReviewToken(conversationId)) : null;
     const text = buildThankYouText(score, reviewFormLink);
-    const sid = await sendWhatsAppMessage(customerPhone, text);
+    const sid = await sendToConversation(conversationId, text);
     await appendMessage(conversationId, "outbound", "agent", text);
     await verifyDelivery(sid, "Agradecimiento de encuesta", surveyLogger);
   } catch (error) {

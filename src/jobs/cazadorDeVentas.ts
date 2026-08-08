@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import { sendToConversation } from "../gateway/sendMessage.js";
 import { appendMessage } from "../orchestrator/memory.js";
 import { withTransaction } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
@@ -73,7 +73,7 @@ function formatFollowUpText(items: QuoteItemRow[], total: number): string {
 }
 
 /**
- * Reengancha una cotización puntual — a partir de que `sendWhatsAppMessage`
+ * Reengancha una cotización puntual — a partir de que `sendToConversation`
  * no lanza, el mensaje YA se mandó, así que marcar `follow_up_sent_at` no
  * puede depender de los pasos siguientes (guardar en el historial,
  * verificar entrega): si esos fallaran y no marcáramos la cotización, la
@@ -99,7 +99,7 @@ async function processCandidate(candidate: CandidateRow, jobLogger: Logger): Pro
 
   let sid: string;
   try {
-    sid = await sendWhatsAppMessage(candidate.phone_number, text);
+    sid = await sendToConversation(candidate.conversation_id, text);
   } catch (error) {
     candidateLogger.warn(
       { error },

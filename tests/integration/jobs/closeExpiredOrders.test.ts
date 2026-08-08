@@ -3,10 +3,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  sendToConversation: vi.fn(),
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
-import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { runCloseExpiredOrders } from "../../../src/jobs/closeExpiredOrders.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
@@ -125,7 +126,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  vi.mocked(sendWhatsAppMessage).mockReset();
+  vi.mocked(sendToConversation).mockReset();
 });
 
 afterAll(async () => {
@@ -168,7 +169,7 @@ afterAll(async () => {
 
 describe("runCloseExpiredOrders", () => {
   it("cierra, libera stock y notifica solo el pedido pago_en_linea pendiente de 6 días", async () => {
-    vi.mocked(sendWhatsAppMessage).mockResolvedValue("SM_TEST_SID");
+    vi.mocked(sendToConversation).mockResolvedValue("SM_TEST_SID");
 
     await runCloseExpiredOrders();
 
@@ -176,9 +177,9 @@ describe("runCloseExpiredOrders", () => {
     expect(vencida.status).toBe("expirado");
     expect(await getStock()).toBe(STOCK_INICIAL + 1);
 
-    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
-    expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-      PHONES.vencida,
+    expect(sendToConversation).toHaveBeenCalledTimes(1);
+    expect(sendToConversation).toHaveBeenCalledWith(
+      setups.vencida.conversationId,
       expect.stringContaining(setups.vencida.publicOrderNumber),
     );
 
@@ -203,12 +204,12 @@ describe("runCloseExpiredOrders", () => {
   });
 
   it("una segunda corrida sobre un pedido ya expirado no vuelve a liberar stock ni a notificar", async () => {
-    vi.mocked(sendWhatsAppMessage).mockResolvedValue("SM_TEST_SID_2");
+    vi.mocked(sendToConversation).mockResolvedValue("SM_TEST_SID_2");
 
     const stockAntes = await getStock();
     await runCloseExpiredOrders();
 
     expect(await getStock()).toBe(stockAntes);
-    expect(sendWhatsAppMessage).not.toHaveBeenCalledWith(PHONES.vencida, expect.any(String));
+    expect(sendToConversation).not.toHaveBeenCalledWith(setups.vencida.conversationId, expect.any(String));
   });
 });
