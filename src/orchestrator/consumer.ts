@@ -1,4 +1,4 @@
-import { INBOUND_STREAM } from "../gateway/queue.js";
+import { INBOUND_STREAM, parseInboundFields } from "../gateway/queue.js";
 import { getBehaviorConfig, getSettings } from "../shared/db/settingsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
@@ -48,10 +48,12 @@ async function moveToDeadLetter(id: string, fields: string[]): Promise<void> {
  * a whatsapp:inbound:dead-letter.
  */
 async function processEntry(id: string, fields: string[]): Promise<void> {
-  const message = fieldsToObject(fields);
-  const customerPhone = message.customer_phone;
-  const customerName = message.customer_name || undefined;
-  const messageSid = message.message_sid;
+  // El parseo vive en queue.ts, junto al productor: es donde están los
+  // defaults tolerantes para las entradas escritas por un release anterior,
+  // que no traen los campos de conexión (Fase 19).
+  const message = parseInboundFields(fieldsToObject(fields));
+  const { customerPhone, customerName, messageSid } = message;
+  const origin = { connectionId: message.connectionId, channel: message.channel };
 
   if (!customerPhone || !messageSid) {
     // Payload inválido: no hay nada que reintentar, se descarta.
@@ -60,7 +62,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   }
 
   const entryLogger = logger.child({ message_sid: messageSid });
-  const receivedAt = message.received_at ? Date.parse(message.received_at) : NaN;
+  const receivedAt = message.receivedAt ? Date.parse(message.receivedAt) : NaN;
   const queueLatencyMs = Number.isNaN(receivedAt) ? undefined : Date.now() - receivedAt;
   entryLogger.info(
     { event: "orchestrator.mensaje_tomado", queue_latency_ms: queueLatencyMs },
@@ -73,7 +75,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // pausado / inmediato / debounce con un único call-site — el mensaje
     // sigue su curso normal después, se haya capturado una calificación
     // pendiente o no.
-    await tryCaptureSurveyReply(customerPhone, message.body ?? "", entryLogger);
+    await tryCaptureSurveyReply(customerPhone, message.body, entryLogger);
 
     // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md; extendido
     // en Fase 23/ADR-036 con un segundo nivel por cliente): se chequea ACÁ,
@@ -89,9 +91,9 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // (por conversación puntual, Fase 18) se combinan con OR — pausado en
     // cualquiera de los tres niveles alcanza para no responder.
     const [settings, { conversationId: pausedConversationId, customerBotPaused, conversationBotPaused }] =
-      await Promise.all([getSettings(), resolveConversation(customerPhone, customerName)]);
+      await Promise.all([getSettings(), resolveConversation(customerPhone, customerName, origin)]);
     if (settings?.bot_paused || customerBotPaused || conversationBotPaused) {
-      await appendMessage(pausedConversationId, "inbound", "customer", message.body ?? "");
+      await appendMessage(pausedConversationId, "inbound", "customer", message.body);
       entryLogger.info(
         { event: "orchestrator.bot_pausado" },
         "Bot pausado — mensaje guardado sin respuesta automática",
@@ -105,8 +107,9 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // velocidad de respuesta configurada.
     const { conversationId, escalatedNow } = await appendInbound(
       customerPhone,
-      message.body ?? "",
+      message.body,
       customerName,
+      origin,
     );
 
     if (escalatedNow) {
@@ -117,7 +120,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
 
     const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
     if (behaviorConfig.velocidadRespuesta === "inmediato") {
-      const result = await processConversation(customerPhone, messageSid, customerName);
+      const result = await processConversation(customerPhone, messageSid, customerName, origin);
       await sendTurnBubbles(customerPhone, result, entryLogger, receivedAt);
     } else {
       // Velocidad de respuesta (Fase 11.4 extendida, ver ADR-022): difiere
@@ -128,6 +131,8 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
         customerPhone,
         messageSid,
         customerName,
+        connectionId: origin.connectionId,
+        channel: origin.channel,
       });
       entryLogger.info(
         { event: "orchestrator.turno_diferido", velocidad: behaviorConfig.velocidadRespuesta },

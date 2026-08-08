@@ -1,3 +1,4 @@
+import type { Channel } from "../shared/db/connectionsDirectory.js";
 import { withTransaction } from "../shared/db/withTransaction.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
@@ -17,6 +18,15 @@ interface DebouncePayload {
   customerPhone: string;
   messageSid: string;
   customerName?: string;
+  /**
+   * Origen del mensaje (Fase 19). Opcionales a propósito y leídos de forma
+   * tolerante: los payloads que quedaron escritos en Redis por el release
+   * anterior no los traen, y `debounce:payload:*` no tiene TTL. Sin esta
+   * tolerancia, un despliegue dejaría mudas todas las conversaciones con un
+   * turno diferido en vuelo — `fireConversation` no reintenta.
+   */
+  connectionId?: string;
+  channel?: Channel;
 }
 
 /**
@@ -45,7 +55,12 @@ export async function cancelDebounce(conversationId: string): Promise<void> {
 async function fireConversation(conversationId: string, payload: DebouncePayload): Promise<void> {
   const turnLogger = logger.child({ conversation_id: conversationId });
   try {
-    const result = await processConversation(payload.customerPhone, payload.messageSid, payload.customerName);
+    const result = await processConversation(
+      payload.customerPhone,
+      payload.messageSid,
+      payload.customerName,
+      { connectionId: payload.connectionId, channel: payload.channel },
+    );
     await sendTurnBubbles(payload.customerPhone, result, turnLogger);
   } catch (error) {
     // Sin backing de Redis Streams acá (el mensaje ya se hizo ACK al
@@ -95,6 +110,8 @@ interface OrphanRow {
   conversation_id: string;
   phone_number: string;
   customer_name: string | null;
+  connection_id: string | null;
+  channel: Channel;
 }
 
 /**
@@ -116,7 +133,8 @@ async function recoverOrphanedConversations(): Promise<void> {
 
   const orphans = await withTransaction((client) =>
     client.query<OrphanRow>(`
-      SELECT conv.id AS conversation_id, c.phone_number, c.name AS customer_name
+      SELECT conv.id AS conversation_id, c.phone_number, c.name AS customer_name,
+             conv.connection_id, conv.channel
       FROM conversations conv
       JOIN customers c ON c.id = conv.customer_id
       JOIN LATERAL (
@@ -149,6 +167,8 @@ async function recoverOrphanedConversations(): Promise<void> {
       customerPhone: row.phone_number,
       messageSid: `recovery-${row.conversation_id}`,
       customerName: row.customer_name ?? undefined,
+      connectionId: row.connection_id ?? undefined,
+      channel: row.channel,
     });
   }
 }

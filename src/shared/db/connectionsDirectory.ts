@@ -287,4 +287,67 @@ export async function ensureConnectionsFromEnv(): Promise<void> {
     );
   }
   invalidateConnectionsCache();
+  await asegurarPrimary("whatsapp");
+  await backfillConversationsSinConexion();
+}
+
+/**
+ * Garantiza que el canal tenga una conexión primary si tiene alguna conexión.
+ * Quedarse sin primary no es hipotético: basta con borrar o reasignar la que
+ * la tenía, y el índice único parcial no obliga a que exista *alguna*. El
+ * efecto sería silencioso y feo — `sendToPrimary` lanza, y con él todas las
+ * notificaciones a administradores (reporte diario, aviso de pago,
+ * escalamiento), que son justo las que nadie está mirando cuando fallan.
+ *
+ * Promueve la conexión activa más antigua. No pisa una primary existente.
+ */
+async function asegurarPrimary(channel: Channel): Promise<void> {
+  const promovida = await pool.query<{ id: string }>(
+    `UPDATE channel_connections SET is_primary = true, updated_at = now()
+     WHERE id = (
+       SELECT id FROM channel_connections
+       WHERE channel = $1 AND active
+       ORDER BY created_at
+       LIMIT 1
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM channel_connections WHERE channel = $1 AND is_primary
+     )
+     RETURNING id`,
+    [channel],
+  );
+  if (promovida.rows[0]) {
+    logger.warn(
+      { event: "conexiones.primary_restaurada", channel, connection_id: promovida.rows[0].id },
+      "El canal no tenía conexión primary — se promovió la más antigua activa",
+    );
+    invalidateConnectionsCache();
+  }
+}
+
+/**
+ * Apunta a la conexión primary de WhatsApp las conversaciones que quedaron
+ * sin `connection_id` — las anteriores a la migración 0053, que por
+ * definición son todas de WhatsApp.
+ *
+ * No es cosmético: una conversación huérfana sin conexión hace que
+ * `recoverOrphanedConversations` (debounceScheduler.ts) la reprograme, falle
+ * al resolver el adapter y lo reintente **en cada arranque, para siempre**.
+ * Idempotente: en cuanto no queden filas en `NULL` el UPDATE no toca nada.
+ */
+async function backfillConversationsSinConexion(): Promise<void> {
+  const primary = await getPrimaryConnection("whatsapp");
+  if (!primary) {
+    return;
+  }
+  const actualizadas = await pool.query(
+    "UPDATE conversations SET connection_id = $1 WHERE connection_id IS NULL AND channel = 'whatsapp'",
+    [primary.id],
+  );
+  if (actualizadas.rowCount) {
+    logger.info(
+      { event: "conexiones.backfill", conversaciones: actualizadas.rowCount, connection_id: primary.id },
+      "Conversaciones sin conexión apuntadas a la conexión primary de WhatsApp",
+    );
+  }
 }

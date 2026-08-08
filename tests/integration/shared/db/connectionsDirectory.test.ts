@@ -228,6 +228,50 @@ describe("connectionsDirectory", () => {
     expect((await getConnection(id))?.active).toBe(false);
   });
 
+  it("ensureConnectionsFromEnv restaura la primary si el canal se quedó sin ninguna", async () => {
+    await ensureConnectionsFromEnv();
+    // Simula el estado en que quedaría el canal si se borrara o reasignara la
+    // conexión que tenía la marca: sin primary, `sendToPrimary` lanzaría y se
+    // caerían todas las notificaciones a administradores, en silencio.
+    await adminPool.query("UPDATE channel_connections SET is_primary = false WHERE channel = 'whatsapp'");
+    invalidateConnectionsCache();
+    expect(await getPrimaryConnection("whatsapp")).toBeNull();
+
+    await ensureConnectionsFromEnv();
+
+    expect(await getPrimaryConnection("whatsapp")).not.toBeNull();
+  });
+
+  it("backfill: apunta a la primary las conversaciones que quedaron sin conexión", async () => {
+    await ensureConnectionsFromEnv();
+    const primary = await getPrimaryConnection("whatsapp");
+    expect(primary).not.toBeNull();
+
+    const customer = await adminPool.query<{ id: string }>(
+      `INSERT INTO customers (phone_number) VALUES ('whatsapp:+570000000777') RETURNING id`,
+    );
+    const customerId = customer.rows[0]!.id;
+    const conversacion = await adminPool.query<{ id: string }>(
+      `INSERT INTO conversations (customer_id, status, state, connection_id)
+       VALUES ($1, 'open', '{}'::jsonb, NULL) RETURNING id`,
+      [customerId],
+    );
+    const conversationId = conversacion.rows[0]!.id;
+
+    try {
+      await ensureConnectionsFromEnv();
+
+      const despues = await adminPool.query<{ connection_id: string | null }>(
+        "SELECT connection_id FROM conversations WHERE id = $1",
+        [conversationId],
+      );
+      expect(despues.rows[0]!.connection_id).toBe(primary!.id);
+    } finally {
+      await adminPool.query("DELETE FROM conversations WHERE id = $1", [conversationId]);
+      await adminPool.query("DELETE FROM customers WHERE id = $1", [customerId]);
+    }
+  });
+
   it("ensureConnectionsFromEnv es idempotente: correrla dos veces no duplica", async () => {
     await ensureConnectionsFromEnv();
     const despuesDeLaPrimera = await adminPool.query<{ count: string }>(

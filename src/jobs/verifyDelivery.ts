@@ -1,4 +1,6 @@
 import type { Logger } from "pino";
+import { outboundAdapterFor } from "../gateway/channels/registry.js";
+import { getPrimaryConnection } from "../shared/db/connectionsDirectory.js";
 import { getWhatsAppMessageStatus } from "../gateway/sendMessage.js";
 
 // WhatsApp resuelve entrega/rechazo en segundos, no minutos (confirmado en
@@ -25,6 +27,19 @@ const DELIVERY_CHECK_DELAY_MS = 4000;
  * en Loki/Grafana.
  */
 export async function verifyDelivery(sid: string, label: string, jobLogger: Logger): Promise<void> {
+  // Ramifica por capacidad declarada, no por ausencia de un método: un
+  // `if (!adapter.getDeliveryStatus) return` borraría en silencio el propósito
+  // de esta función, y encima seguiría durmiendo 4s por mensaje para nada.
+  // Meta (Etapa B) notifica la entrega por webhook y no admite consulta por
+  // id — ahí el hueco se cierra procesando `value.statuses[]`, no acá.
+  if (!(await soportaConsultaDeEntrega())) {
+    jobLogger.info(
+      { sid, event: "delivery.no_verificable" },
+      `${label} enviado — el proveedor notifica la entrega por webhook, no por consulta`,
+    );
+    return;
+  }
+
   await new Promise((resolve) => setTimeout(resolve, DELIVERY_CHECK_DELAY_MS));
   try {
     const { status, errorCode } = await getWhatsAppMessageStatus(sid);
@@ -42,4 +57,19 @@ export async function verifyDelivery(sid: string, label: string, jobLogger: Logg
       `${label} enviado, pero no se pudo confirmar el estado de entrega`,
     );
   }
+}
+
+/**
+ * Los envíos que verifica esta función son proactivos: no tienen conversación
+ * asociada, así que salen por la conexión primary del canal — la misma que
+ * usa `sendToPrimary`. Si no hay ninguna configurada, no hay nada que
+ * consultar y se deja pasar sin ruido: el fallo real ya lo habría reportado
+ * el envío.
+ */
+async function soportaConsultaDeEntrega(): Promise<boolean> {
+  const connection = await getPrimaryConnection("whatsapp");
+  if (!connection) {
+    return false;
+  }
+  return outboundAdapterFor(connection.provider).deliveryModel === "poll";
 }

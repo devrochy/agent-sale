@@ -63,6 +63,7 @@ import {
 import { isUsernameTaken, type AdminRecord } from "../admin/auth/adminsDirectory.js";
 import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js";
 import { login, logout } from "../admin/auth/session.js";
+import { env } from "../config/env.js";
 import { registrarGuia } from "../domains/commerce/registrarGuia.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { logger } from "../shared/observability/logger.js";
@@ -74,6 +75,10 @@ declare module "fastify" {
     // Seteado por el hook de auth de /admin/* (ver más abajo) — null en
     // cualquier ruta pública (webhooks, /asesor, /resena, /login).
     admin: AdminRecord | null;
+    // Bytes crudos del body, solo dentro del plugin de webhooks (ver el
+    // parser encapsulado más abajo). Los adapters que firman sobre el cuerpo
+    // sin parsear los necesitan; el resto de la app no los ve.
+    rawBody?: Buffer;
   }
 }
 
@@ -812,23 +817,60 @@ export async function buildServer() {
     return reply.status(303).redirect("/admin/promociones?guardado=1");
   });
 
-  app.post(
-    "/webhooks/whatsapp",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      const params = request.body as Record<string, string>;
-      const signature = request.headers["x-twilio-signature"] as string | undefined;
-      const result = await handleInboundWebhook(params, signature);
-      return reply.status(result.status).send();
-    },
-  );
+  // Webhooks entrantes, en un plugin encapsulado. El encapsulamiento no es
+  // decorativo: los adapters de Meta (Etapa B) necesitan los **bytes crudos**
+  // del body para su HMAC-SHA256, y Fastify los descarta al parsear. Declarar
+  // ese parser a nivel global reemplazaría el de JSON de toda la app
+  // (incluido el panel); dentro de un plugin solo aplica a estas rutas.
+  await app.register(async (webhooks) => {
+    // Los parsers se heredan del scope padre (el de JSON viene de Fastify, el
+    // de urlencoded de @fastify/formbody), así que hay que retirarlos antes
+    // de poner el propio. Ambas operaciones quedan confinadas a este plugin:
+    // fuera de acá el panel sigue usando los de siempre.
+    webhooks.removeContentTypeParser(["application/json", "application/x-www-form-urlencoded"]);
+    webhooks.addContentTypeParser(
+      ["application/json", "application/x-www-form-urlencoded"],
+      { parseAs: "buffer" },
+      (request, body: Buffer, done) => {
+        // Se conserva el cuerpo crudo *y* se entrega el body parseado igual
+        // que antes, para que ningún handler existente cambie de contrato.
+        request.rawBody = body;
+        const texto = body.toString("utf8");
+        try {
+          if (request.headers["content-type"]?.includes("application/json")) {
+            done(null, texto.length === 0 ? {} : JSON.parse(texto));
+            return;
+          }
+          done(null, Object.fromEntries(new URLSearchParams(texto)));
+        } catch (error) {
+          done(error as Error);
+        }
+      },
+    );
 
-  // Público (sin Basic Auth, igual que /webhooks/whatsapp): Wompi no puede
-  // autenticarse contra el panel — la autenticidad la da el checksum de la
-  // firma (ver wompiWebhookHandler.ts), no esta capa de transporte.
-  app.post("/webhooks/wompi", async (request, reply) => {
-    const result = await handleWompiWebhook(request.body);
-    return reply.status(result.status).send();
+    webhooks.post(
+      "/webhooks/whatsapp",
+      { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+      async (request, reply) => {
+        const result = await handleInboundWebhook("twilio", {
+          rawBody: request.rawBody ?? Buffer.alloc(0),
+          params: (request.body ?? {}) as Record<string, string>,
+          headers: request.headers,
+          // La URL pública fija, no reconstruida de headers: es exactamente
+          // la que entra en el HMAC de Twilio (ver env.publicWebhookUrl).
+          url: env.publicWebhookUrl,
+        });
+        return reply.status(result.status).send();
+      },
+    );
+
+    // Público (sin Basic Auth, igual que /webhooks/whatsapp): Wompi no puede
+    // autenticarse contra el panel — la autenticidad la da el checksum de la
+    // firma (ver wompiWebhookHandler.ts), no esta capa de transporte.
+    webhooks.post("/webhooks/wompi", async (request, reply) => {
+      const result = await handleWompiWebhook(request.body);
+      return reply.status(result.status).send();
+    });
   });
 
   app.get("/asesor/:token", async (request, reply) => {

@@ -1,3 +1,4 @@
+import type { Channel } from "../shared/db/connectionsDirectory.js";
 import { withTransaction } from "../shared/db/index.js";
 import type { LLMMessage } from "./llm/types.js";
 
@@ -10,15 +11,34 @@ export interface ResolvedConversation {
 }
 
 /**
+ * Por dónde entró el mensaje (Fase 19). Opcional: los caminos que todavía no
+ * lo propagan, y las entradas de la cola escritas por un release anterior,
+ * caen al default de `whatsapp` sin conexión, igual que antes.
+ */
+export interface InboundOrigin {
+  connectionId?: string;
+  channel?: Channel;
+}
+
+/**
  * Encuentra o crea el customer y la conversación abierta para un
  * teléfono (ver docs/fase-4-motor-agente/memoria-conversacional.md).
  * Expone `customerId` además de `conversationId` porque las tools del
  * dominio comercial (generar_cotizacion) necesitan asociar la cotización
  * al cliente, no solo a la conversación.
+ *
+ * La búsqueda de la conversación abierta sigue siendo por cliente, **no** por
+ * conexión: mientras exista una sola conexión, filtrar por ella sería un
+ * cambio de comportamiento sin beneficio observable y con riesgo real
+ * (payloads de debounce en vuelo, conversaciones huérfanas, atribución de la
+ * encuesta de satisfacción). Ese cambio va en la Etapa B, junto con la
+ * decisión de producto sobre qué significa pausar un hilo cuando el mismo
+ * humano escribe por dos conexiones.
  */
 export async function resolveConversation(
   customerPhone: string,
   customerName?: string,
+  origin?: InboundOrigin,
 ): Promise<ResolvedConversation> {
   return withTransaction(async (client) => {
     // `ProfileName` de Twilio (ver webhook-contrato.md) llega en cada
@@ -54,10 +74,10 @@ export async function resolveConversation(
     }
 
     const created = await client.query<{ id: string; state: Record<string, unknown>; bot_paused: boolean }>(
-      `INSERT INTO conversations (customer_id, status, state)
-       VALUES ($1, 'open', '{}'::jsonb)
+      `INSERT INTO conversations (customer_id, status, state, channel, connection_id)
+       VALUES ($1, 'open', '{}'::jsonb, COALESCE($2, 'whatsapp'), $3)
        RETURNING id, state, bot_paused`,
-      [customerId],
+      [customerId, origin?.channel ?? null, origin?.connectionId ?? null],
     );
     return {
       conversationId: created.rows[0]!.id,
