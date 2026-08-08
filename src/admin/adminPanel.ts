@@ -12,7 +12,17 @@ import {
 } from "./auth/adminsDirectory.js";
 import { hashPassword } from "./auth/passwordHash.js";
 import { env } from "../config/env.js";
+import { outboundAdapterFor } from "../gateway/channels/registry.js";
 import { sendToConversation } from "../gateway/sendMessage.js";
+import {
+  getConnection,
+  listConnections,
+  saveConnection,
+  setConnectionActive,
+  setPrimaryConnection,
+  type ConnectionSummary,
+  type Provider,
+} from "../shared/db/connectionsDirectory.js";
 import { appendMessage } from "../orchestrator/memory.js";
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { logger } from "../shared/observability/logger.js";
@@ -413,7 +423,11 @@ const ICON_BOT =
 const ICON_SEND =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2 2 7.2l4.8 1.9L9 14 14 2Z"/><path d="M6.8 9.1 14 2"/></svg>';
 
-function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminRecord): string {
+async function navRail(
+  settings: SettingsSummary,
+  active: ActiveSection,
+  admin: AdminRecord,
+): Promise<string> {
   const isMaster = admin.role === "master";
   const item = (
     href: string,
@@ -426,7 +440,19 @@ function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminR
     return `<li><a class="navitem${isActive ? " navitem--active" : ""}" href="${href}"${isActive ? ' aria-current="page"' : ""} title="${escapeHtml(label)}">${dot}<span class="navitem__label">${escapeHtml(label)}</span></a></li>`;
   };
 
-  const canal = settings.whatsapp_number ? `WhatsApp configurado` : `Sin canal configurado`;
+  // Estado real del canal, derivado de `channel_connections` (Fase 19). Antes
+  // leía `settings.whatsapp_number`, una columna huérfana desde que ADR-032
+  // retiró multi-tenancy: nadie la escribía, así que el riel decía siempre
+  // "Sin canal configurado" mientras la página de Conexiones — que sí miraba
+  // las credenciales reales — decía "Conectado". Dos fuentes de verdad para
+  // el mismo dato; ahora hay una sola.
+  const conexionesActivas = (await listConnections()).filter((c) => c.active);
+  const canal =
+    conexionesActivas.length === 0
+      ? "Sin canal configurado"
+      : conexionesActivas.length === 1
+        ? `${conexionesActivas[0]!.channel === "whatsapp" ? "WhatsApp" : conexionesActivas[0]!.channel} configurado`
+        : `${conexionesActivas.length} canales configurados`;
 
   const perfilActive = active === "perfil";
   const avatar = admin.avatarData
@@ -505,15 +531,15 @@ function navRail(settings: SettingsSummary, active: ActiveSection, admin: AdminR
   </aside>`;
 }
 
-function layout(
+async function layout(
   title: string,
   settings: SettingsSummary | null,
   body: string,
   active: ActiveSection = null,
   admin?: AdminRecord,
-): string {
+): Promise<string> {
   const heading = settings ? `${brandName(settings)} — ${title}` : title;
-  const rail = settings && admin ? navRail(settings, active, admin) : "";
+  const rail = settings && admin ? await navRail(settings, active, admin) : "";
 
   return `<!doctype html>
 <html lang="es">
@@ -3773,64 +3799,171 @@ export async function renderFlujoPage(admin: AdminRecord): Promise<string | null
   return layout("Flujo del agente", tenant, body, "flujo", admin);
 }
 
+const PROVIDER_LABEL: Record<Provider, string> = {
+  twilio: "Twilio",
+  meta: "Meta Cloud API",
+};
+
+/** Una tarjeta por conexión configurada. */
+function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): string {
+  const webhookUrl = env.publicWebhookUrl;
+  const titulo = `${connection.channel === "whatsapp" ? "WhatsApp" : connection.channel} · ${PROVIDER_LABEL[connection.provider]}`;
+
+  // Desactivar la última conexión activa deja al bot mudo: sin ninguna
+  // conexión no hay por dónde responder, ni siquiera las notificaciones a
+  // administradores. El switch se bloquea en vez de dejar que el admin lo
+  // descubra cuando nadie reciba nada.
+  const toggle = esUnica && connection.active
+    ? lockedToggleSwitchHtml("Es la única conexión activa — desactivarla dejaría al asistente sin ningún canal por el que responder.")
+    : toggleSwitchHtml(`/admin/conexiones/${connection.id}/bot`, connection.active, `la conexión ${connection.label}`);
+
+  const primaryControl = connection.isPrimary
+    ? `<span class="chip chip--go">Predeterminada</span>`
+    : `<form method="POST" action="/admin/conexiones/${connection.id}/primary">
+         <button type="submit" class="btn btn--ghost btn--sm">Usar para notificaciones</button>
+       </form>`;
+
+  return `
+    <div class="panel connection${connection.active ? " connection--live" : ""}">
+      <div class="connection__head">
+        <div class="connection__titlewrap">
+          <span class="connection__icon">${ICON_WHATSAPP}</span>
+          <h2>${escapeHtml(titulo)}</h2>
+        </div>
+        <div class="statustoggle">
+          ${toggle}
+          <span class="connection__badge ${connection.active ? "connection__badge--on" : "connection__badge--off"}">${connection.active ? '<span class="pulse"></span>Conectada' : "Inactiva"}</span>
+        </div>
+      </div>
+      <dl class="connection__meta">
+        <div><dt>Número</dt><dd class="mono">${escapeHtml(connection.displayAddress ?? connection.externalId)}</dd></div>
+        <div><dt>Notificaciones a administradores</dt><dd>${primaryControl}</dd></div>
+      </dl>
+      <div class="connection__webhook">
+        <label for="webhook-url-${escapeHtml(connection.id)}">URL de webhook (configúrala en la consola de ${escapeHtml(PROVIDER_LABEL[connection.provider])})</label>
+        <div class="copyrow">
+          <code id="webhook-url-${escapeHtml(connection.id)}" class="mono">${escapeHtml(webhookUrl)}</code>
+          <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
+        </div>
+      </div>
+      <form method="POST" action="/admin/conexiones/${connection.id}/credenciales">
+        <div class="fieldgrid">
+          <div class="field">
+            <label for="sid-${escapeHtml(connection.id)}">Account SID</label>
+            <input type="text" id="sid-${escapeHtml(connection.id)}" name="accountSid" placeholder="AC…" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="token-${escapeHtml(connection.id)}">Auth Token</label>
+            <input type="password" id="token-${escapeHtml(connection.id)}" name="authToken" autocomplete="off">
+            <p class="hint">Ya hay credenciales guardadas. Dejar los campos vacíos las conserva.</p>
+          </div>
+        </div>
+        <div class="formfoot">
+          <button type="submit" class="btn btn--primary">Probar y guardar</button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
 /**
- * Conexiones (Fase 11.3): una sola tarjeta real (WhatsApp/Twilio) — no
- * se construyen tarjetas para canales sin integración real detrás
- * (Telegram, Instagram, etc. no tienen variables de entorno en el
- * proyecto). El estado lee las mismas env vars que ya exige env.ts al
- * arrancar; si el proceso está corriendo, ya están presentes por
- * definición — el chequeo se deja explícito igual, para que agregar un
- * canal con credenciales realmente opcionales en el futuro sea agregar
- * una entrada a esta lista, no rediseñar la página.
+ * Conexiones (Fase 11.3, reescrita en la Fase 19 Etapa A): una tarjeta por
+ * conexión real de `channel_connections`, no una sola tarjeta hardcodeada
+ * contra variables de entorno. Las credenciales se configuran desde acá y se
+ * guardan cifradas; el proceso no necesita reiniciarse para tomarlas.
+ *
+ * Se mantiene el criterio original de la página: no se construyen tarjetas
+ * para canales sin integración real detrás. Instagram y Messenger aparecerán
+ * cuando exista su adapter (Etapas B y C), no antes como carteles de
+ * "próximamente".
  */
-export async function renderConexionesPage(admin: AdminRecord): Promise<string | null> {
+export async function renderConexionesPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string } = {},
+): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const missing = [
-    !env.twilioAccountSid && "TWILIO_ACCOUNT_SID",
-    !env.twilioAuthToken && "TWILIO_AUTH_TOKEN",
-    !env.twilioWhatsappNumber && "TWILIO_WHATSAPP_NUMBER",
-  ].filter((v): v is string => Boolean(v));
-  const conectado = missing.length === 0;
-  // env.publicWebhookUrl ya es la URL completa del webhook (así la exige
-  // twilioSignature.ts para validar la firma) — no hay que concatenarle
-  // el path de nuevo.
-  const webhookUrl = env.publicWebhookUrl;
-  const sidMasked = conectado ? `••••${env.twilioAccountSid.slice(-4)}` : "—";
+  const connections = await listConnections();
+  const activas = connections.filter((c) => c.active).length;
+  const esUnica = activas === 1;
+
+  const banner = query.error
+    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
+    : query.guardado
+      ? `<div class="banner banner--ok">Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.</div>`
+      : "";
+
+  const tarjetas = connections.length
+    ? connections.map((c) => connectionCardHtml(c, esUnica && c.active)).join("")
+    : emptyState(
+        ICON_CONEXIONES,
+        "Sin conexiones configuradas",
+        "No hay ningún canal por el que el asistente pueda recibir ni responder mensajes.",
+      );
 
   const body = `
     <div class="pagehead">
       <p class="eyebrow">Agente</p>
       <h1>Conexiones</h1>
-      <p>${conectado ? "1 de 1" : "0 de 1"} canal conectado — WhatsApp por Twilio es el único canal que integra ${escapeHtml(brandName(tenant))} hoy.</p>
+      <p>${activas} de ${connections.length} ${connections.length === 1 ? "conexión conectada" : "conexiones conectadas"} — por acá entran y salen los mensajes de ${escapeHtml(brandName(tenant))}.</p>
     </div>
-    <div class="panel connection${conectado ? " connection--live" : ""}">
-      <div class="connection__head">
-        <div class="connection__titlewrap">
-          <span class="connection__icon">${ICON_WHATSAPP}</span>
-          <h2>WhatsApp · Twilio</h2>
-        </div>
-        <span class="connection__badge ${conectado ? "connection__badge--on" : "connection__badge--off"}">${conectado ? '<span class="pulse"></span>Conectado' : "Sin conectar"}</span>
-      </div>
-      <dl class="connection__meta">
-        <div><dt>Número del tenant</dt><dd class="mono">${escapeHtml(tenant.whatsapp_number ?? "Sin asignar")}</dd></div>
-        <div><dt>Cuenta Twilio</dt><dd class="mono">${escapeHtml(sidMasked)}</dd></div>
-      </dl>
-      <div class="connection__webhook">
-        <label for="webhook-url">URL de webhook (configúrala en la consola de Twilio)</label>
-        <div class="copyrow">
-          <code id="webhook-url" class="mono">${escapeHtml(webhookUrl)}</code>
-          <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
-        </div>
-      </div>
-      ${!conectado ? `<p class="connection__missing">Falta configurar: ${escapeHtml(missing.join(", "))}</p>` : ""}
-    </div>
+    ${banner}
+    ${tarjetas}
   `;
 
   return layout("Conexiones", tenant, body, "conexiones", admin);
+}
+
+/**
+ * Verifica las credenciales contra el proveedor **antes** de persistirlas
+ * (mismo criterio que `guardarCobros` con Wompi): una credencial mala
+ * guardada rompe el canal entero y el síntoma aparece después, en un mensaje
+ * que no llega.
+ *
+ * Los campos vacíos conservan lo que ya estaba guardado, así el admin puede
+ * corregir solo el token sin volver a tipear el SID.
+ */
+export async function guardarCredencialesConexion(
+  connectionId: string,
+  input: { accountSid: string; authToken: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const existente = await getConnection(connectionId);
+  if (!existente) {
+    return { ok: false, error: "La conexión no existe." };
+  }
+
+  const credentials = {
+    ...existente.credentials,
+    ...(input.accountSid.trim() ? { accountSid: input.accountSid.trim() } : {}),
+    ...(input.authToken.trim() ? { authToken: input.authToken.trim() } : {}),
+  };
+
+  let verificadas;
+  try {
+    verificadas = await outboundAdapterFor(existente.provider).verifyCredentials(credentials);
+  } catch (error) {
+    logger.warn({ error, connection_id: connectionId }, "Credenciales de conexión rechazadas por el proveedor");
+    return {
+      ok: false,
+      error: "El proveedor rechazó las credenciales. Revisá el Account SID y el Auth Token.",
+    };
+  }
+
+  await saveConnection({
+    channel: existente.channel,
+    provider: existente.provider,
+    label: existente.label,
+    // La clave de ruteo la reporta el proveedor, no la tipea el admin: un
+    // valor mal escrito daría una conexión que guarda bien pero cuyo webhook
+    // no matchea nunca.
+    externalId: verificadas.externalId,
+    displayAddress: verificadas.displayAddress,
+    credentials,
+  });
+  return { ok: true };
 }
 
 /** Una fila de variante dentro del modal de alta/edición de producto — `variant: null` es una fila en blanco (nueva, del `<template>`); con datos es una variante ya persistida (edición). */
@@ -6466,4 +6599,14 @@ export async function guardarCobros(
 
   await saveWompiConfig({ privateKey, eventsSecret });
   return { ok: true };
+}
+
+/** Activar/desactivar una conexión desde el panel (Fase 19). */
+export async function setConexionActiva(connectionId: string, active: boolean): Promise<void> {
+  await setConnectionActive(connectionId, active);
+}
+
+/** Marcar una conexión como la que recibe/envía lo que no tiene conversación (Fase 19). */
+export async function marcarConexionPrimary(connectionId: string): Promise<void> {
+  await setPrimaryConnection(connectionId);
 }

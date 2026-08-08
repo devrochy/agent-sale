@@ -28,6 +28,7 @@ import {
   guardarCategoria,
   guardarCobros,
   guardarComportamiento,
+  guardarCredencialesConexion,
   guardarInfoLead,
   guardarModeloIa,
   guardarPerfil,
@@ -37,6 +38,7 @@ import {
   guardarReporteDiario,
   guardarReviewLink,
   guardarVozMarca,
+  marcarConexionPrimary,
   pausarBot,
   previsualizarImportacionCsv,
   reactivarBot,
@@ -58,6 +60,7 @@ import {
   renderPromocionesPage,
   renderTicketsPage,
   resolverTicket,
+  setConexionActiva,
   tomarTicket,
 } from "../admin/adminPanel.js";
 import { isUsernameTaken, type AdminRecord } from "../admin/auth/adminsDirectory.js";
@@ -130,15 +133,18 @@ export async function buildServer() {
     request.admin = admin;
   });
 
-  // Colaboradores (Fase 13, ver ADR-025) — el hook de arriba solo exige
-  // sesión válida, no `role='master'`; esa restricción es específica de
-  // esta sección, así que se chequea acá, no en el hook global.
+  // Colaboradores (Fase 13, ver ADR-025) y Conexiones (Fase 19) — el hook de
+  // arriba solo exige sesión válida, no `role='master'`; esa restricción es
+  // específica de estas secciones, así que se chequea acá, no en el hook
+  // global. Cubre GET y POST por igual: Conexiones maneja credenciales de
+  // los canales, así que restringirla es un endurecimiento deliberado
+  // respecto de la versión anterior de la página, que veía cualquier admin.
   app.addHook("preHandler", async (request, reply) => {
-    if (!request.url.match(/^\/admin\/colaboradores/i)) {
+    if (!request.url.match(/^\/admin\/(colaboradores|conexiones)/i)) {
       return;
     }
     if (request.admin?.role !== "master") {
-      return reply.status(403).send("Solo un administrador master puede gestionar colaboradores.");
+      return reply.status(403).send("Solo un administrador master puede gestionar esta sección.");
     }
   });
 
@@ -319,11 +325,43 @@ export async function buildServer() {
   });
 
   app.get("/admin/conexiones", async (request, reply) => {
-    const html = await renderConexionesPage(request.admin!);
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderConexionesPage(request.admin!, { error, guardado });
     if (!html) {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/conexiones/:connectionId/credenciales", async (request, reply) => {
+    const { connectionId } = request.params as { connectionId: string };
+    const { accountSid, authToken } = request.body as { accountSid?: string; authToken?: string };
+    const result = await guardarCredencialesConexion(connectionId, {
+      accountSid: accountSid ?? "",
+      authToken: authToken ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/conexiones?guardado=1"
+      : `/admin/conexiones?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/conexiones/:connectionId/bot/activar", async (request, reply) => {
+    const { connectionId } = request.params as { connectionId: string };
+    await setConexionActiva(connectionId, true);
+    return reply.status(303).redirect("/admin/conexiones");
+  });
+
+  app.post("/admin/conexiones/:connectionId/bot/desactivar", async (request, reply) => {
+    const { connectionId } = request.params as { connectionId: string };
+    await setConexionActiva(connectionId, false);
+    return reply.status(303).redirect("/admin/conexiones");
+  });
+
+  app.post("/admin/conexiones/:connectionId/primary", async (request, reply) => {
+    const { connectionId } = request.params as { connectionId: string };
+    await marcarConexionPrimary(connectionId);
+    return reply.status(303).redirect("/admin/conexiones");
   });
 
   app.get("/admin/colaboradores", async (request, reply) => {
