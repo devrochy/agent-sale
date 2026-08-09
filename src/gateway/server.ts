@@ -14,6 +14,7 @@ import {
   crearAliado,
   crearCategoria,
   crearColaborador,
+  crearConexionMeta,
   crearPromocion,
   crearProducto,
   desactivarAliado,
@@ -334,13 +335,22 @@ export async function buildServer() {
     return reply.type("text/html").send(html);
   });
 
+  // Antes que la ruta con :connectionId, para que "meta" no se interprete como
+  // un id de conexión.
+  app.post("/admin/conexiones/meta", async (request, reply) => {
+    const result = await crearConexionMeta(request.body as Record<string, string | undefined>);
+    const redirectUrl = result.ok
+      ? "/admin/conexiones?guardado=1"
+      : `/admin/conexiones?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
   app.post("/admin/conexiones/:connectionId/credenciales", async (request, reply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const { accountSid, authToken } = request.body as { accountSid?: string; authToken?: string };
-    const result = await guardarCredencialesConexion(connectionId, {
-      accountSid: accountSid ?? "",
-      authToken: authToken ?? "",
-    });
+    const result = await guardarCredencialesConexion(
+      connectionId,
+      request.body as Record<string, string | undefined>,
+    );
     const redirectUrl = result.ok
       ? "/admin/conexiones?guardado=1"
       : `/admin/conexiones?error=${encodeURIComponent(result.error)}`;
