@@ -22,6 +22,7 @@ export {
   getPrimaryConnection,
   invalidateConnectionsCache,
   listConnections,
+  listConnectionsWithCredentials,
   saveConnection,
   setConnectionActive,
   setPrimaryConnection,

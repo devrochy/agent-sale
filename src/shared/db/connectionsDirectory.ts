@@ -156,6 +156,19 @@ export async function getConnection(id: string): Promise<ResolvedConnection | nu
 }
 
 /**
+ * Conexiones de un proveedor **con sus credenciales**. Existe para el
+ * handshake de verificación de Meta, que llega sin identificar a qué conexión
+ * corresponde: hay que comparar su `verifyToken` contra las que haya. No usar
+ * para listar en el panel — para eso está `listConnections`, que no expone
+ * secretos.
+ */
+export async function listConnectionsWithCredentials(
+  provider: Provider,
+): Promise<ResolvedConnection[]> {
+  return (await loadAll()).filter((connection) => connection.provider === provider);
+}
+
+/**
  * La conexión que se usa cuando no hay conversación de por medio (ej.
  * notificaciones a administradores). Una sola por canal, garantizada por el
  * índice único parcial de la migración 0053 — no por convención.

@@ -18,7 +18,9 @@ export interface WebhookResult {
     | "invalid_signature"
     | "unknown_connection"
     | "inactive_connection"
-    | "invalid_payload";
+    | "invalid_payload"
+    /** El webhook solo traía callbacks de estado de entrega, no mensajes. */
+    | "delivery_status";
   received: number;
   enqueued: number;
   duplicates: number;
@@ -80,11 +82,32 @@ export async function handleInboundWebhook(
     return resultado(200, "inactive_connection");
   }
 
+  // Los proveedores que notifican la entrega por webhook (Meta) la mandan por
+  // este mismo endpoint. Es la señal equivalente al `63016` de Twilio: sin
+  // esto, un mensaje rechazado por ventana de 24 h vencida se perdería en
+  // silencio, que es justo el hallazgo de QA que originó verifyDelivery.ts.
+  const estados = adapter.parseDeliveryStatuses?.(raw) ?? [];
+  for (const estado of estados) {
+    if (estado.status !== "failed") {
+      continue;
+    }
+    logger.warn(
+      {
+        event: "delivery.rechazado",
+        connection_id: connection.id,
+        external_message_id: estado.externalMessageId,
+        destinatario: estado.recipientExternalId,
+        error_code: estado.errorCode,
+        motivo: estado.errorMessage,
+      },
+      "El proveedor rechazó la entrega de un mensaje ya enviado",
+    );
+  }
+
   const mensajes = adapter.parseInbound(raw);
   if (mensajes.length === 0) {
-    // Normal, no un error: Meta usa el mismo endpoint para los callbacks de
-    // estado de entrega, que no traen mensajes.
-    return resultado(200, "invalid_payload");
+    // Normal, no un error: un webhook puede traer solo estados de entrega.
+    return resultado(200, estados.length > 0 ? "delivery_status" : "invalid_payload");
   }
 
   let enqueued = 0;

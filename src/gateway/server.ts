@@ -69,6 +69,7 @@ import { login, logout } from "../admin/auth/session.js";
 import { env } from "../config/env.js";
 import { registrarGuia } from "../domains/commerce/registrarGuia.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
+import { listConnectionsWithCredentials } from "../shared/db/connectionsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
@@ -897,6 +898,50 @@ export async function buildServer() {
           // La URL pública fija, no reconstruida de headers: es exactamente
           // la que entra en el HMAC de Twilio (ver env.publicWebhookUrl).
           url: env.publicWebhookUrl,
+        });
+        return reply.status(result.status).send();
+      },
+    );
+
+    /**
+     * Handshake de verificación de Meta (Fase 19, Etapa B). Meta pega acá con
+     * `GET` al registrar el webhook y espera que le devolvamos el
+     * `hub.challenge` tal cual, en texto plano.
+     *
+     * El handshake no dice a qué conexión corresponde, así que el token se
+     * compara contra el `verifyToken` de cualquier conexión de Meta
+     * configurada — son pocas, y el token es precisamente lo que prueba que
+     * quien pregunta es quien configuró alguna de ellas.
+     */
+    webhooks.get("/webhooks/meta", async (request, reply) => {
+      const query = request.query as Record<string, string | undefined>;
+      const token = query["hub.verify_token"];
+      const challenge = query["hub.challenge"];
+
+      const conexiones = await listConnectionsWithCredentials("meta");
+      const coincide = token
+        ? conexiones.some((c) => c.credentials.verifyToken === token)
+        : false;
+
+      if (!coincide || !challenge) {
+        logger.warn({ event: "gateway.handshake_meta_rechazado" }, "Handshake de Meta rechazado");
+        return reply.status(403).send();
+      }
+      logger.info({ event: "gateway.handshake_meta_ok" }, "Handshake de Meta verificado");
+      return reply.type("text/plain").send(challenge);
+    });
+
+    webhooks.post(
+      "/webhooks/meta",
+      { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+      async (request, reply) => {
+        const result = await handleInboundWebhook("meta", {
+          rawBody: request.rawBody ?? Buffer.alloc(0),
+          params: {},
+          headers: request.headers,
+          // Meta firma sobre el cuerpo crudo, no sobre la URL — este campo no
+          // participa de su verificación, pero el contrato lo pide.
+          url: `${new URL(env.publicWebhookUrl).origin}/webhooks/meta`,
         });
         return reply.status(result.status).send();
       },

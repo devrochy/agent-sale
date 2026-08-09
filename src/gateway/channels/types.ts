@@ -43,6 +43,20 @@ export interface NormalizedInbound {
   receivedAt: string;
 }
 
+/**
+ * Un callback de estado de entrega. Solo lo emiten los proveedores con
+ * `deliveryModel: "webhook"`, que notifican la entrega por el mismo endpoint
+ * entrante en vez de admitir consulta por id.
+ */
+export interface DeliveryStatusUpdate {
+  externalMessageId: string;
+  /** `sent` | `delivered` | `read` | `failed`, según el proveedor. */
+  status: string;
+  recipientExternalId: string;
+  errorCode: number | null;
+  errorMessage: string | null;
+}
+
 export interface InboundAdapter {
   provider: Provider;
   /**
@@ -60,6 +74,14 @@ export interface InboundAdapter {
    * **normal**, no un error.
    */
   parseInbound(raw: RawInboundRequest): NormalizedInbound[];
+  /**
+   * Opcional: solo lo implementan los proveedores que mandan los estados de
+   * entrega por el webhook entrante (Meta). Twilio no lo implementa porque su
+   * estado se consulta por id — ver `deliveryModel` en el adapter de salida.
+   * Es lo que da, para esos proveedores, la señal equivalente al `63016` de
+   * Twilio: el rechazo silencioso por ventana de 24 h vencida.
+   */
+  parseDeliveryStatuses?(raw: RawInboundRequest): DeliveryStatusUpdate[];
 }
 
 export interface MessageDeliveryStatus {

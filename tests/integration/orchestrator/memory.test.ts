@@ -1,5 +1,9 @@
 import pg from "pg";
 import { afterAll, describe, expect, it } from "vitest";
+import {
+  invalidateConnectionsCache,
+  saveConnection,
+} from "../../../src/shared/db/connectionsDirectory.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { resolveConversation } from "../../../src/orchestrator/memory.js";
 
@@ -11,7 +15,11 @@ const PHONES = [
   "whatsapp:+573000000101",
   "whatsapp:+573000000102",
   "whatsapp:+573000000103",
+  "whatsapp:+573000000104",
 ];
+
+// Conexiones de mentira para el caso multicanal — se borran en afterAll.
+const CONEXIONES_TEST = ["whatsapp:+570000000801", "test-meta-phone-id-0801"];
 
 afterAll(async () => {
   await adminPool.query(
@@ -19,6 +27,10 @@ afterAll(async () => {
     [PHONES],
   );
   await adminPool.query(`DELETE FROM customers WHERE phone_number = ANY($1)`, [PHONES]);
+  await adminPool.query(`DELETE FROM channel_connections WHERE external_id = ANY($1)`, [
+    CONEXIONES_TEST,
+  ]);
+  invalidateConnectionsCache();
   await adminPool.end();
   await appPool.end();
 });
@@ -85,5 +97,60 @@ describe("resolveConversation — conversationBotPaused (Fase 18)", () => {
     const second = await resolveConversation(PHONE);
     expect(second.conversationId).toBe(first.conversationId);
     expect(second.conversationBotPaused).toBe(true);
+  });
+});
+
+describe("resolveConversation — la conversación sigue al último número usado (Fase 19, Etapa B)", () => {
+  it("el mismo cliente por dos conexiones es UNA conversación, apuntando a la última", async () => {
+    const twilio = await saveConnection({
+      channel: "whatsapp",
+      provider: "twilio",
+      label: "Twilio memory test",
+      externalId: CONEXIONES_TEST[0]!,
+      displayAddress: CONEXIONES_TEST[0]!,
+      credentials: { accountSid: "AC1", authToken: "t" },
+    });
+    const meta = await saveConnection({
+      channel: "whatsapp",
+      provider: "meta",
+      label: "Meta memory test",
+      externalId: CONEXIONES_TEST[1]!,
+      displayAddress: "+57 300 000 0802",
+      credentials: { phoneNumberId: CONEXIONES_TEST[1]!, accessToken: "t", appSecret: "s" },
+    });
+
+    const PHONE = "whatsapp:+573000000104";
+
+    // Primero escribe al número de Twilio.
+    const primera = await resolveConversation(PHONE, "Cliente Multicanal", {
+      connectionId: twilio,
+      channel: "whatsapp",
+    });
+
+    // Después, el mismo humano escribe al número de Meta.
+    const segunda = await resolveConversation(PHONE, "Cliente Multicanal", {
+      connectionId: meta,
+      channel: "whatsapp",
+    });
+
+    // Un cliente, una conversación: conserva carrito, historial y pedido.
+    expect(segunda.conversationId).toBe(primera.conversationId);
+
+    // Pero la respuesta tiene que salir por donde escribió recién: sin esto
+    // le contestaríamos desde un número que nunca contactó, lo que abre una
+    // ventana de 24h nueva y el proveedor la rechaza.
+    const fila = await adminPool.query<{ connection_id: string }>(
+      `SELECT connection_id FROM conversations WHERE id = $1`,
+      [primera.conversationId],
+    );
+    expect(fila.rows[0]!.connection_id).toBe(meta);
+
+    // Y volver al primero la devuelve a Twilio.
+    await resolveConversation(PHONE, undefined, { connectionId: twilio, channel: "whatsapp" });
+    const devuelta = await adminPool.query<{ connection_id: string }>(
+      `SELECT connection_id FROM conversations WHERE id = $1`,
+      [primera.conversationId],
+    );
+    expect(devuelta.rows[0]!.connection_id).toBe(twilio);
   });
 });
