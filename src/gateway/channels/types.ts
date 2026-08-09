@@ -67,9 +67,16 @@ export interface MessageDeliveryStatus {
   errorCode: number | null;
 }
 
-/** Lo que confirma una credencial válida, para no pedirle al admin que tipee la clave de ruteo. */
+/**
+ * Lo que confirma una credencial válida. `externalId` es **opcional**: hay
+ * cuentas válidas de las que el proveedor no puede reportar la dirección de
+ * envío — el caso real es el sandbox de WhatsApp de Twilio, donde el número es
+ * compartido y la cuenta no posee ninguno propio (`incomingPhoneNumbers`
+ * devuelve vacío). En ese caso se conserva la clave de ruteo ya configurada:
+ * "no pude deducir el número" no es lo mismo que "la credencial es inválida".
+ */
 export interface VerifiedCredentials {
-  externalId: string;
+  externalId: string | null;
   displayAddress: string | null;
 }
 

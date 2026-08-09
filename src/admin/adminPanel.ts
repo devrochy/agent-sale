@@ -3945,7 +3945,16 @@ export async function guardarCredencialesConexion(
   try {
     verificadas = await outboundAdapterFor(existente.provider).verifyCredentials(credentials);
   } catch (error) {
-    logger.warn({ error, connection_id: connectionId }, "Credenciales de conexión rechazadas por el proveedor");
+    // El mensaje del error va explícito: pino no serializa un Error puesto
+    // bajo una clave propia, y sin esto el log sale como `error:{}`, inútil
+    // justo cuando hay que diagnosticar por qué el panel rechazó algo.
+    logger.warn(
+      {
+        connection_id: connectionId,
+        motivo: error instanceof Error ? error.message : String(error),
+      },
+      "Credenciales de conexión rechazadas por el proveedor",
+    );
     return {
       ok: false,
       error: "El proveedor rechazó las credenciales. Revisá el Account SID y el Auth Token.",
@@ -3956,11 +3965,13 @@ export async function guardarCredencialesConexion(
     channel: existente.channel,
     provider: existente.provider,
     label: existente.label,
-    // La clave de ruteo la reporta el proveedor, no la tipea el admin: un
-    // valor mal escrito daría una conexión que guarda bien pero cuyo webhook
-    // no matchea nunca.
-    externalId: verificadas.externalId,
-    displayAddress: verificadas.displayAddress,
+    // La clave de ruteo la reporta el proveedor cuando puede, para que el
+    // admin no la tipee (un valor mal escrito daría una conexión que guarda
+    // bien pero cuyo webhook no matchea nunca). Cuando no puede —cuenta de
+    // sandbox, que no posee números propios— se conserva la que ya estaba: la
+    // credencial es válida igual.
+    externalId: verificadas.externalId ?? existente.externalId,
+    displayAddress: verificadas.displayAddress ?? existente.displayAddress,
     credentials,
   });
   return { ok: true };

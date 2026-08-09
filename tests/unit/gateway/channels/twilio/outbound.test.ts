@@ -163,6 +163,28 @@ describe("twilioOutboundAdapter.verifyCredentials", () => {
     });
   });
 
+  it("acepta una cuenta de sandbox, que no posee ningún número propio", async () => {
+    // Caso real encontrado probando el panel: una cuenta trial usando el
+    // sandbox de WhatsApp es válida, pero `incomingPhoneNumbers` viene vacío
+    // porque el número del sandbox es compartido de Twilio, no de la cuenta.
+    // Devolver null (en vez de lanzar) es lo que deja al caller conservar la
+    // dirección ya configurada en vez de rechazar una credencial buena.
+    listIncoming.mockResolvedValue([]);
+
+    await expect(
+      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "token" }),
+    ).resolves.toEqual({ externalId: null, displayAddress: null });
+    expect(fetchAccount).toHaveBeenCalledWith("ACtest");
+  });
+
+  it("no invalida la credencial si no se pueden listar los números", async () => {
+    listIncoming.mockRejectedValue(new Error("permisos insuficientes"));
+
+    await expect(
+      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "token" }),
+    ).resolves.toEqual({ externalId: null, displayAddress: null });
+  });
+
   it("propaga el rechazo del proveedor con credenciales inválidas", async () => {
     fetchAccount.mockRejectedValue(new Error("Authenticate"));
     await expect(

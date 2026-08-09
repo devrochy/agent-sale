@@ -78,22 +78,32 @@ export const twilioOutboundAdapter: PollingOutboundAdapter = {
   /**
    * Valida SID y token juntos con la llamada más barata posible: leer la
    * propia cuenta. No cuesta dinero y, sobre todo, **no le manda un mensaje de
-   * prueba a nadie**. Devuelve el número de WhatsApp asociado para que el
-   * admin no tenga que tipear la clave de ruteo a mano — tipearla mal daría
-   * una conexión que guarda bien pero cuyo webhook no matchea nunca.
+   * prueba a nadie**. Es lo único que decide si las credenciales sirven.
+   *
+   * Aparte, *intenta* deducir el número de envío para ahorrarle al admin
+   * tipear la clave de ruteo (tipearla mal da una conexión que guarda bien
+   * pero cuyo webhook no matchea nunca). Es un intento, no un requisito: una
+   * cuenta que usa el **sandbox de WhatsApp** no posee ningún número propio
+   * —el sandbox es un número compartido de Twilio— así que
+   * `incomingPhoneNumbers` viene vacío aunque la credencial sea perfectamente
+   * válida. Devolver `null` deja que el caller conserve la dirección que ya
+   * tenía configurada, en vez de rechazar una credencial buena.
    */
   async verifyCredentials(credentials: ConnectionCredentials): Promise<VerifiedCredentials> {
     const client = buildClient(credentials);
     await client.api.v2010.accounts(credentials.accountSid!).fetch();
 
-    const senders = await client.incomingPhoneNumbers.list({ limit: 1 });
-    const numero = senders[0]?.phoneNumber;
-    const externalId = numero ? `whatsapp:${numero}` : (credentials.whatsappNumber ?? "");
-    if (!externalId) {
-      throw new Error(
-        "Credenciales válidas, pero no se pudo determinar el número de WhatsApp de la cuenta",
-      );
+    let numero: string | undefined;
+    try {
+      const senders = await client.incomingPhoneNumbers.list({ limit: 1 });
+      numero = senders[0]?.phoneNumber;
+    } catch {
+      // Que no se pueda listar (permisos de subcuenta, por ejemplo) tampoco
+      // invalida la credencial: la cuenta ya respondió arriba.
+      numero = undefined;
     }
+
+    const externalId = numero ? `whatsapp:${numero}` : null;
     return { externalId, displayAddress: externalId };
   },
 };

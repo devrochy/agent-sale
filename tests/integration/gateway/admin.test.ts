@@ -1,6 +1,19 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+// El adapter de salida se controla desde el test: "Probar y guardar" llama a
+// verifyCredentials, y sin este mock el test haría una llamada HTTP real a
+// Twilio. El comportamiento del adapter en sí está cubierto en
+// tests/unit/gateway/channels/twilio/outbound.test.ts.
+const verifyCredentials = vi.fn();
+vi.mock("../../../src/gateway/channels/registry.js", () => ({
+  outboundAdapterFor: () => ({ provider: "twilio", deliveryModel: "poll", verifyCredentials }),
+  inboundAdapterFor: () => {
+    throw new Error("no usado en este test");
+  },
+  inboundProviders: () => ["twilio"],
+}));
+
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
   sendToConversation: vi.fn(),
@@ -998,6 +1011,7 @@ describe("panel admin", () => {
     });
 
     it("credenciales rechazadas por el proveedor no se guardan y vuelven con error", async () => {
+      verifyCredentials.mockRejectedValueOnce(new Error("Authenticate"));
       const response = await app.inject({
         method: "POST",
         url: `/admin/conexiones/${conexionId}/credenciales`,
@@ -1015,6 +1029,37 @@ describe("panel admin", () => {
       // Sigue estando la credencial vieja: no se persiste nada que el
       // proveedor no haya aceptado (mismo criterio que guardarCobros).
       expect(guardadas.rows[0]!.credentials_encrypted).not.toContain("nuevo");
+    });
+
+    it("una cuenta sin números propios (sandbox) guarda igual y conserva la dirección", async () => {
+      // Regresión del bug encontrado probando el panel: verifyCredentials no
+      // podía deducir el número desde una cuenta de sandbox y el error se
+      // reportaba como "el proveedor rechazó las credenciales", mandando al
+      // admin a revisar unos datos que estaban bien.
+      // El proveedor valida la credencial pero no puede reportar la
+      // dirección: exactamente lo que devuelve una cuenta de sandbox.
+      verifyCredentials.mockResolvedValueOnce({ externalId: null, displayAddress: null });
+
+      const antes = await adminPool.query<{ external_id: string }>(
+        `SELECT external_id FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conexiones/${conexionId}/credenciales`,
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ accountSid: "ACsandbox", authToken: "token-nuevo" }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const despues = await adminPool.query<{ external_id: string }>(
+        `SELECT external_id FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+      expect(despues.rows[0]!.external_id).toBe(antes.rows[0]!.external_id);
     });
 
     it("un admin que no es master no puede entrar a Conexiones", async () => {
