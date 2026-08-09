@@ -190,20 +190,20 @@ que no son teléfonos.
 
 ## Estado de implementación
 
-**Etapa A — completa.** Migración `0053`, `connectionsDirectory.ts`,
+**Etapas A y B — completas.** Migración `0053`, `connectionsDirectory.ts`,
 `src/gateway/channels/` (contrato + adapter de Twilio + registry), webhook
 agnóstico de proveedor, cola con `connection_id`/`channel`, los 8 envíos al
 cliente resueltos por conexión, y `/admin/conexiones` configurable.
 
 **Pendiente, con su razón:**
 
-- **Etapa B — WhatsApp por Meta Cloud API.** Adapter de Meta (handshake `GET`
-  con `hub.challenge`, HMAC-SHA256 sobre el cuerpo crudo — el parser que lo
-  conserva ya está, encapsulado en el plugin de webhooks), mapeo de direcciones
-  con test dedicado, callback de estado (`value.statuses[]`), clave de búsqueda
-  de conversación por conexión, fix de `findPendingSurvey`, decisión de producto
-  sobre kill-switch y tickets con hilos paralelos, y columna de canal en la
-  bandeja. Desbloquea la Fase 21.
+- **Etapa B — completa.** Ver [ADR-033](./ADR-033-meta-cloud-api-segundo-proveedor-whatsapp.md).
+  Adapter de Meta, handshake, callbacks de estado, panel con alta de conexión y
+  canal de origen en la bandeja. Dos cosas que esta ADR había anotado como
+  pendientes se resolvieron distinto de lo previsto: la clave de búsqueda de
+  conversación **no** pasó a filtrar por conexión (la decisión de producto fue
+  "un cliente, una conversación"), y por lo mismo el bug de `findPendingSurvey`
+  se disolvió sin necesidad de arreglo. Desbloquea la Fase 21.
 - **Etapa C — Instagram y Messenger.** Refactor de identidad de `customers`.
   Requiere App Review de Meta para `pages_messaging` /
   `instagram_manage_messages`; en modo desarrollo solo se puede escribir a
