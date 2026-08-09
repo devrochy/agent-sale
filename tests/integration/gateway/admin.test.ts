@@ -1,15 +1,33 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+// El adapter de salida se controla desde el test: "Probar y guardar" llama a
+// verifyCredentials, y sin este mock el test haría una llamada HTTP real a
+// Twilio. El comportamiento del adapter en sí está cubierto en
+// tests/unit/gateway/channels/twilio/outbound.test.ts.
+const verifyCredentials = vi.fn();
+vi.mock("../../../src/gateway/channels/registry.js", () => ({
+  outboundAdapterFor: () => ({ provider: "twilio", deliveryModel: "poll", verifyCredentials }),
+  inboundAdapterFor: () => {
+    throw new Error("no usado en este test");
+  },
+  inboundProviders: () => ["twilio"],
+}));
+
 vi.mock("../../../src/gateway/sendMessage.js", () => ({
   sendWhatsAppMessage: vi.fn(),
+  sendToConversation: vi.fn(),
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
-import { sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation } from "../../../src/gateway/sendMessage.js";
+import {
+  invalidateConnectionsCache,
+  saveConnection,
+} from "../../../src/shared/db/connectionsDirectory.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
@@ -56,6 +74,7 @@ const adminEmails = [
   "sesion-expirada@formotos-test.com",
   "para-desactivar@formotos-test.com",
   "con-permisos@formotos-test.com",
+  "colab-conexiones@formotos.test",
 ];
 const app = await buildServer();
 
@@ -704,7 +723,7 @@ describe("panel admin", () => {
     });
 
     it("tomar el ticket lo pasa a en_atencion, lo asigna al admin de la sesión, pausa el bot de esa conversación y avisa al cliente por WhatsApp", async () => {
-      vi.mocked(sendWhatsAppMessage).mockClear();
+      vi.mocked(sendToConversation).mockClear();
       const response = await app.inject({
         method: "POST",
         url: `/admin/conversaciones/${handoffId}/tomar`,
@@ -729,8 +748,8 @@ describe("panel admin", () => {
       );
       expect(conversation.rows[0]!.bot_paused).toBe(true);
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         expect.stringContaining(ADMIN_USERNAME),
       );
     });
@@ -748,7 +767,7 @@ describe("panel admin", () => {
     });
 
     it("enviar un mensaje desde el composer lo manda por WhatsApp y lo guarda como sender_type human", async () => {
-      vi.mocked(sendWhatsAppMessage).mockClear();
+      vi.mocked(sendToConversation).mockClear();
       const response = await app.inject({
         method: "POST",
         url: `/admin/conversaciones/${conversationId}/mensaje`,
@@ -757,8 +776,8 @@ describe("panel admin", () => {
       });
       expect(response.statusCode).toBe(303);
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         "Ya reviso tu caso, dame un momento.",
       );
 
@@ -795,14 +814,14 @@ describe("panel admin", () => {
       );
       expect(conversation.rows[0]!.status).toBe("closed");
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         expect.stringContaining(ADMIN_USERNAME),
       );
     });
 
     it("reasignar un ticket en atención al bot lo deja resuelto sin cerrar la conversación, y avisa al cliente", async () => {
-      vi.mocked(sendWhatsAppMessage).mockClear();
+      vi.mocked(sendToConversation).mockClear();
       const handoff = await adminPool.query<{ id: string }>(
         `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
          VALUES ($1, 'solicitud_cliente', 'en_atencion', 'Cliente pide un humano')
@@ -834,8 +853,8 @@ describe("panel admin", () => {
       expect(conversation.rows[0]!.status).toBe("active");
       expect(conversation.rows[0]!.bot_paused).toBe(false);
 
-      expect(sendWhatsAppMessage).toHaveBeenCalledWith(
-        "whatsapp:+573000000007",
+      expect(sendToConversation).toHaveBeenCalledWith(
+        conversationId,
         expect.stringContaining(ADMIN_USERNAME),
       );
 
@@ -929,7 +948,25 @@ describe("panel admin", () => {
   });
 
   describe("conexiones", () => {
-    it("muestra el estado real de la conexión de WhatsApp/Twilio y la URL de webhook", async () => {
+    let conexionId: string;
+
+    beforeAll(async () => {
+      conexionId = await saveConnection({
+        channel: "whatsapp",
+        provider: "twilio",
+        label: "WhatsApp Panel Test",
+        externalId: "whatsapp:+570000000900",
+        displayAddress: "whatsapp:+570000000900",
+        credentials: { accountSid: "ACpanel", authToken: "token-panel-secreto" },
+      });
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM channel_connections WHERE id = $1`, [conexionId]);
+      invalidateConnectionsCache();
+    });
+
+    it("lista las conexiones reales con su número y la URL de webhook", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/conexiones",
@@ -938,13 +975,119 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("WhatsApp");
       expect(response.body).toContain("Twilio");
-      expect(response.body).toContain("Sin asignar");
+      // El número sale de la conexión, no de `settings.whatsapp_number`
+      // (columna huérfana desde ADR-032 que hacía que el riel dijera
+      // siempre "Sin canal configurado" contradiciendo a esta página).
+      expect(response.body).toContain("whatsapp:+570000000900");
       expect(response.body).toContain("/webhooks/whatsapp");
       // Regresión: env.publicWebhookUrl ya es la URL completa del
-      // webhook (la exige así twilioSignature.ts) — concatenarle el
+      // webhook (así la exige la firma de Twilio) — concatenarle el
       // path de nuevo duplicaba "/webhooks/whatsapp" en el enlace a
       // copiar.
       expect(response.body).not.toContain("/webhooks/whatsapp/webhooks/whatsapp");
+    });
+
+    it("nunca imprime una credencial en claro en el HTML", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conexiones",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).not.toContain("token-panel-secreto");
+      expect(response.body).not.toContain("ACpanel");
+    });
+
+    it("el riel refleja el canal configurado en vez de decir siempre que no hay ninguno", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      // No se afirma el texto exacto: depende de cuántas conexiones activas
+      // haya sembrado el resto de la suite. Lo que importa es que ya no diga
+      // siempre que no hay ninguna, que era el bug.
+      expect(response.body).not.toContain("Sin canal configurado");
+      expect(response.body).toMatch(/configurado|canales configurados/);
+    });
+
+    it("credenciales rechazadas por el proveedor no se guardan y vuelven con error", async () => {
+      verifyCredentials.mockRejectedValueOnce(new Error("Authenticate"));
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conexiones/${conexionId}/credenciales`,
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ accountSid: "XXinvalido", authToken: "nuevo" }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+
+      const guardadas = await adminPool.query<{ credentials_encrypted: string }>(
+        `SELECT credentials_encrypted FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+      // Sigue estando la credencial vieja: no se persiste nada que el
+      // proveedor no haya aceptado (mismo criterio que guardarCobros).
+      expect(guardadas.rows[0]!.credentials_encrypted).not.toContain("nuevo");
+    });
+
+    it("una cuenta sin números propios (sandbox) guarda igual y conserva la dirección", async () => {
+      // Regresión del bug encontrado probando el panel: verifyCredentials no
+      // podía deducir el número desde una cuenta de sandbox y el error se
+      // reportaba como "el proveedor rechazó las credenciales", mandando al
+      // admin a revisar unos datos que estaban bien.
+      // El proveedor valida la credencial pero no puede reportar la
+      // dirección: exactamente lo que devuelve una cuenta de sandbox.
+      verifyCredentials.mockResolvedValueOnce({ externalId: null, displayAddress: null });
+
+      const antes = await adminPool.query<{ external_id: string }>(
+        `SELECT external_id FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conexiones/${conexionId}/credenciales`,
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ accountSid: "ACsandbox", authToken: "token-nuevo" }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const despues = await adminPool.query<{ external_id: string }>(
+        `SELECT external_id FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+      expect(despues.rows[0]!.external_id).toBe(antes.rows[0]!.external_id);
+    });
+
+    it("un admin que no es master no puede entrar a Conexiones", async () => {
+      const passwordHash = await hashPassword("Colab-Conexiones-1");
+      await createAdmin(
+        "colab conexiones",
+        "colab-conexiones@formotos.test",
+        passwordHash,
+        "colaborador",
+        null,
+      );
+      const loginResponse = await app.inject({
+        method: "POST",
+        url: "/login",
+        payload: new URLSearchParams({
+          identifier: "colab-conexiones@formotos.test",
+          password: "Colab-Conexiones-1",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      const colabCookie = cookieValueFrom(loginResponse.headers["set-cookie"]);
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conexiones",
+        headers: { cookie: colabCookie },
+      });
+      expect(response.statusCode).toBe(403);
     });
   });
 

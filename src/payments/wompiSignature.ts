@@ -21,9 +21,9 @@ function resolvePath(data: unknown, path: string): string {
  * docs/fase-12-capacidades-proactivas-agente/adrs/ADR-024-cobros-wompi-confirmacion-automatica.md):
  * SHA256 de la concatenación de los valores en `signature.properties`
  * (rutas dentro de `data`, en el orden dado) + el timestamp del evento +
- * el secreto de eventos del tenant. Mismo propósito que
- * `verifyTwilioSignature` (src/gateway/twilioSignature.ts) — autenticidad
- * del webhook — con el algoritmo propio de Wompi en vez de HMAC.
+ * el secreto de eventos del tenant. Mismo propósito que el `verifyRequest`
+ * del adapter de Twilio (src/gateway/channels/twilio/inbound.ts) —
+ * autenticidad del webhook — con el algoritmo propio de Wompi en vez de HMAC.
  */
 export function verifyWompiChecksum(
   data: unknown,

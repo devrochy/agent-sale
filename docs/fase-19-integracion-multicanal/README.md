@@ -1,6 +1,6 @@
 # Fase 19 — Integración Multicanal (Instagram, Facebook/Meta)
 
-Estado: **en diseño** (v2)
+Estado: **Etapa A completa** (v2) — base de gateway multicanal y panel de conexiones implementados y mergeados. Etapas B (WhatsApp por Meta Cloud API) y C (Instagram/Messenger) pendientes; ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-19--integración-multicanal-instagram-facebookmeta) · [PROPUESTA_V2.md §3.11](../../PROPUESTA_V2.md) · [Fase 3 — Integración WhatsApp](../fase-3-whatsapp-gateway/README.md) · [plan-escalado-multi-cliente.md](../plan-escalado-multi-cliente.md)
 
@@ -27,8 +27,17 @@ Ninguna estructural sobre las Fases 13-18 — puede ejecutarse en paralelo. `con
 
 ## Definición de terminado
 
-- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp.
-- [ ] El agente responde por el mismo canal que recibió el mensaje.
-- [ ] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo rigor que Twilio (Fase 3).
+De la fase completa (las tres etapas):
+
+- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C.
+- [x] El agente responde por el mismo canal **y la misma conexión** que recibió el mensaje. Implementado en la Etapa A: `sendToConversation` resuelve el adapter desde `conversations.connection_id`, y los 8 envíos al cliente lo usan. Queda ejercitado con un solo canal hasta que exista un segundo proveedor (Etapa B).
+- [ ] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo rigor que Twilio (Fase 3). — Etapa B. El contrato de dos pasos (`identifyConnection`/`verifyRequest`) y el parser de cuerpo crudo ya están listos para recibirlo.
+
+De la Etapa A, cerrada:
+
+- [x] Matriz canal × proveedor persistida (`channel_connections`), con las credenciales cifradas y configurables desde `/admin/conexiones` sin reiniciar el proceso.
+- [x] Twilio migrado al contrato de adapters — el SDK ya no se importa fuera de `src/gateway/channels/twilio/`.
+- [x] El webhook entrante rutea por conexión y verifica la firma con la credencial de esa conexión.
+- [x] Primeros tests del envío saliente, que no tenía ninguno.
 
 Puede ejecutarse en paralelo con las Fases 14-18 y 20.

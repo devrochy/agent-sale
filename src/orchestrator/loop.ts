@@ -16,7 +16,14 @@ import { buildBrandVoiceBlock, resolveBrandVoiceConfig } from "./brandVoiceBlock
 import { matchKeywordEscalation, resolveEscalationConfig } from "./escalationRules.js";
 import type { DifficultySignal } from "./llm/difficultyRouting.js";
 import { resolveLlmProvider, type ContentBlock, type LLMMessage } from "./llm/index.js";
-import { appendMessage, loadHistory, resolveConversation, updateMessageContent, updateState } from "./memory.js";
+import {
+  appendMessage,
+  loadHistory,
+  resolveConversation,
+  updateMessageContent,
+  updateState,
+  type InboundOrigin,
+} from "./memory.js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { TOOL_DEFINITIONS } from "./toolDefinitions.js";
 import { executeTool } from "./toolExecutor.js";
@@ -186,8 +193,9 @@ export async function appendInbound(
   customerPhone: string,
   incomingBody: string,
   customerName?: string,
+  origin?: InboundOrigin,
 ): Promise<{ conversationId: string; escalatedNow: TurnResult | null }> {
-  const { conversationId, state } = await resolveConversation(customerPhone, customerName);
+  const { conversationId, state } = await resolveConversation(customerPhone, customerName, origin);
   await appendMessage(conversationId, "inbound", "customer", incomingBody);
 
   if (state.step === "escalado") {
@@ -229,8 +237,13 @@ export async function processConversation(
   customerPhone: string,
   messageSid: string,
   customerName?: string,
+  origin?: InboundOrigin,
 ): Promise<TurnResult> {
-  const { conversationId, customerId, state } = await resolveConversation(customerPhone, customerName);
+  const { conversationId, customerId, state } = await resolveConversation(
+    customerPhone,
+    customerName,
+    origin,
+  );
   const turnLogger = logger.child({ conversation_id: conversationId });
 
   if (state.step === "escalado") {

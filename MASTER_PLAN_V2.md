@@ -222,7 +222,7 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 
 ---
 
-## Fase 19 — Integración Multicanal (Instagram, Facebook/Meta)
+## Fase 19 — Integración Multicanal (Instagram, Facebook/Meta) — 🟡 ETAPA A COMPLETA (mergeada a `develop`, 2026-08-08)
 
 **Objetivo:** Extender el gateway de mensajería (hoy exclusivamente WhatsApp/Twilio, Fase 3) con un contrato de canal genérico que permita operar también sobre Instagram Direct y Facebook Messenger vía la API de Meta, exponiendo el canal de origen a conversaciones/tickets (Fases 18).
 
@@ -239,13 +239,15 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 **Estimación:** 5-6 semanas (incluye tiempo de espera de verificación de negocio de Meta, no controlable).
 
 **Definición de terminado:**
-- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp.
-- [ ] El agente responde correctamente por el mismo canal que recibió el mensaje (una conversación de Messenger no genera una respuesta de WhatsApp).
-- [ ] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo nivel de rigor que Twilio.
+- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C.
+- [x] El agente responde correctamente por el mismo canal **y conexión** que recibió el mensaje. Etapa A: `sendToConversation` resuelve el adapter desde `conversations.connection_id`.
+- [ ] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo nivel de rigor que Twilio. — Etapa B; el contrato y el parser de cuerpo crudo ya están.
+
+**Etapa A (completa):** matriz canal × proveedor en `channel_connections` con credenciales cifradas y editables desde `/admin/conexiones`; Twilio migrado al contrato de adapters; webhook que rutea por conexión; primeros tests del envío saliente.
 
 ---
 
-## Fase 20 — Personalización del Asistente: Voz de Marca, RAG Institucional y Diagnóstico de Configuración
+## Fase 20 — Personalización del Asistente: Voz de Marca, RAG Institucional y Diagnóstico de Configuración — ✅ COMPLETA (mergeada a `develop`, PR #69, 2026-08-06)
 
 **Objetivo:** Extender el mecanismo de cache jerárquico ya implementado en ADR-021 con un tercer bloque de `system prompt` (voz de marca + RAG institucional), investigar exhaustivamente qué más es razonable hacer configurable en un asistente de ventas con IA, y **reproducir primero, no asumir**, el bug reportado de configuraciones que no surten efecto en producción.
 
@@ -280,7 +282,11 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 
 **Dependencias:** Fase 16 (los botones de cierre de pedido necesitan los estados de pedido ya definidos ahí). De v1: extiende `messageSplitter.ts` y las plantillas de **ADR-019**.
 
-**Riesgos:** Toda plantilla nueva de WhatsApp requiere aprobación de Meta — mismo bloqueo no controlable que ya vive la Fase 12.3 (`PROPUESTA_V2.md` §4 exige explícitamente no reabrir esa decisión ni saltarse el mecanismo de aprobación); si Meta rechaza o tarda en aprobar el template de botones, el flujo debe degradar a texto libre (comportamiento actual) sin bloquear el cierre de pedido — no se debe lanzar una dependencia dura a una plantilla no aprobada.
+**Riesgos (corregidos contra la documentación vigente, 2026-08-08):** el riesgo que esta fase declaraba como dominante —"toda plantilla nueva requiere aprobación de Meta"— **no aplica a su alcance**. Dentro de la ventana de 24h se pueden enviar botones sin aprobación, con tres restricciones: máximo 3 botones, todos del mismo tipo, y solo `QUICK_REPLY`/`URL`/`VOICE_CALL*`. Todo lo que pide esta fase (cierre de pedido con 3 quick replies, enlace de pago o reseña como botón de URL, confirmación binaria de la Fase 15) ocurre **dentro** de esa ventana, porque siempre es respuesta a un mensaje del cliente. Los 3 botones del cierre de pedido caben exactamente en el límite: un cuarto rompería el envío in-session. La aprobación sí sigue siendo obligatoria fuera de la ventana de 24h, que es el territorio de la Fase 12.3, no de esta.
+
+El bloqueo real es otro: **el sandbox de Twilio no admite content templates propios** (*"You can't use custom message templates with the Sandbox"*), y el proyecto opera sobre el número compartido de sandbox. Por eso el orden se invirtió a 19 → 21: implementar esto sobre Twilio Content API y migrar después a Meta Cloud API sería trabajo desechable, ya que son dos mecanismos de envío distintos. La Fase 19 (Etapa A) ya dejó el contrato de adapters sobre el que esta fase debe construirse.
+
+Se mantiene el criterio de degradar a texto libre si un envío con botones falla — no se debe lanzar una dependencia dura a un formato que el proveedor activo pueda no soportar.
 
 **Estimación:** 2 semanas de implementación + tiempo no controlable de aprobación de Meta para las plantillas nuevas.
 

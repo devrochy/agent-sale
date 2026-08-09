@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import { splitForBubbles } from "../gateway/messageSplitter.js";
-import { sendWhatsAppMessage } from "../gateway/sendMessage.js";
+import { sendToConversation } from "../gateway/sendMessage.js";
 import { getBehaviorConfig } from "../shared/db/settingsDirectory.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import type { TurnResult } from "./loop.js";
@@ -23,9 +23,14 @@ const BUBBLE_SEND_DELAY_MS = 700;
  * llegó; en el camino diferido (debounce) no hay un "recibido" único
  * claro (pueden ser varios mensajes acumulados), así que ese caller no lo
  * pasa y el campo simplemente no se loguea.
+ *
+ * Recibe `conversationId` y no el teléfono (Fase 19): la respuesta tiene que
+ * salir por la misma conexión por la que el cliente escribió. Este es el
+ * camino caliente de cada turno y el único con reintentos, así que responder
+ * por la conexión equivocada acá se multiplicaría por cada burbuja.
  */
 export async function sendTurnBubbles(
-  customerPhone: string,
+  conversationId: string,
   result: TurnResult,
   entryLogger: Logger,
   receivedAt?: number,
@@ -40,7 +45,7 @@ export async function sendTurnBubbles(
 
   entryLogger.info(
     { event: "orchestrator.respuesta_lista" },
-    "Respuesta lista, enviando por Twilio",
+    "Respuesta lista, enviando por el canal de la conversación",
   );
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
   const bubbles = splitForBubbles(result.responseText, behaviorConfig.estiloMensajes);
@@ -50,8 +55,8 @@ export async function sendTurnBubbles(
     let sent = false;
     for (let attempt = 1; attempt <= BUBBLE_SEND_ATTEMPTS && !sent; attempt++) {
       try {
-        await sendWhatsAppMessage(
-          customerPhone,
+        await sendToConversation(
+          conversationId,
           bubbles[index]!,
           isLast ? (result.mediaUrl ?? undefined) : undefined,
         );
@@ -82,6 +87,6 @@ export async function sendTurnBubbles(
       total_latency_ms: totalLatencyMs,
       bubble_count: bubbles.length,
     },
-    "Mensaje enviado por Twilio y confirmado",
+    "Mensaje enviado y confirmado por el proveedor del canal",
   );
 }

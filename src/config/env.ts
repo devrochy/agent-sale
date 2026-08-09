@@ -25,19 +25,25 @@ export const env = {
   // "info" en producción evita ruido de "debug" sin perder los 8 puntos
   // de tracing por conversation_id (docs/fase-8-observabilidad-seguridad/tracing.md).
   logLevel: process.env.LOG_LEVEL ?? "info",
-  // Auth Token de Twilio: clave de verificación de firma de webhooks
-  // (ver docs/fase-3-whatsapp-gateway/webhook-contrato.md). Requerido:
-  // sin esto el gateway no puede validar ningún webhook entrante.
-  twilioAuthToken: required("TWILIO_AUTH_TOKEN"),
+  // Credenciales de Twilio. Opcionales desde la Fase 19 (Etapa A): la
+  // fuente de verdad pasó a ser `channel_connections` en base de datos,
+  // configurable desde /admin/conexiones sin editar .env ni reiniciar. Estas
+  // solo siembran la conexión inicial (`ensureConnectionsFromEnv`) y quedan
+  // como fallback si las credenciales guardadas no descifran. Ya no son
+  // `required()` porque una instalación que solo use Meta no debe verse
+  // impedida de arrancar — mismo criterio que `geminiApiKey` más abajo.
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? "",
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
+  twilioWhatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER ?? "",
   // URL pública exacta registrada en la consola de Twilio para el
   // webhook — se usa fija en vez de reconstruirla de headers de request
   // para no depender de cómo un proxy (Fly.io) reescribe host/proto.
+  // Sigue siendo `required()` aunque las credenciales de Twilio ya no lo
+  // sean: no es solo la URL del webhook, es también el origen de los
+  // enlaces de asesor (escalarHumano.ts) y de reseña (satisfactionSurvey.ts),
+  // así que un valor vacío haría reventar un `new URL("")` en mitad de una
+  // tool call.
   publicWebhookUrl: required("PUBLIC_WEBHOOK_URL"),
-  // El orchestrator los necesita para enviar la respuesta del agente
-  // (ver src/gateway/sendMessage.ts) — sin cuenta real de Twilio esto no
-  // se puede probar en vivo, pero el código ya los requiere.
-  twilioAccountSid: required("TWILIO_ACCOUNT_SID"),
-  twilioWhatsappNumber: required("TWILIO_WHATSAPP_NUMBER"),
   // Clave maestra para cifrar las API keys que un tenant trae propias
   // (BYOK, Fase 11.4 — ver src/shared/crypto/secretBox.ts y ADR-020).
   // Distinta categoría de secreto que las de arriba (ADR-007): esas son
