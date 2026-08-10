@@ -110,6 +110,26 @@ describe("metaInboundAdapter.identifyConnection", () => {
   it("devuelve null si el payload no trae metadata", () => {
     expect(metaInboundAdapter.identifyConnection(request({ entry: [] }))).toBeNull();
   });
+
+  it("acepta un lote de varias entries si todas son del mismo número", () => {
+    const uno = mensajeEntrante();
+    const lote = { ...uno, entry: [...uno.entry, ...uno.entry] };
+
+    expect(metaInboundAdapter.identifyConnection(request(lote))).toBe(PHONE_NUMBER_ID);
+  });
+
+  it("rechaza el lote que mezcla dos phone_number_id en vez de atribuirlo al primero", () => {
+    // Meta agrupa por app, así que un lote puede traer dos números del mismo
+    // negocio y la firma pasa igual (el App Secret es de la app). Quedarse con
+    // el primero contestaría por un número al que el cliente nunca escribió.
+    const uno = mensajeEntrante();
+    const otro = JSON.parse(JSON.stringify(uno)) as typeof uno;
+    (otro.entry[0]!.changes[0]!.value.metadata as { phone_number_id: string }).phone_number_id =
+      "999999999999999";
+    const lote = { ...uno, entry: [...uno.entry, ...otro.entry] };
+
+    expect(metaInboundAdapter.identifyConnection(request(lote))).toBeNull();
+  });
 });
 
 describe("metaInboundAdapter.verifyRequest", () => {

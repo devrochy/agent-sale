@@ -1,7 +1,11 @@
 import { Writable } from "node:stream";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
-import { logger, sanitizarUrl } from "../../../../src/shared/observability/logger.js";
+import {
+  logger,
+  REDACT_PATHS,
+  sanitizarUrl,
+} from "../../../../src/shared/observability/logger.js";
 
 describe("logger", () => {
   it("usa LOG_LEVEL (o \"info\" por defecto) como nivel de la instancia compartida", () => {
@@ -14,7 +18,13 @@ describe("logger", () => {
     expect(child.bindings()).toEqual({ tenant_id: "tenant-1", conversation_id: "conv-1" });
   });
 
-  it("censura los campos configurados en redact (PII fuera de logs)", () => {
+  /**
+   * Loguea contra un stream capturable usando `REDACT_PATHS`, la lista real de
+   * la instancia compartida (que escribe a stdout y no se puede interceptar
+   * acá). Importarla en vez de copiarla es deliberado: una copia se
+   * desincroniza en silencio, que es justo como se coló `destinatario`.
+   */
+  function loguearYCapturar(objeto: Record<string, unknown>): Record<string, unknown> {
     const lines: string[] = [];
     const stream = new Writable({
       write(chunk, _enc, callback) {
@@ -22,20 +32,33 @@ describe("logger", () => {
         callback();
       },
     });
-    // Mismos paths/censor que src/shared/observability/logger.ts — se
-    // prueba el mecanismo de redact contra un stream capturable en vez
-    // del stdout real de la instancia compartida.
-    const testLogger = pino(
-      { redact: { paths: ["customer_phone", "body"], censor: "[REDACTED]" } },
-      stream,
-    );
+    pino({ redact: { paths: REDACT_PATHS, censor: "[REDACTED]" } }, stream).info(objeto, "test");
+    return JSON.parse(lines[0]!) as Record<string, unknown>;
+  }
 
-    testLogger.info({ customer_phone: "+573000000000", body: "hola", tenant_id: "t1" }, "test");
+  it("censura los campos configurados en redact (PII fuera de logs)", () => {
+    const parsed = loguearYCapturar({
+      customer_phone: "+573000000000",
+      body: "hola",
+      tenant_id: "t1",
+    });
 
-    const parsed = JSON.parse(lines[0]!);
     expect(parsed.customer_phone).toBe("[REDACTED]");
     expect(parsed.body).toBe("[REDACTED]");
     expect(parsed.tenant_id).toBe("t1");
+  });
+
+  it("censura `destinatario`, el teléfono del cliente en delivery.rechazado", () => {
+    // La clave está en español, así que no la cubrían `to`/`from`: sin esto el
+    // número completo salía en claro cada vez que Meta reportaba una entrega
+    // fallida.
+    const parsed = loguearYCapturar({
+      destinatario: "whatsapp:+573184935933",
+      error_code: 131047,
+    });
+
+    expect(parsed.destinatario).toBe("[REDACTED]");
+    expect(parsed.error_code).toBe(131047);
   });
 });
 

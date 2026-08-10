@@ -227,7 +227,56 @@ export async function saveConnection(input: SaveConnectionInput): Promise<string
     ],
   );
   invalidateConnectionsCache();
+  // Un canal sin primary deja `sendToPrimary` lanzando y con él todas las
+  // notificaciones a administradores. Pasa de verdad en un despliegue solo-Meta:
+  // `ensureConnectionsFromEnv` corta antes de llegar a `asegurarPrimary` cuando
+  // no hay credenciales de Twilio en el entorno, y la fila nace `is_primary
+  // false`. Acá cubre todos los caminos de alta, no solo el de la semilla.
+  await asegurarPrimary(input.channel);
   return result.rows[0]!.id;
+}
+
+/**
+ * Actualización de una conexión **por id**, no por clave de ruteo. Existe
+ * porque el panel deja editar la clave de ruteo misma (el phone number id de
+ * Meta): con `saveConnection` un id nuevo no colisiona con nada, así que
+ * insertaría una segunda conexión y dejaría la vieja activa y con las
+ * credenciales de antes — el admin ve "guardado" y las respuestas siguen
+ * saliendo por el número anterior.
+ *
+ * Devuelve `false` si la clave de ruteo ya pertenece a otra conexión del mismo
+ * proveedor: es un choque legítimo que el panel tiene que explicar, no un error.
+ */
+export async function updateConnection(
+  id: string,
+  input: Omit<SaveConnectionInput, "channel" | "provider">,
+): Promise<boolean> {
+  try {
+    await pool.query(
+      `UPDATE channel_connections SET
+         label = $2,
+         external_id = $3,
+         display_address = $4,
+         credentials_encrypted = $5,
+         updated_at = now()
+       WHERE id = $1`,
+      [
+        id,
+        input.label,
+        input.externalId,
+        input.displayAddress,
+        encryptSecret(JSON.stringify(input.credentials)),
+      ],
+    );
+  } catch (error) {
+    // 23505 = unique_violation sobre (provider, external_id).
+    if ((error as { code?: string }).code === "23505") {
+      return false;
+    }
+    throw error;
+  }
+  invalidateConnectionsCache();
+  return true;
 }
 
 export async function setConnectionActive(id: string, active: boolean): Promise<void> {

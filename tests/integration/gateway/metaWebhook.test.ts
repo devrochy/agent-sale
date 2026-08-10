@@ -108,6 +108,16 @@ describe("GET /webhooks/meta — handshake de verificación", () => {
     });
     expect(response.statusCode).toBe(403);
   });
+
+  it("rechaza un hub.mode que no sea subscribe, aunque el token sea correcto", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/webhooks/meta?hub.mode=unsubscribe&hub.verify_token=${VERIFY_TOKEN}&hub.challenge=1234567890`,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body).not.toContain("1234567890");
+  });
 });
 
 describe("POST /webhooks/meta — mensajes entrantes", () => {

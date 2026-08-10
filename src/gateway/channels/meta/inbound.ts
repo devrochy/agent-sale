@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ConnectionCredentials } from "../../../shared/db/connectionsDirectory.js";
+import { logger } from "../../../shared/observability/logger.js";
 import type {
   DeliveryStatusUpdate,
   InboundAdapter,
@@ -48,13 +49,28 @@ export const metaInboundAdapter: InboundAdapter = {
     if (!payload) {
       return null;
     }
+    const ids = new Set<string>();
     for (const value of metaValues(payload)) {
       const id = value.metadata?.phone_number_id;
       if (id) {
-        return id;
+        ids.add(id);
       }
     }
-    return null;
+    // El contrato devuelve **una** clave de ruteo para todo el request, pero
+    // Meta agrupa por app: un lote puede traer mensajes de dos números del
+    // mismo negocio, y el HMAC pasa igual porque el App Secret es de la app.
+    // Quedarse con el primero mandaría la respuesta por un número al que el
+    // cliente nunca escribió — justo el rechazo por ventana de 24 h que este
+    // adapter trata de evitar. Se rechaza el lote entero: perder mensajes es
+    // malo, contestarlos por el número equivocado es peor.
+    if (ids.size > 1) {
+      logger.warn(
+        { event: "gateway.lote_meta_multiple", routing_keys: ids.size },
+        "Lote de Meta con varios phone_number_id: se rechaza en vez de atribuirlo al primero",
+      );
+      return null;
+    }
+    return ids.values().next().value ?? null;
   },
 
   /**
@@ -98,6 +114,12 @@ export const metaInboundAdapter: InboundAdapter = {
     for (const value of metaValues(payload)) {
       for (const mensaje of value.messages ?? []) {
         if (mensaje.type !== "text" || !mensaje.id || !mensaje.from) {
+          // Sin esto el descarte es invisible: el cliente manda un audio o una
+          // foto, no recibe nada, y no queda una sola línea que lo explique.
+          logger.info(
+            { event: "gateway.mensaje_meta_ignorado", tipo: mensaje.type ?? "desconocido" },
+            "Mensaje de Meta ignorado: el pipeline de entrada solo procesa texto",
+          );
           continue;
         }
         mensajes.push({

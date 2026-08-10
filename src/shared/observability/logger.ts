@@ -60,26 +60,38 @@ interface RequestLoggeable {
  * para instrumentar. Emite JSON a stdout: es lo que un agente de reenvío
  * (Fly.io → Grafana Cloud/Loki) consume, sin transporte propio en el código.
  */
+/**
+ * PII fuera de logs (ver docs/fase-8-observabilidad-seguridad/revision-seguridad.md):
+ * los puntos de log de esta app ya evitan por diseño loguear teléfono
+ * completo o texto literal del mensaje (solo tenant_id/conversation_id
+ * para correlación) — este redact es defensa en profundidad por si
+ * algún campo así se agrega por error a futuro. El historial completo
+ * de la conversación vive en Postgres con RLS, no en logs de terceros.
+ *
+ * Exportada para que el test ejercite esta lista y no una copia suya: una
+ * copia se desincroniza sin que nadie se entere, que es justo como se coló
+ * `destinatario` en claro.
+ */
+export const REDACT_PATHS = [
+  "req.body",
+  "customer_phone",
+  "*.customer_phone",
+  "body",
+  "*.body",
+  "to",
+  "*.to",
+  "from",
+  "*.from",
+  // `delivery.rechazado` (webhookHandler.ts) reporta a quién no le llegó el
+  // mensaje. La clave está en español, así que no la cubrían `to`/`from`.
+  "destinatario",
+  "*.destinatario",
+];
+
 export const logger = pino({
   level: env.logLevel,
-  // PII fuera de logs (ver docs/fase-8-observabilidad-seguridad/revision-seguridad.md):
-  // los puntos de log de esta app ya evitan por diseño loguear teléfono
-  // completo o texto literal del mensaje (solo tenant_id/conversation_id
-  // para correlación) — este redact es defensa en profundidad por si
-  // algún campo así se agrega por error a futuro. El historial completo
-  // de la conversación vive en Postgres con RLS, no en logs de terceros.
   redact: {
-    paths: [
-      "req.body",
-      "customer_phone",
-      "*.customer_phone",
-      "body",
-      "*.body",
-      "to",
-      "*.to",
-      "from",
-      "*.from",
-    ],
+    paths: REDACT_PATHS,
     censor: "[REDACTED]",
   },
   // El access log de Fastify (que usa esta misma instancia vía

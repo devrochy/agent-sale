@@ -18,6 +18,7 @@ import {
   getConnection,
   listConnections,
   saveConnection,
+  updateConnection,
   setConnectionActive,
   setPrimaryConnection,
   type Channel,
@@ -3859,7 +3860,7 @@ function credentialFieldsHtml(connection: ConnectionSummary): string {
         <div class="field">
           <label for="verify-${id}">Verify Token</label>
           <input type="password" id="verify-${id}" name="verifyToken" autocomplete="off">
-          <p class="hint">El que pusiste en la app de Meta al registrar el webhook.</p>
+          <p class="hint">El que pusiste en la app de Meta al registrar el webhook. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
         </div>
       </div>`;
   }
@@ -3975,7 +3976,7 @@ function nuevaConexionMetaHtml(): string {
             <div class="field">
               <label for="nueva-verify">Verify Token</label>
               <input type="password" id="nueva-verify" name="verifyToken" autocomplete="off" required>
-              <p class="hint">Inventalo vos y usá el mismo en la app de Meta.</p>
+              <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
             </div>
           </div>
           <div class="formfoot">
@@ -4109,9 +4110,10 @@ export async function guardarCredencialesConexion(
     };
   }
 
-  await saveConnection({
-    channel: existente.channel,
-    provider: existente.provider,
+  // Por id, no por clave de ruteo: el admin puede estar cambiando la clave
+  // misma (el phone number id de Meta), y un upsert insertaría una conexión
+  // nueva dejando la vieja activa (ver updateConnection).
+  const actualizada = await updateConnection(connectionId, {
     label: existente.label,
     // La clave de ruteo la reporta el proveedor cuando puede, para que el
     // admin no la tipee (un valor mal escrito daría una conexión que guarda
@@ -4122,6 +4124,12 @@ export async function guardarCredencialesConexion(
     displayAddress: verificadas.displayAddress ?? existente.displayAddress,
     credentials,
   });
+  if (!actualizada) {
+    return {
+      ok: false,
+      error: "Ya existe otra conexión de este proveedor con esa clave de ruteo.",
+    };
+  }
   return { ok: true };
 }
 

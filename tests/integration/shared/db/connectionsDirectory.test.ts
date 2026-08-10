@@ -10,6 +10,7 @@ import {
   saveConnection,
   setConnectionActive,
   setPrimaryConnection,
+  updateConnection,
 } from "../../../../src/shared/db/connectionsDirectory.js";
 import { pool as appPool } from "../../../../src/shared/db/pool.js";
 
@@ -25,6 +26,9 @@ const EXTERNAL_IDS = [
   "whatsapp:+570000000001",
   "whatsapp:+570000000002",
   "test-meta-phone-id-0001",
+  "test-meta-phone-id-0002",
+  "test-meta-phone-id-0003",
+  "test-ig-account-0001",
 ];
 
 async function limpiar(): Promise<void> {
@@ -284,5 +288,86 @@ describe("connectionsDirectory", () => {
     );
 
     expect(despuesDeLaSegunda.rows[0]!.count).toBe(despuesDeLaPrimera.rows[0]!.count);
+  });
+
+  it("cambiar la clave de ruteo actualiza la conexión en vez de crear otra", async () => {
+    // El caso real: el admin migra a otro número de Meta y edita el Phone
+    // Number ID. Con un upsert por (provider, external_id) la clave nueva no
+    // choca con nada, así que insertaría una segunda conexión y dejaría la
+    // vieja activa con las credenciales de antes — las respuestas seguirían
+    // saliendo por el número anterior.
+    const id = await saveConnection({
+      channel: "whatsapp",
+      provider: "meta",
+      label: "WhatsApp · Meta",
+      externalId: "test-meta-phone-id-0002",
+      displayAddress: "+57 300 000 0002",
+      credentials: { phoneNumberId: "test-meta-phone-id-0002", accessToken: "token-viejo" },
+    });
+
+    const actualizada = await updateConnection(id, {
+      label: "WhatsApp · Meta",
+      externalId: "test-meta-phone-id-0003",
+      displayAddress: "+57 300 000 0003",
+      credentials: { phoneNumberId: "test-meta-phone-id-0003", accessToken: "token-nuevo" },
+    });
+
+    expect(actualizada).toBe(true);
+    // La misma fila, con la clave nueva: no quedó una huérfana con la vieja.
+    const resuelta = await getConnection(id);
+    expect(resuelta?.externalId).toBe("test-meta-phone-id-0003");
+    expect(resuelta?.credentials.accessToken).toBe("token-nuevo");
+    expect(await findConnectionByExternalId("meta", "test-meta-phone-id-0002")).toBeNull();
+  });
+
+  it("rechaza mover la clave de ruteo a una que ya tiene otra conexión del proveedor", async () => {
+    const ocupante = await saveConnection({
+      channel: "whatsapp",
+      provider: "meta",
+      label: "Meta A",
+      externalId: "test-meta-phone-id-0002",
+      displayAddress: null,
+      credentials: { phoneNumberId: "test-meta-phone-id-0002" },
+    });
+    const otra = await saveConnection({
+      channel: "whatsapp",
+      provider: "meta",
+      label: "Meta B",
+      externalId: "test-meta-phone-id-0003",
+      displayAddress: null,
+      credentials: { phoneNumberId: "test-meta-phone-id-0003" },
+    });
+
+    const resultado = await updateConnection(otra, {
+      label: "Meta B",
+      externalId: "test-meta-phone-id-0002",
+      displayAddress: null,
+      credentials: { phoneNumberId: "test-meta-phone-id-0002" },
+    });
+
+    // Choque legítimo, no excepción: el panel tiene que poder explicarlo.
+    expect(resultado).toBe(false);
+    expect((await getConnection(otra))?.externalId).toBe("test-meta-phone-id-0003");
+    expect((await getConnection(ocupante))?.externalId).toBe("test-meta-phone-id-0002");
+  });
+
+  it("la primera conexión de un canal queda como primary aunque nadie la marque", async () => {
+    // Un despliegue solo-Meta no pasa nunca por ensureConnectionsFromEnv (corta
+    // sin credenciales de Twilio en el entorno) y la fila nace is_primary=false.
+    // Sin primary, sendToPrimary lanza y con él todas las notificaciones a
+    // administradores. Se usa 'instagram' porque no tiene conexiones en ningún
+    // entorno: en 'whatsapp' ya suele haber una primary y no probaría nada.
+    expect(await getPrimaryConnection("instagram")).toBeNull();
+
+    const id = await saveConnection({
+      channel: "instagram",
+      provider: "meta",
+      label: "Instagram · Meta",
+      externalId: "test-ig-account-0001",
+      displayAddress: "@formotos",
+      credentials: { accessToken: "token" },
+    });
+
+    expect((await getPrimaryConnection("instagram"))?.id).toBe(id);
   });
 });

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type {
   ConnectionCredentials,
   ResolvedConnection,
@@ -40,6 +41,15 @@ async function graphRequest<T>(
     throw new Error(`${contexto}: ${detalle}${codigo}`);
   }
   return body;
+}
+
+/**
+ * `appsecret_proof`: HMAC-SHA256 del access token con el App Secret como
+ * clave. Es el único modo de comprobar el secret sin esperar a que llegue un
+ * webhook — Meta lo valida cuando viene y rechaza la llamada si no cuadra.
+ */
+function appSecretProof(accessToken: string, appSecret: string): string {
+  return createHmac("sha256", appSecret).update(accessToken).digest("hex");
 }
 
 function requireToken(credentials: ConnectionCredentials): string {
@@ -114,9 +124,17 @@ export const metaOutboundAdapter: WebhookOutboundAdapter = {
   },
 
   /**
-   * Lee el propio número: valida el token y el phone number id juntos, sin
-   * costo y sin mandarle un mensaje a nadie. Mismo criterio que el adapter de
-   * Twilio.
+   * Lee el propio número: valida el token, el phone number id y el App Secret
+   * juntos, sin costo y sin mandarle un mensaje a nadie.
+   *
+   * El App Secret se valida mandando `appsecret_proof` (HMAC-SHA256 del access
+   * token con el secret como clave): si no cuadra, Meta rechaza la llamada.
+   * Sin esto un secret mal pegado se guardaba como válido y el síntoma
+   * aparecía después y en otro lado — cada webhook entrante fallando la firma,
+   * 403, y Meta desactivando la suscripción por reintentos.
+   *
+   * El verify token **no** se puede validar acá: lo elegimos nosotros y solo
+   * Meta lo comprueba, al registrar el webhook. El panel no debe sugerir que sí.
    *
    * A diferencia de Twilio, acá **sí** se puede reportar la dirección: Meta
    * devuelve el número legible, que es distinto del phone_number_id. Es
@@ -130,8 +148,13 @@ export const metaOutboundAdapter: WebhookOutboundAdapter = {
       throw new Error("Falta el Phone Number ID de la conexión de Meta");
     }
 
+    const params = new URLSearchParams({ fields: "display_phone_number,verified_name" });
+    if (credentials.appSecret) {
+      params.set("appsecret_proof", appSecretProof(token, credentials.appSecret));
+    }
+
     const body = await graphRequest<PhoneNumberResponse>(
-      `${GRAPH_API_BASE}/${phoneNumberId}?fields=display_phone_number,verified_name`,
+      `${GRAPH_API_BASE}/${phoneNumberId}?${params}`,
       { headers: { Authorization: `Bearer ${token}` } },
       "Meta rechazó las credenciales",
     );

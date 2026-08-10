@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { metaOutboundAdapter } from "../../../../../src/gateway/channels/meta/outbound.js";
 
@@ -150,5 +151,45 @@ describe("metaOutboundAdapter.verifyCredentials", () => {
       metaOutboundAdapter.verifyCredentials({ accessToken: "token" }),
     ).rejects.toThrow(/Phone Number ID/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("manda appsecret_proof para que Meta valide también el App Secret", async () => {
+    // Sin esto un App Secret mal pegado se guardaba como válido y el síntoma
+    // aparecía después: cada webhook entrante fallando la firma.
+    fetchMock.mockResolvedValue(respuesta({ display_phone_number: "+57 300 123 4567" }));
+
+    await metaOutboundAdapter.verifyCredentials({
+      phoneNumberId: "123456789012345",
+      accessToken: "token",
+      appSecret: "el-secreto",
+    });
+
+    const esperado = createHmac("sha256", "el-secreto").update("token").digest("hex");
+    expect(fetchMock.mock.calls[0]![0]).toContain(`appsecret_proof=${esperado}`);
+  });
+
+  it("no manda appsecret_proof si la conexión todavía no tiene App Secret", async () => {
+    fetchMock.mockResolvedValue(respuesta({ display_phone_number: "+57 300 123 4567" }));
+
+    await metaOutboundAdapter.verifyCredentials({
+      phoneNumberId: "123456789012345",
+      accessToken: "token",
+    });
+
+    expect(fetchMock.mock.calls[0]![0]).not.toContain("appsecret_proof");
+  });
+
+  it("propaga el rechazo de un App Secret incorrecto", async () => {
+    fetchMock.mockResolvedValue(
+      respuesta({ error: { message: "Invalid appsecret_proof provided", code: 190 } }, 400),
+    );
+
+    await expect(
+      metaOutboundAdapter.verifyCredentials({
+        phoneNumberId: "123456789012345",
+        accessToken: "token",
+        appSecret: "secreto-equivocado",
+      }),
+    ).rejects.toThrow(/appsecret_proof/);
   });
 });

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import fastifyCookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
@@ -866,6 +867,20 @@ export async function buildServer() {
     return reply.status(303).redirect("/admin/promociones?guardado=1");
   });
 
+  /**
+   * Comparación de tokens en tiempo constante. `timingSafeEqual` exige buffers
+   * del mismo largo, y la diferencia de largo por sí sola no es secreto acá:
+   * el verify token lo elige quien configura la conexión.
+   */
+  function tokensIguales(esperado: string | undefined, recibido: string): boolean {
+    if (!esperado) {
+      return false;
+    }
+    const a = Buffer.from(esperado, "utf8");
+    const b = Buffer.from(recibido, "utf8");
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
   // Webhooks entrantes, en un plugin encapsulado. El encapsulamiento no es
   // decorativo: los adapters de Meta (Etapa B) necesitan los **bytes crudos**
   // del body para su HMAC-SHA256, y Fastify los descarta al parsear. Declarar
@@ -923,23 +938,33 @@ export async function buildServer() {
      * configurada — son pocas, y el token es precisamente lo que prueba que
      * quien pregunta es quien configuró alguna de ellas.
      */
-    webhooks.get("/webhooks/meta", async (request, reply) => {
-      const query = request.query as Record<string, string | undefined>;
-      const token = query["hub.verify_token"];
-      const challenge = query["hub.challenge"];
+    webhooks.get(
+      "/webhooks/meta",
+      // Mismo límite que el POST: es un endpoint sin autenticar cuyo único
+      // secreto es el verify token, así que no conviene dejarlo con el global.
+      { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+      async (request, reply) => {
+        const query = request.query as Record<string, string | undefined>;
+        const token = query["hub.verify_token"];
+        const challenge = query["hub.challenge"];
 
-      const conexiones = await listConnectionsWithCredentials("meta");
-      const coincide = token
-        ? conexiones.some((c) => c.credentials.verifyToken === token)
-        : false;
+        const conexiones = await listConnectionsWithCredentials("meta");
+        // Comparación de tiempo constante, igual que la firma del POST: con
+        // `===` el tiempo de fallo filtra cuánto del token acertó quien prueba,
+        // y a este endpoint se llega sin credenciales.
+        const coincide =
+          token !== undefined && query["hub.mode"] === "subscribe"
+            ? conexiones.some((c) => tokensIguales(c.credentials.verifyToken, token))
+            : false;
 
-      if (!coincide || !challenge) {
-        logger.warn({ event: "gateway.handshake_meta_rechazado" }, "Handshake de Meta rechazado");
-        return reply.status(403).send();
-      }
-      logger.info({ event: "gateway.handshake_meta_ok" }, "Handshake de Meta verificado");
-      return reply.type("text/plain").send(challenge);
-    });
+        if (!coincide || !challenge) {
+          logger.warn({ event: "gateway.handshake_meta_rechazado" }, "Handshake de Meta rechazado");
+          return reply.status(403).send();
+        }
+        logger.info({ event: "gateway.handshake_meta_ok" }, "Handshake de Meta verificado");
+        return reply.type("text/plain").send(challenge);
+      },
+    );
 
     webhooks.post(
       "/webhooks/meta",
