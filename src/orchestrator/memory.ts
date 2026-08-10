@@ -57,13 +57,30 @@ export async function resolveConversation(
     const customerId = customer.rows[0]!.id;
     const customerBotPaused = customer.rows[0]!.bot_paused;
 
-    const existing = await client.query<{ id: string; state: Record<string, unknown>; bot_paused: boolean }>(
-      `SELECT id, state, bot_paused FROM conversations
+    const existing = await client.query<{
+      id: string;
+      state: Record<string, unknown>;
+      bot_paused: boolean;
+      connection_id: string | null;
+    }>(
+      `SELECT id, state, bot_paused, connection_id FROM conversations
        WHERE customer_id = $1 AND status = 'open'
        ORDER BY started_at DESC LIMIT 1`,
       [customerId],
     );
     if (existing.rows[0]) {
+      // La conversación sigue al último número usado (Fase 19, Etapa B): si el
+      // cliente venía escribiendo al número de Twilio y ahora escribe al de
+      // Meta, es el mismo hilo —conserva carrito, historial y estado de
+      // pedido— pero la respuesta tiene que salir por donde escribió recién.
+      // Sin este UPDATE le contestaríamos desde un número que no contactó, lo
+      // que abre una ventana de 24 h nueva y el proveedor la rechaza.
+      if (origin?.connectionId && origin.connectionId !== existing.rows[0].connection_id) {
+        await client.query(
+          `UPDATE conversations SET connection_id = $1, channel = COALESCE($2, channel) WHERE id = $3`,
+          [origin.connectionId, origin.channel ?? null, existing.rows[0].id],
+        );
+      }
       return {
         conversationId: existing.rows[0].id,
         customerId,

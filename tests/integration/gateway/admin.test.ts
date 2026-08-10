@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 // tests/unit/gateway/channels/twilio/outbound.test.ts.
 const verifyCredentials = vi.fn();
 vi.mock("../../../src/gateway/channels/registry.js", () => ({
-  outboundAdapterFor: () => ({ provider: "twilio", deliveryModel: "poll", verifyCredentials }),
+  outboundAdapterFor: (provider: string) => ({ provider, deliveryModel: "poll", verifyCredentials }),
   inboundAdapterFor: () => {
     throw new Error("no usado en este test");
   },
@@ -1060,6 +1060,83 @@ describe("panel admin", () => {
         [conexionId],
       );
       expect(despues.rows[0]!.external_id).toBe(antes.rows[0]!.external_id);
+    });
+
+    it("da de alta una conexión de Meta validando contra el proveedor", async () => {
+      // Meta sí reporta la clave de ruteo y la dirección legible, a diferencia
+      // de Twilio: ninguna de las dos se toma de lo que tipeó el admin.
+      verifyCredentials.mockResolvedValueOnce({
+        externalId: "111222333444555",
+        displayAddress: "+57 300 555 6666",
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          phoneNumberId: "111222333444555",
+          appSecret: "secreto-meta",
+          accessToken: "token-meta",
+          verifyToken: "verify-meta",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{ provider: string; external_id: string; display_address: string }>(
+        `SELECT provider, external_id, display_address FROM channel_connections WHERE external_id = $1`,
+        ["111222333444555"],
+      );
+      expect(fila.rows[0]).toMatchObject({
+        provider: "meta",
+        external_id: "111222333444555",
+        display_address: "+57 300 555 6666",
+      });
+
+      await adminPool.query(`DELETE FROM channel_connections WHERE external_id = $1`, [
+        "111222333444555",
+      ]);
+      invalidateConnectionsCache();
+    });
+
+    it("no da de alta una conexión de Meta con credenciales que el proveedor rechaza", async () => {
+      verifyCredentials.mockRejectedValueOnce(new Error("Error validating access token"));
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          phoneNumberId: "000111222333444",
+          appSecret: "x",
+          accessToken: "malo",
+          verifyToken: "x",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+
+      const fila = await adminPool.query(
+        `SELECT 1 FROM channel_connections WHERE external_id = $1`,
+        ["000111222333444"],
+      );
+      expect(fila.rowCount).toBe(0);
+    });
+
+    it("rechaza el alta si falta un campo, sin llamar al proveedor", async () => {
+      verifyCredentials.mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ phoneNumberId: "123", appSecret: "x" }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(verifyCredentials).not.toHaveBeenCalled();
     });
 
     it("un admin que no es master no puede entrar a Conexiones", async () => {

@@ -18,8 +18,11 @@ import {
   getConnection,
   listConnections,
   saveConnection,
+  updateConnection,
   setConnectionActive,
   setPrimaryConnection,
+  type Channel,
+  type ConnectionCredentials,
   type ConnectionSummary,
   type Provider,
 } from "../shared/db/connectionsDirectory.js";
@@ -2465,9 +2468,24 @@ interface ConversacionListRow {
   status: string;
   customer_name: string | null;
   phone_number: string;
+  channel: Channel;
+  /** `null` en conversaciones anteriores al backfill o con la conexión retirada. */
+  provider: Provider | null;
   ultimo_mensaje: string;
   ultimo_at: string;
   escalada: boolean;
+}
+
+/**
+ * Canal de origen de la conversación (Fase 19, Etapa B) — cierra el punto 3.6
+ * de PROPUESTA_V2.md, que dependía de que existiera más de un canal para tener
+ * sentido. Se muestra el proveedor además del canal porque WhatsApp puede
+ * entrar por Twilio o por Meta, y saber por cuál importa para diagnosticar.
+ */
+function conversacionCanalChip(channel: Channel, provider: Provider | null): string {
+  const canal = channel === "whatsapp" ? "WhatsApp" : channel;
+  const etiqueta = provider ? `${canal} · ${PROVIDER_LABEL[provider]}` : canal;
+  return `<span class="chip chip--muted">${escapeHtml(etiqueta)}</span>`;
 }
 
 interface ConversacionDetalleRow {
@@ -2512,10 +2530,12 @@ export async function renderConversacionesPage(
   const { lista, detalle, mensajes } = await withTransaction(async (client) => {
     const listaResult = await client.query<ConversacionListRow>(
       `SELECT conv.id, conv.status, c.name AS customer_name, c.phone_number,
+              conv.channel, cx.provider,
               m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
               exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada
        FROM conversations conv
        JOIN customers c ON c.id = conv.customer_id
+       LEFT JOIN channel_connections cx ON cx.id = conv.connection_id
        JOIN LATERAL (
          SELECT content, created_at FROM messages
          WHERE conversation_id = conv.id
@@ -2577,7 +2597,7 @@ export async function renderConversacionesPage(
             <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
           </div>
           <span class="convitem__msg">${escapeHtml(truncate(row.ultimo_mensaje, 64))}</span>
-          <div class="convitem__chips">${conversacionEstadoChip(row.status, row.escalada)}</div>
+          <div class="convitem__chips">${conversacionEstadoChip(row.status, row.escalada)}${conversacionCanalChip(row.channel, row.provider)}</div>
         </a>
       </li>`;
     })
@@ -3804,9 +3824,62 @@ const PROVIDER_LABEL: Record<Provider, string> = {
   meta: "Meta Cloud API",
 };
 
+/**
+ * Path del webhook por proveedor. Twilio conserva `/webhooks/whatsapp` para
+ * siempre: ese path exacto entra en su HMAC, así que cambiarlo tumbaría todo
+ * su tráfico entrante.
+ */
+const WEBHOOK_PATH: Record<Provider, string> = {
+  twilio: "/webhooks/whatsapp",
+  meta: "/webhooks/meta",
+};
+
+function webhookUrlFor(provider: Provider): string {
+  return `${new URL(env.publicWebhookUrl).origin}${WEBHOOK_PATH[provider]}`;
+}
+
+/** Campos de credenciales por proveedor — cada uno pide cosas distintas. */
+function credentialFieldsHtml(connection: ConnectionSummary): string {
+  const id = escapeHtml(connection.id);
+  if (connection.provider === "meta") {
+    return `
+      <div class="fieldgrid">
+        <div class="field">
+          <label for="pnid-${id}">Phone Number ID</label>
+          <input type="text" id="pnid-${id}" name="phoneNumberId" placeholder="123456789012345" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="appsecret-${id}">App Secret</label>
+          <input type="password" id="appsecret-${id}" name="appSecret" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="token-${id}">Access Token</label>
+          <input type="password" id="token-${id}" name="accessToken" autocomplete="off">
+          <p class="hint">En modo desarrollo, Meta lo renueva cada 24 h — hay que volver a pegarlo cuando caduque.</p>
+        </div>
+        <div class="field">
+          <label for="verify-${id}">Verify Token</label>
+          <input type="password" id="verify-${id}" name="verifyToken" autocomplete="off">
+          <p class="hint">El que pusiste en la app de Meta al registrar el webhook. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="fieldgrid">
+      <div class="field">
+        <label for="sid-${id}">Account SID</label>
+        <input type="text" id="sid-${id}" name="accountSid" placeholder="AC…" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="token-${id}">Auth Token</label>
+        <input type="password" id="token-${id}" name="authToken" autocomplete="off">
+      </div>
+    </div>`;
+}
+
 /** Una tarjeta por conexión configurada. */
 function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): string {
-  const webhookUrl = env.publicWebhookUrl;
+  const webhookUrl = webhookUrlFor(connection.provider);
   const titulo = `${connection.channel === "whatsapp" ? "WhatsApp" : connection.channel} · ${PROVIDER_LABEL[connection.provider]}`;
 
   // Desactivar la última conexión activa deja al bot mudo: sin ninguna
@@ -3847,22 +3920,71 @@ function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): st
         </div>
       </div>
       <form method="POST" action="/admin/conexiones/${connection.id}/credenciales">
-        <div class="fieldgrid">
-          <div class="field">
-            <label for="sid-${escapeHtml(connection.id)}">Account SID</label>
-            <input type="text" id="sid-${escapeHtml(connection.id)}" name="accountSid" placeholder="AC…" autocomplete="off">
-          </div>
-          <div class="field">
-            <label for="token-${escapeHtml(connection.id)}">Auth Token</label>
-            <input type="password" id="token-${escapeHtml(connection.id)}" name="authToken" autocomplete="off">
-            <p class="hint">Ya hay credenciales guardadas. Dejar los campos vacíos las conserva.</p>
-          </div>
-        </div>
+        ${credentialFieldsHtml(connection)}
+        <p class="hint">Ya hay credenciales guardadas. Dejar un campo vacío conserva el valor actual.</p>
         <div class="formfoot">
           <button type="submit" class="btn btn--primary">Probar y guardar</button>
         </div>
       </form>
     </div>
+  `;
+}
+
+/**
+ * Alta de una conexión de WhatsApp por Meta Cloud API (Fase 19, Etapa B).
+ *
+ * Se muestra solo mientras no exista ninguna: el panel no lista canales sin
+ * integración real detrás (criterio original de la página), pero sí ofrece
+ * conectar el proveedor que ya tiene adapter. Instagram y Messenger aparecerán
+ * cuando tengan el suyo (Etapa C), no antes como carteles de "próximamente".
+ */
+function nuevaConexionMetaHtml(): string {
+  const webhookUrl = webhookUrlFor("meta");
+  return `
+    <section class="block block--narrow" aria-label="Conectar WhatsApp por Meta">
+      <div class="blockhead">
+        <h2>Conectar WhatsApp por Meta</h2>
+        <span class="hint">Cloud API</span>
+      </div>
+      <div class="panel connection">
+        <p class="hint">
+          Alternativa a Twilio, directo con Meta y sin intermediario. Podés tener
+          las dos activas a la vez: cada conversación responde por donde entró.
+        </p>
+        <div class="connection__webhook">
+          <label for="webhook-url-meta-nueva">URL de webhook (regístrala en tu app de Meta)</label>
+          <div class="copyrow">
+            <code id="webhook-url-meta-nueva" class="mono">${escapeHtml(webhookUrl)}</code>
+            <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
+          </div>
+        </div>
+        <form method="POST" action="/admin/conexiones/meta">
+          <div class="fieldgrid">
+            <div class="field">
+              <label for="nueva-pnid">Phone Number ID</label>
+              <input type="text" id="nueva-pnid" name="phoneNumberId" placeholder="123456789012345" autocomplete="off" required>
+            </div>
+            <div class="field">
+              <label for="nueva-appsecret">App Secret</label>
+              <input type="password" id="nueva-appsecret" name="appSecret" autocomplete="off" required>
+            </div>
+            <div class="field">
+              <label for="nueva-token">Access Token</label>
+              <input type="password" id="nueva-token" name="accessToken" autocomplete="off" required>
+              <p class="hint">En modo desarrollo Meta lo renueva cada 24 h.</p>
+            </div>
+            <div class="field">
+              <label for="nueva-verify">Verify Token</label>
+              <input type="password" id="nueva-verify" name="verifyToken" autocomplete="off" required>
+              <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
+            </div>
+          </div>
+          <div class="formfoot">
+            <button type="submit" class="btn btn--primary">Probar y conectar</button>
+          </div>
+        </form>
+      </div>
+    </section>
   `;
 }
 
@@ -3896,6 +4018,7 @@ export async function renderConexionesPage(
       ? `<div class="banner banner--ok">Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.</div>`
       : "";
 
+  const yaHayMeta = connections.some((c) => c.provider === "meta");
   const tarjetas = connections.length
     ? connections.map((c) => connectionCardHtml(c, esUnica && c.active)).join("")
     : emptyState(
@@ -3912,6 +4035,7 @@ export async function renderConexionesPage(
     </div>
     ${banner}
     ${tarjetas}
+    ${yaHayMeta ? "" : nuevaConexionMetaHtml()}
   `;
 
   return layout("Conexiones", tenant, body, "conexiones", admin);
@@ -3926,20 +4050,42 @@ export async function renderConexionesPage(
  * Los campos vacíos conservan lo que ya estaba guardado, así el admin puede
  * corregir solo el token sin volver a tipear el SID.
  */
+/**
+ * Campos de credencial que acepta el panel, por proveedor. Solo estos se leen
+ * del formulario: una lista blanca evita que un campo inesperado del body
+ * termine guardado dentro del blob cifrado.
+ */
+const CREDENTIAL_FIELDS: Record<Provider, string[]> = {
+  twilio: ["accountSid", "authToken"],
+  meta: ["phoneNumberId", "appSecret", "accessToken", "verifyToken"],
+};
+
+/** Los campos vacíos conservan lo ya guardado; los que traen valor lo pisan. */
+function mergeCredentials(
+  provider: Provider,
+  actuales: ConnectionCredentials,
+  input: Record<string, string | undefined>,
+): ConnectionCredentials {
+  const merged: ConnectionCredentials = { ...actuales };
+  for (const campo of CREDENTIAL_FIELDS[provider]) {
+    const valor = input[campo]?.trim();
+    if (valor) {
+      merged[campo] = valor;
+    }
+  }
+  return merged;
+}
+
 export async function guardarCredencialesConexion(
   connectionId: string,
-  input: { accountSid: string; authToken: string },
+  input: Record<string, string | undefined>,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const existente = await getConnection(connectionId);
   if (!existente) {
     return { ok: false, error: "La conexión no existe." };
   }
 
-  const credentials = {
-    ...existente.credentials,
-    ...(input.accountSid.trim() ? { accountSid: input.accountSid.trim() } : {}),
-    ...(input.authToken.trim() ? { authToken: input.authToken.trim() } : {}),
-  };
+  const credentials = mergeCredentials(existente.provider, existente.credentials, input);
 
   let verificadas;
   try {
@@ -3951,19 +4097,23 @@ export async function guardarCredencialesConexion(
     logger.warn(
       {
         connection_id: connectionId,
+        provider: existente.provider,
         motivo: error instanceof Error ? error.message : String(error),
       },
       "Credenciales de conexión rechazadas por el proveedor",
     );
     return {
       ok: false,
-      error: "El proveedor rechazó las credenciales. Revisá el Account SID y el Auth Token.",
+      error: `${PROVIDER_LABEL[existente.provider]} rechazó las credenciales: ${
+        error instanceof Error ? error.message : "error desconocido"
+      }`,
     };
   }
 
-  await saveConnection({
-    channel: existente.channel,
-    provider: existente.provider,
+  // Por id, no por clave de ruteo: el admin puede estar cambiando la clave
+  // misma (el phone number id de Meta), y un upsert insertaría una conexión
+  // nueva dejando la vieja activa (ver updateConnection).
+  const actualizada = await updateConnection(connectionId, {
     label: existente.label,
     // La clave de ruteo la reporta el proveedor cuando puede, para que el
     // admin no la tipee (un valor mal escrito daría una conexión que guarda
@@ -3974,6 +4124,12 @@ export async function guardarCredencialesConexion(
     displayAddress: verificadas.displayAddress ?? existente.displayAddress,
     credentials,
   });
+  if (!actualizada) {
+    return {
+      ok: false,
+      error: "Ya existe otra conexión de este proveedor con esa clave de ruteo.",
+    };
+  }
   return { ok: true };
 }
 
@@ -6620,4 +6776,53 @@ export async function setConexionActiva(connectionId: string, active: boolean): 
 /** Marcar una conexión como la que recibe/envía lo que no tiene conversación (Fase 19). */
 export async function marcarConexionPrimary(connectionId: string): Promise<void> {
   await setPrimaryConnection(connectionId);
+}
+
+/**
+ * Alta de una conexión de Meta desde el panel (Fase 19, Etapa B). Igual que al
+ * editar credenciales, valida contra el proveedor **antes** de persistir: una
+ * conexión guardada con credenciales malas rompe el canal y el síntoma aparece
+ * después, en un mensaje que no llega.
+ *
+ * A diferencia de Twilio, acá el proveedor sí reporta la clave de ruteo (el
+ * phone number id) y la dirección legible, así que ninguna de las dos se toma
+ * de lo que tipeó el admin sin confirmar.
+ */
+export async function crearConexionMeta(
+  input: Record<string, string | undefined>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const credentials: ConnectionCredentials = {};
+  for (const campo of CREDENTIAL_FIELDS.meta) {
+    const valor = input[campo]?.trim();
+    if (!valor) {
+      return { ok: false, error: `Falta ${campo}.` };
+    }
+    credentials[campo] = valor;
+  }
+
+  let verificadas;
+  try {
+    verificadas = await outboundAdapterFor("meta").verifyCredentials(credentials);
+  } catch (error) {
+    logger.warn(
+      { provider: "meta", motivo: error instanceof Error ? error.message : String(error) },
+      "Alta de conexión de Meta rechazada por el proveedor",
+    );
+    return {
+      ok: false,
+      error: `Meta rechazó las credenciales: ${
+        error instanceof Error ? error.message : "error desconocido"
+      }`,
+    };
+  }
+
+  await saveConnection({
+    channel: "whatsapp",
+    provider: "meta",
+    label: "WhatsApp · Meta",
+    externalId: verificadas.externalId ?? credentials.phoneNumberId!,
+    displayAddress: verificadas.displayAddress,
+    credentials,
+  });
+  return { ok: true };
 }

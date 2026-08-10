@@ -1,6 +1,6 @@
 # Fase 19 — Integración Multicanal (Instagram, Facebook/Meta)
 
-Estado: **Etapa A completa** (v2) — base de gateway multicanal y panel de conexiones implementados y mergeados. Etapas B (WhatsApp por Meta Cloud API) y C (Instagram/Messenger) pendientes; ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
+Estado: **Etapas A y B completas** (v2) — gateway multicanal, panel de conexiones y WhatsApp por Meta Cloud API implementados. Etapa C (Instagram/Messenger) pendiente; ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-19--integración-multicanal-instagram-facebookmeta) · [PROPUESTA_V2.md §3.11](../../PROPUESTA_V2.md) · [Fase 3 — Integración WhatsApp](../fase-3-whatsapp-gateway/README.md) · [plan-escalado-multi-cliente.md](../plan-escalado-multi-cliente.md)
 
@@ -14,6 +14,7 @@ Extiende el gateway de mensajería (hoy exclusivamente WhatsApp/Twilio) con un c
 ## Contenido de esta fase
 
 - [adrs/ADR-029-arquitectura-gateway-multicanal.md](./adrs/ADR-029-arquitectura-gateway-multicanal.md) — contrato de adapter genérico, dónde vive `conversations.channel`, y cómo se resuelve la ventana de mensajería de Meta Messenger frente a la de WhatsApp (ADR-019).
+- [adrs/ADR-033-meta-cloud-api-segundo-proveedor-whatsapp.md](./adrs/ADR-033-meta-cloud-api-segundo-proveedor-whatsapp.md) — Etapa B: normalización de direcciones de Meta, un hilo por cliente, y estados de entrega por webhook.
 
 ## Dependencias
 
@@ -31,7 +32,14 @@ De la fase completa (las tres etapas):
 
 - [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C.
 - [x] El agente responde por el mismo canal **y la misma conexión** que recibió el mensaje. Implementado en la Etapa A: `sendToConversation` resuelve el adapter desde `conversations.connection_id`, y los 8 envíos al cliente lo usan. Queda ejercitado con un solo canal hasta que exista un segundo proveedor (Etapa B).
-- [ ] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo rigor que Twilio (Fase 3). — Etapa B. El contrato de dos pasos (`identifyConnection`/`verifyRequest`) y el parser de cuerpo crudo ya están listos para recibirlo.
+- [x] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo rigor que Twilio (Fase 3). Etapa B: HMAC-SHA256 sobre el cuerpo crudo con comparación de tiempo constante, más el handshake `GET`, con tests unitarios y de integración.
+
+De la Etapa B, cerrada:
+
+- [x] WhatsApp opera por Meta Cloud API como segundo proveedor, en paralelo con Twilio.
+- [x] Una conversación responde por la conexión por la que entró, y sigue al último número que usó el cliente.
+- [x] El panel da de alta y edita conexiones de Meta, validando contra el proveedor antes de guardar.
+- [x] La bandeja muestra el canal y el proveedor de origen de cada conversación.
 
 De la Etapa A, cerrada:
 

@@ -222,7 +222,7 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 
 ---
 
-## Fase 19 — Integración Multicanal (Instagram, Facebook/Meta) — 🟡 ETAPA A COMPLETA (mergeada a `develop`, 2026-08-08)
+## Fase 19 — Integración Multicanal (Instagram, Facebook/Meta) — 🟡 ETAPAS A y B COMPLETAS (2026-08-09); falta la C (Instagram/Messenger)
 
 **Objetivo:** Extender el gateway de mensajería (hoy exclusivamente WhatsApp/Twilio, Fase 3) con un contrato de canal genérico que permita operar también sobre Instagram Direct y Facebook Messenger vía la API de Meta, exponiendo el canal de origen a conversaciones/tickets (Fases 18).
 
@@ -241,9 +241,11 @@ Esta fase **no se ejecuta como parte de la Fase 10** de `MASTER_PLAN.md` (prueba
 **Definición de terminado:**
 - [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C.
 - [x] El agente responde correctamente por el mismo canal **y conexión** que recibió el mensaje. Etapa A: `sendToConversation` resuelve el adapter desde `conversations.connection_id`.
-- [ ] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo nivel de rigor que Twilio. — Etapa B; el contrato y el parser de cuerpo crudo ya están.
+- [x] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo nivel de rigor que Twilio. Etapa B.
 
 **Etapa A (completa):** matriz canal × proveedor en `channel_connections` con credenciales cifradas y editables desde `/admin/conexiones`; Twilio migrado al contrato de adapters; webhook que rutea por conexión; primeros tests del envío saliente.
+
+**Etapa B (completa, ver ADR-033):** WhatsApp por Meta Cloud API como segundo proveedor, en paralelo con Twilio. Handshake y firma HMAC-SHA256, callbacks de estado de entrega, alta de conexión desde el panel, y canal de origen en la bandeja. La conversación sigue al último número usado: un cliente, un hilo. Desbloquea la Fase 21.
 
 ---
 

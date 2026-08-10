@@ -24,8 +24,8 @@ Que ningún enlace enviado por el asistente (pago, reseñas) se muestre como URL
 
 **Corregido (2026-08-08, contra la documentación vigente de Twilio y Meta):** el riesgo que esta fase declaraba como dominante era falso para su alcance. Dentro de la ventana de 24h los botones **no requieren aprobación de Meta** — máximo 3, todos del mismo tipo, `QUICK_REPLY`/`URL`. Todo lo que pide esta fase es in-session, porque siempre responde a un mensaje del cliente. La aprobación sigue siendo obligatoria fuera de la ventana de 24h, que es la Fase 12.3, no esta.
 
-- **Bloqueo real:** el sandbox de Twilio no admite content templates propios, y el proyecto opera sobre el número compartido de sandbox. Se resuelve saliendo del sandbox (sender propio) o con Meta Cloud API.
-- **Dependencia de orden:** esta fase se construye sobre el contrato de adapters de la [Fase 19](../fase-19-integracion-multicanal/README.md) (Etapa A, ya implementada). Hacerla antes sobre Twilio Content API habría sido trabajo desechable — ADR-031 ya lo anticipaba al describir el cambio de enlaces como "un cambio de forma de envío (`sendMessage.ts`/adapter de canal, ver Fase 19)".
+- **Bloqueo real, ya resuelto:** el sandbox de Twilio no admite content templates propios. La [Fase 19, Etapa B](../fase-19-integracion-multicanal/README.md) agregó WhatsApp por Meta Cloud API, donde los botones in-session sí se pueden enviar y probar. Esta fase debe construirse sobre ese canal; para Twilio, degradar a texto libre.
+- **Dependencia de orden:** esta fase se construye sobre el contrato de adapters de la [Fase 19](../fase-19-integracion-multicanal/README.md) (Etapas A y B, ya implementadas). Hacerla antes sobre Twilio Content API habría sido trabajo desechable — ADR-031 ya lo anticipaba al describir el cambio de enlaces como "un cambio de forma de envío (`sendMessage.ts`/adapter de canal, ver Fase 19)".
 - Los 3 botones del cierre de pedido caben exactamente en el límite in-session: un cuarto rompería el envío.
 - Si un envío con botones falla, el flujo degrada a texto libre sin bloquear el cierre de pedido.
 

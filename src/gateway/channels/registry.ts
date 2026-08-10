@@ -1,4 +1,6 @@
 import type { Provider } from "../../shared/db/connectionsDirectory.js";
+import { metaInboundAdapter } from "./meta/inbound.js";
+import { metaOutboundAdapter } from "./meta/outbound.js";
 import { twilioInboundAdapter } from "./twilio/inbound.js";
 import { twilioOutboundAdapter } from "./twilio/outbound.js";
 import type { InboundAdapter, OutboundAdapter } from "./types.js";
@@ -16,10 +18,12 @@ import type { InboundAdapter, OutboundAdapter } from "./types.js";
 
 const INBOUND: Partial<Record<Provider, InboundAdapter>> = {
   twilio: twilioInboundAdapter,
+  meta: metaInboundAdapter,
 };
 
 const OUTBOUND: Partial<Record<Provider, OutboundAdapter>> = {
   twilio: twilioOutboundAdapter,
+  meta: metaOutboundAdapter,
 };
 
 export function inboundAdapterFor(provider: Provider): InboundAdapter {

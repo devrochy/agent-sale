@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import fastifyCookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import rateLimit from "@fastify/rate-limit";
@@ -14,6 +15,7 @@ import {
   crearAliado,
   crearCategoria,
   crearColaborador,
+  crearConexionMeta,
   crearPromocion,
   crearProducto,
   desactivarAliado,
@@ -69,6 +71,7 @@ import { login, logout } from "../admin/auth/session.js";
 import { env } from "../config/env.js";
 import { registrarGuia } from "../domains/commerce/registrarGuia.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
+import { listConnectionsWithCredentials } from "../shared/db/connectionsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
@@ -333,13 +336,22 @@ export async function buildServer() {
     return reply.type("text/html").send(html);
   });
 
+  // Antes que la ruta con :connectionId, para que "meta" no se interprete como
+  // un id de conexión.
+  app.post("/admin/conexiones/meta", async (request, reply) => {
+    const result = await crearConexionMeta(request.body as Record<string, string | undefined>);
+    const redirectUrl = result.ok
+      ? "/admin/conexiones?guardado=1"
+      : `/admin/conexiones?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
   app.post("/admin/conexiones/:connectionId/credenciales", async (request, reply) => {
     const { connectionId } = request.params as { connectionId: string };
-    const { accountSid, authToken } = request.body as { accountSid?: string; authToken?: string };
-    const result = await guardarCredencialesConexion(connectionId, {
-      accountSid: accountSid ?? "",
-      authToken: authToken ?? "",
-    });
+    const result = await guardarCredencialesConexion(
+      connectionId,
+      request.body as Record<string, string | undefined>,
+    );
     const redirectUrl = result.ok
       ? "/admin/conexiones?guardado=1"
       : `/admin/conexiones?error=${encodeURIComponent(result.error)}`;
@@ -855,6 +867,20 @@ export async function buildServer() {
     return reply.status(303).redirect("/admin/promociones?guardado=1");
   });
 
+  /**
+   * Comparación de tokens en tiempo constante. `timingSafeEqual` exige buffers
+   * del mismo largo, y la diferencia de largo por sí sola no es secreto acá:
+   * el verify token lo elige quien configura la conexión.
+   */
+  function tokensIguales(esperado: string | undefined, recibido: string): boolean {
+    if (!esperado) {
+      return false;
+    }
+    const a = Buffer.from(esperado, "utf8");
+    const b = Buffer.from(recibido, "utf8");
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
   // Webhooks entrantes, en un plugin encapsulado. El encapsulamiento no es
   // decorativo: los adapters de Meta (Etapa B) necesitan los **bytes crudos**
   // del body para su HMAC-SHA256, y Fastify los descarta al parsear. Declarar
@@ -897,6 +923,60 @@ export async function buildServer() {
           // La URL pública fija, no reconstruida de headers: es exactamente
           // la que entra en el HMAC de Twilio (ver env.publicWebhookUrl).
           url: env.publicWebhookUrl,
+        });
+        return reply.status(result.status).send();
+      },
+    );
+
+    /**
+     * Handshake de verificación de Meta (Fase 19, Etapa B). Meta pega acá con
+     * `GET` al registrar el webhook y espera que le devolvamos el
+     * `hub.challenge` tal cual, en texto plano.
+     *
+     * El handshake no dice a qué conexión corresponde, así que el token se
+     * compara contra el `verifyToken` de cualquier conexión de Meta
+     * configurada — son pocas, y el token es precisamente lo que prueba que
+     * quien pregunta es quien configuró alguna de ellas.
+     */
+    webhooks.get(
+      "/webhooks/meta",
+      // Mismo límite que el POST: es un endpoint sin autenticar cuyo único
+      // secreto es el verify token, así que no conviene dejarlo con el global.
+      { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+      async (request, reply) => {
+        const query = request.query as Record<string, string | undefined>;
+        const token = query["hub.verify_token"];
+        const challenge = query["hub.challenge"];
+
+        const conexiones = await listConnectionsWithCredentials("meta");
+        // Comparación de tiempo constante, igual que la firma del POST: con
+        // `===` el tiempo de fallo filtra cuánto del token acertó quien prueba,
+        // y a este endpoint se llega sin credenciales.
+        const coincide =
+          token !== undefined && query["hub.mode"] === "subscribe"
+            ? conexiones.some((c) => tokensIguales(c.credentials.verifyToken, token))
+            : false;
+
+        if (!coincide || !challenge) {
+          logger.warn({ event: "gateway.handshake_meta_rechazado" }, "Handshake de Meta rechazado");
+          return reply.status(403).send();
+        }
+        logger.info({ event: "gateway.handshake_meta_ok" }, "Handshake de Meta verificado");
+        return reply.type("text/plain").send(challenge);
+      },
+    );
+
+    webhooks.post(
+      "/webhooks/meta",
+      { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+      async (request, reply) => {
+        const result = await handleInboundWebhook("meta", {
+          rawBody: request.rawBody ?? Buffer.alloc(0),
+          params: {},
+          headers: request.headers,
+          // Meta firma sobre el cuerpo crudo, no sobre la URL — este campo no
+          // participa de su verificación, pero el contrato lo pide.
+          url: `${new URL(env.publicWebhookUrl).origin}/webhooks/meta`,
         });
         return reply.status(result.status).send();
       },
