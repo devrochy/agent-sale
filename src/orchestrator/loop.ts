@@ -190,12 +190,12 @@ async function escalateAndReply(
  * que empezar a pasar el objeto de conversación entre funciones.
  */
 export async function appendInbound(
-  customerPhone: string,
+  customerExternalId: string,
   incomingBody: string,
   customerName?: string,
   origin?: InboundOrigin,
 ): Promise<{ conversationId: string; escalatedNow: TurnResult | null }> {
-  const { conversationId, state } = await resolveConversation(customerPhone, customerName, origin);
+  const { conversationId, state } = await resolveConversation(customerExternalId, customerName, origin);
   await appendMessage(conversationId, "inbound", "customer", incomingBody);
 
   if (state.step === "escalado") {
@@ -234,13 +234,13 @@ export async function appendInbound(
  * es el Sid del último mensaje que (re)armó el timer.
  */
 export async function processConversation(
-  customerPhone: string,
+  customerExternalId: string,
   messageSid: string,
   customerName?: string,
   origin?: InboundOrigin,
 ): Promise<TurnResult> {
   const { conversationId, customerId, state } = await resolveConversation(
-    customerPhone,
+    customerExternalId,
     customerName,
     origin,
   );
@@ -559,14 +559,14 @@ export async function processConversation(
  * `processConversation` por separado (ver debounceScheduler.ts).
  */
 export async function runTurn(
-  customerPhone: string,
+  customerExternalId: string,
   incomingBody: string,
   messageSid: string,
   customerName?: string,
 ): Promise<TurnResult> {
-  const { escalatedNow } = await appendInbound(customerPhone, incomingBody, customerName);
+  const { escalatedNow } = await appendInbound(customerExternalId, incomingBody, customerName);
   if (escalatedNow) {
     return escalatedNow;
   }
-  return processConversation(customerPhone, messageSid, customerName);
+  return processConversation(customerExternalId, messageSid, customerName);
 }

@@ -204,7 +204,21 @@ cliente resueltos por conexión, y `/admin/conexiones` configurable.
   conversación **no** pasó a filtrar por conexión (la decisión de producto fue
   "un cliente, una conversación"), y por lo mismo el bug de `findPendingSurvey`
   se disolvió sin necesidad de arreglo. Desbloquea la Fase 21.
-- **Etapa C — Instagram y Messenger.** Refactor de identidad de `customers`.
-  Requiere App Review de Meta para `pages_messaging` /
-  `instagram_manage_messages`; en modo desarrollo solo se puede escribir a
-  admins y testers de la app.
+- **Etapa C1 — identidad de cliente por canal: completa.** Ver
+  [ADR-037](./ADR-037-identidad-de-cliente-por-canal.md). Migración `0054`:
+  `customers.phone_number` → `external_id`, `UNIQUE (channel, external_id)` y
+  `contact_phone`. Es el prerequisito de C2/C3, y de paso corrige la
+  afirmación de esta ADR de que Etapa C era "un refactor de identidad" a secas:
+  también trajo una decisión de producto (hilos separados por canal, datos de
+  gestión compartidos por teléfono).
+- **Etapas C2/C3 — Instagram y Messenger.** Pendientes. Para llegar al público
+  general hace falta App Review de Meta (`pages_messaging` /
+  `instagram_manage_messages`, Advanced Access); en modo desarrollo se puede
+  conversar con admins, developers y testers de la app, que alcanza para
+  implementar y validar. Cuál API usa Instagram depende de si la cuenta
+  profesional está vinculada a una Página de Facebook: vinculada va por
+  Instagram Messaging sobre `graph.facebook.com` (mismo adapter que Messenger);
+  sin vincular va por "Instagram API with Instagram Login" sobre
+  `graph.instagram.com`, que es un adapter distinto. Esto **condiciona** la
+  afirmación de esta ADR de que un solo adapter de Meta atiende los tres
+  canales.

@@ -1,6 +1,6 @@
 # Fase 19 — Integración Multicanal (Instagram, Facebook/Meta)
 
-Estado: **Etapas A y B completas** (v2) — gateway multicanal, panel de conexiones y WhatsApp por Meta Cloud API implementados. Etapa C (Instagram/Messenger) pendiente; ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
+Estado: **Etapas A, B y C1 completas** (v2) — gateway multicanal, panel de conexiones, WhatsApp por Meta Cloud API e identidad de cliente por canal. Faltan C2 (Instagram) y C3 (Messenger); ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-19--integración-multicanal-instagram-facebookmeta) · [PROPUESTA_V2.md §3.11](../../PROPUESTA_V2.md) · [Fase 3 — Integración WhatsApp](../fase-3-whatsapp-gateway/README.md) · [plan-escalado-multi-cliente.md](../plan-escalado-multi-cliente.md)
 
@@ -30,9 +30,16 @@ Ninguna estructural sobre las Fases 13-18 — puede ejecutarse en paralelo. `con
 
 De la fase completa (las tres etapas):
 
-- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C.
+- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C2. El esquema ya lo soporta desde C1; falta el adapter.
 - [x] El agente responde por el mismo canal **y la misma conexión** que recibió el mensaje. Implementado en la Etapa A: `sendToConversation` resuelve el adapter desde `conversations.connection_id`, y los 8 envíos al cliente lo usan. Queda ejercitado con un solo canal hasta que exista un segundo proveedor (Etapa B).
 - [x] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo rigor que Twilio (Fase 3). Etapa B: HMAC-SHA256 sobre el cuerpo crudo con comparación de tiempo constante, más el handshake `GET`, con tests unitarios y de integración.
+
+De la Etapa C1, cerrada (ver [ADR-037](./adrs/ADR-037-identidad-de-cliente-por-canal.md)):
+
+- [x] La identidad del cliente es `(channel, external_id)`, no un teléfono — Instagram y Messenger ya tienen dónde guardarse.
+- [x] Las conversaciones quedan separadas por canal y se responde siempre por donde el cliente escribió.
+- [x] Cuando el teléfono coincide, los datos de gestión del pedido (nombre, cédula, dirección, ciudad) se reusan entre canales, sin mezclar conversaciones.
+- [x] El panel de Clientes marca el canal de cada fila, y la búsqueda encuentra por canal y por teléfono de contacto.
 
 De la Etapa B, cerrada:
 

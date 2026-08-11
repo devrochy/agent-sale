@@ -35,7 +35,7 @@ let publicOrderNumber: string;
 
 beforeAll(async () => {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
     [PHONE],
   );
   customerId = customer.rows[0]!.id;

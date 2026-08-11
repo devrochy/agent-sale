@@ -112,7 +112,7 @@ beforeAll(async () => {
   );
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000000', 'Cliente Overview') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000000', 'Cliente Overview') RETURNING id`,
   );
   customerIds.push(customer.rows[0]!.id);
   const conversation = await adminPool.query<{ id: string }>(
@@ -131,7 +131,7 @@ beforeAll(async () => {
   // mensaje trae tool_calls para probar que la vista reusa el mismo
   // renderMessageBody() del inbox del asesor (handoffView.ts).
   const customerEscalado = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000006', 'Cliente Escalado') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000006', 'Cliente Escalado') RETURNING id`,
   );
   customerIds.push(customerEscalado.rows[0]!.id);
   const conversationEscalada = await adminPool.query<{ id: string }>(
@@ -161,7 +161,7 @@ beforeAll(async () => {
   // Ticket de riesgo ("Vigilante", Fase 12.1) — reason 'queja' debe
   // resaltarse distinto de un escalamiento rutinario como el de arriba.
   const customerQueja = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000005', 'Cliente Molesto') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000005', 'Cliente Molesto') RETURNING id`,
   );
   customerIds.push(customerQueja.rows[0]!.id);
   const conversationQueja = await adminPool.query<{ id: string }>(
@@ -182,7 +182,7 @@ beforeAll(async () => {
 
   // Conversación cerrada — cubre el tab "Cerradas".
   const customerCerrado = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('whatsapp:+573000000002') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('whatsapp:+573000000002') RETURNING id`,
   );
   customerIds.push(customerCerrado.rows[0]!.id);
   const conversationCerrada = await adminPool.query<{ id: string }>(
@@ -200,7 +200,7 @@ beforeAll(async () => {
   // Leads con cotización y con pedido — cubren las 4 categorías del
   // funnel de metricas-cierre-ventas.md que la vista de Leads reusa.
   const customerCotizacion = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000003', 'Cliente Con Cotización') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000003', 'Cliente Con Cotización') RETURNING id`,
   );
   customerIds.push(customerCotizacion.rows[0]!.id);
   const conversationCotizacion = await adminPool.query<{ id: string }>(
@@ -229,7 +229,7 @@ beforeAll(async () => {
   );
 
   const customerPedido = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000004', 'Cliente Con Pedido') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000004', 'Cliente Con Pedido') RETURNING id`,
   );
   customerIds.push(customerPedido.rows[0]!.id);
   const conversationPedido = await adminPool.query<{ id: string }>(
@@ -673,7 +673,7 @@ describe("panel admin", () => {
 
     beforeAll(async () => {
       const customer = await adminPool.query<{ id: string }>(
-        `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000007', 'Cliente Fase 18') RETURNING id`,
+        `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000007', 'Cliente Fase 18') RETURNING id`,
       );
       customerId = customer.rows[0]!.id;
       const conversation = await adminPool.query<{ id: string }>(

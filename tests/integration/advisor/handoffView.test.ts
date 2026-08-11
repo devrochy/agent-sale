@@ -28,7 +28,7 @@ beforeAll(async () => {
   await app.ready();
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('3050000001', 'Cliente Test') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('3050000001', 'Cliente Test') RETURNING id`,
   );
   customerId = customer.rows[0]!.id;
 

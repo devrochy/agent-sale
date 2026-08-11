@@ -2,6 +2,8 @@
 
 > **Actualizado por [ADR-032](./adrs/ADR-032-retiro-multi-tenancy.md):** agent-sale dejó de ser multi-tenant — no hay `tenant_id` ni Row Level Security en ninguna tabla. `TENANTS` de este documento pasó a llamarse `settings` (una única fila, configuración global del negocio). Este ERD queda actualizado a la forma real; para el histórico de por qué existía `tenant_id`, ver [ADR-004](./adrs/ADR-004-multi-tenancy-rls.md) (superada).
 
+> **Actualizado por [ADR-037](../fase-19-integracion-multicanal/adrs/ADR-037-identidad-de-cliente-por-canal.md):** `customers.phone_number` se renombró a `external_id` y la unicidad pasó a `(channel, external_id)` — la identidad del cliente es una **dirección dentro de un canal**, no un teléfono, porque el IGSID de Instagram y el PSID de Messenger no son teléfonos. El teléfono de verdad vive ahora en `contact_phone`, nullable y no único.
+
 ## Diagrama entidad-relación
 
 ```mermaid
@@ -28,7 +30,9 @@ erDiagram
     }
     CUSTOMERS {
         uuid id PK
-        text phone_number
+        text channel
+        text external_id
+        text contact_phone
         text name
         timestamptz created_at
     }

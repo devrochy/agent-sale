@@ -71,7 +71,7 @@ beforeAll(async () => {
   await saveReportRecipient("whatsapp:+573000000002");
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3050000001') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('3050000001') RETURNING id`,
   );
   customerId = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(
@@ -215,7 +215,7 @@ describe("POST /webhooks/wompi — notificación a admins con permiso (Fase 13)"
     });
 
     const customer = await adminPool.query<{ id: string }>(
-      `INSERT INTO customers (phone_number) VALUES ('3050000099') RETURNING id`,
+      `INSERT INTO customers (external_id) VALUES ('3050000099') RETURNING id`,
     );
     customerId2 = customer.rows[0]!.id;
     const conversation = await adminPool.query<{ id: string }>(

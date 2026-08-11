@@ -16,6 +16,9 @@ const PHONES = [
   "whatsapp:+573000000102",
   "whatsapp:+573000000103",
   "whatsapp:+573000000104",
+  // Etapa C1: la misma cadena en dos canales tiene que dar dos clientes.
+  "17841400000000105",
+  "whatsapp:+573000000106",
 ];
 
 // Conexiones de mentira para el caso multicanal — se borran en afterAll.
@@ -23,10 +26,10 @@ const CONEXIONES_TEST = ["whatsapp:+570000000801", "test-meta-phone-id-0801"];
 
 afterAll(async () => {
   await adminPool.query(
-    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = ANY($1))`,
+    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE external_id = ANY($1))`,
     [PHONES],
   );
-  await adminPool.query(`DELETE FROM customers WHERE phone_number = ANY($1)`, [PHONES]);
+  await adminPool.query(`DELETE FROM customers WHERE external_id = ANY($1)`, [PHONES]);
   await adminPool.query(`DELETE FROM channel_connections WHERE external_id = ANY($1)`, [
     CONEXIONES_TEST,
   ]);
@@ -39,7 +42,7 @@ describe("resolveConversation — captura de ProfileName", () => {
   it("guarda el nombre en el primer mensaje del cliente", async () => {
     await resolveConversation("whatsapp:+573000000100", "Camila Pérez");
     const result = await adminPool.query<{ name: string | null }>(
-      `SELECT name FROM customers WHERE phone_number = $1`,
+      `SELECT name FROM customers WHERE external_id = $1`,
       ["whatsapp:+573000000100"],
     );
     expect(result.rows[0]!.name).toBe("Camila Pérez");
@@ -49,7 +52,7 @@ describe("resolveConversation — captura de ProfileName", () => {
     await resolveConversation("whatsapp:+573000000101", "Julián Gómez");
     await resolveConversation("whatsapp:+573000000101", undefined);
     const result = await adminPool.query<{ name: string | null }>(
-      `SELECT name FROM customers WHERE phone_number = $1`,
+      `SELECT name FROM customers WHERE external_id = $1`,
       ["whatsapp:+573000000101"],
     );
     expect(result.rows[0]!.name).toBe("Julián Gómez");
@@ -59,7 +62,7 @@ describe("resolveConversation — captura de ProfileName", () => {
     await resolveConversation("whatsapp:+573000000102", "Nombre Viejo");
     await resolveConversation("whatsapp:+573000000102", "Nombre Nuevo");
     const result = await adminPool.query<{ name: string | null }>(
-      `SELECT name FROM customers WHERE phone_number = $1`,
+      `SELECT name FROM customers WHERE external_id = $1`,
       ["whatsapp:+573000000102"],
     );
     expect(result.rows[0]!.name).toBe("Nombre Nuevo");
@@ -68,7 +71,7 @@ describe("resolveConversation — captura de ProfileName", () => {
   it("sin ProfileName en ningún mensaje, el nombre queda null", async () => {
     await resolveConversation("whatsapp:+573000000103");
     const result = await adminPool.query<{ name: string | null }>(
-      `SELECT name FROM customers WHERE phone_number = $1`,
+      `SELECT name FROM customers WHERE external_id = $1`,
       ["whatsapp:+573000000103"],
     );
     expect(result.rows[0]!.name).toBeNull();
@@ -80,10 +83,10 @@ describe("resolveConversation — conversationBotPaused (Fase 18)", () => {
 
   afterAll(async () => {
     await adminPool.query(
-      `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = $1)`,
+      `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE external_id = $1)`,
       [PHONE],
     );
-    await adminPool.query(`DELETE FROM customers WHERE phone_number = $1`, [PHONE]);
+    await adminPool.query(`DELETE FROM customers WHERE external_id = $1`, [PHONE]);
   });
 
   it("devuelve conversationBotPaused: true para una conversación pausada puntualmente", async () => {
@@ -152,5 +155,53 @@ describe("resolveConversation — la conversación sigue al último número usad
       [primera.conversationId],
     );
     expect(devuelta.rows[0]!.connection_id).toBe(twilio);
+  });
+});
+
+describe("resolveConversation — identidad por canal (Fase 19, Etapa C1)", () => {
+  it("la misma dirección en dos canales son dos clientes y dos conversaciones", async () => {
+    // El caso no es hipotético: un IGSID es numérico y un wa_id también, así
+    // que la unicidad global por dirección que había antes podía colisionar
+    // dos humanos distintos en una sola fila.
+    const MISMA = "17841400000000105";
+
+    const wapp = await resolveConversation(MISMA, "Por WhatsApp", { channel: "whatsapp" });
+    const ig = await resolveConversation(MISMA, "Por Instagram", { channel: "instagram" });
+
+    expect(ig.customerId).not.toBe(wapp.customerId);
+    expect(ig.conversationId).not.toBe(wapp.conversationId);
+
+    const filas = await adminPool.query<{ channel: string; name: string }>(
+      `SELECT channel, name FROM customers WHERE external_id = $1 ORDER BY channel`,
+      [MISMA],
+    );
+    expect(filas.rows).toEqual([
+      { channel: "instagram", name: "Por Instagram" },
+      { channel: "whatsapp", name: "Por WhatsApp" },
+    ]);
+
+    // Y la conversación queda marcada con el canal por el que entró: es lo
+    // que hace que la respuesta salga por donde el cliente escribió.
+    const canales = await adminPool.query<{ channel: string }>(
+      `SELECT channel FROM conversations WHERE id = ANY($1) ORDER BY channel`,
+      [[wapp.conversationId, ig.conversationId]],
+    );
+    expect(canales.rows.map((r) => r.channel)).toEqual(["instagram", "whatsapp"]);
+  });
+
+  it("por WhatsApp el teléfono de contacto sale de la dirección; por Instagram queda pendiente", async () => {
+    await resolveConversation("whatsapp:+573000000106", "Con Teléfono", { channel: "whatsapp" });
+    await resolveConversation("17841400000000105", undefined, { channel: "instagram" });
+
+    const filas = await adminPool.query<{ channel: string; contact_phone: string | null }>(
+      `SELECT channel, contact_phone FROM customers
+       WHERE (channel, external_id) IN (('whatsapp', $1), ('instagram', $2))
+       ORDER BY channel`,
+      ["whatsapp:+573000000106", "17841400000000105"],
+    );
+    expect(filas.rows).toEqual([
+      { channel: "instagram", contact_phone: null },
+      { channel: "whatsapp", contact_phone: "+573000000106" },
+    ]);
   });
 });

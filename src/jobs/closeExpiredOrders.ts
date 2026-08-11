@@ -8,7 +8,7 @@ interface CandidateRow {
   id: string;
   conversation_id: string;
   public_order_number: string;
-  phone_number: string;
+  external_id: string;
 }
 
 /**
@@ -22,7 +22,7 @@ interface CandidateRow {
 async function fetchCandidates(): Promise<CandidateRow[]> {
   return withTransaction(async (client) => {
     const result = await client.query<CandidateRow>(
-      `SELECT o.id, o.conversation_id, o.public_order_number, c.phone_number
+      `SELECT o.id, o.conversation_id, o.public_order_number, c.external_id
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        WHERE o.payment_method = 'pago_en_linea'
