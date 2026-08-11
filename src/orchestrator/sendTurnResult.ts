@@ -50,9 +50,11 @@ export async function sendTurnBubbles(
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
   const bubbles = splitForBubbles(result.responseText, behaviorConfig.estiloMensajes);
 
+  let lostCount = 0;
   for (let index = 0; index < bubbles.length; index++) {
     const isLast = index === bubbles.length - 1;
     let sent = false;
+    let lastError: unknown;
     for (let attempt = 1; attempt <= BUBBLE_SEND_ATTEMPTS && !sent; attempt++) {
       try {
         await sendToConversation(
@@ -62,15 +64,23 @@ export async function sendTurnBubbles(
         );
         sent = true;
       } catch (error) {
+        lastError = error;
+        // La clave tiene que ser `err`: es la que pino serializa con su
+        // serializer de errores. Con cualquier otro nombre un Error sale como
+        // `{}` (sus propiedades no son enumerables) y el log queda diciendo
+        // que falló sin decir por qué — que es justamente lo que hace falta
+        // para distinguir un rechazo por ventana de 24h vencida de una
+        // credencial mala.
         entryLogger.warn(
-          { event: "gateway.envio_burbuja_fallido", index, attempt, error },
+          { event: "gateway.envio_burbuja_fallido", index, attempt, err: error },
           "Fallo al enviar una burbuja, reintentando",
         );
       }
     }
     if (!sent) {
+      lostCount++;
       entryLogger.error(
-        { event: "gateway.envio_burbuja_perdido", index },
+        { event: "gateway.envio_burbuja_perdido", index, err: lastError },
         "No se pudo enviar una burbuja tras reintentos — se continúa con las siguientes",
       );
     }
@@ -81,6 +91,24 @@ export async function sendTurnBubbles(
 
   const totalLatencyMs =
     receivedAt !== undefined && !Number.isNaN(receivedAt) ? Date.now() - receivedAt : undefined;
+
+  // El evento de confirmación es condicional a propósito. Emitirlo siempre
+  // hacía que un turno con las burbujas perdidas terminara con un renglón que
+  // dice que el proveedor lo aceptó: en Grafana se lee como entrega exitosa y
+  // tapa el fallo que los renglones anteriores ya habían reportado.
+  if (lostCount > 0) {
+    entryLogger.error(
+      {
+        event: "gateway.envio_incompleto",
+        total_latency_ms: totalLatencyMs,
+        bubble_count: bubbles.length,
+        bubbles_lost: lostCount,
+      },
+      "El turno se envió incompleto — el cliente no recibió la respuesta entera",
+    );
+    return;
+  }
+
   entryLogger.info(
     {
       event: "gateway.confirmacion_envio",
