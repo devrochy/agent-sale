@@ -599,6 +599,16 @@ const STYLE_BLOCK = `
   --go-soft: rgba(46, 125, 79, 0.1);
   --violet: #6E4EA6;
   --violet-soft: rgba(110, 78, 166, 0.1);
+  /* Canales (Fase 19): el tono de marca de cada uno, bajado de saturación
+     para convivir con el resto de la paleta. El color hace el trabajo de
+     reconocimiento antes que el texto — en la tabla de Clientes se escanea
+     una columna entera de un vistazo. */
+  --wa: #1A8049;
+  --wa-soft: rgba(37, 211, 102, 0.14);
+  --ig: #B32D74;
+  --ig-soft: rgba(225, 48, 108, 0.12);
+  --fb: #1264C8;
+  --fb-soft: rgba(0, 132, 255, 0.12);
   --shadow: 0 1px 2px rgba(20, 24, 29, 0.04), 0 8px 24px rgba(20, 24, 29, 0.06);
   --font-display: "Oxanium", ui-monospace, monospace;
   --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
@@ -611,6 +621,9 @@ const STYLE_BLOCK = `
     --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
     --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
     --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
+    --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
+    --ig: #F06AA0; --ig-soft: rgba(225,48,108,0.18);
+    --fb: #5AA9FF; --fb-soft: rgba(0,132,255,0.18);
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);
   }
 }
@@ -793,6 +806,9 @@ section.block { margin-bottom: 34px; }
 .chip--inactive { color: var(--redline); background: var(--panel-inset); }
 .chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
 .chip--violet { color: var(--violet); background: var(--violet-soft); }
+.chip--whatsapp { color: var(--wa); background: var(--wa-soft); }
+.chip--instagram { color: var(--ig); background: var(--ig-soft); }
+.chip--messenger { color: var(--fb); background: var(--fb-soft); }
 @media (max-width: 560px) { .convrow { grid-template-columns: 1fr; } .convrow__meta { grid-column: 1; justify-content: flex-start; } }
 .empty { padding: 28px 20px; color: var(--ink-faint); font-size: 13px; }
 table { border-collapse: collapse; width: 100%; min-width: 720px; table-layout: fixed; font-size: 13.5px; }
@@ -2485,7 +2501,7 @@ interface ConversacionListRow {
 function conversacionCanalChip(channel: Channel, provider: Provider | null): string {
   const canal = CHANNEL_LABEL[channel];
   const etiqueta = provider ? `${canal} · ${PROVIDER_LABEL[provider]}` : canal;
-  return `<span class="chip chip--muted">${escapeHtml(etiqueta)}</span>`;
+  return `<span class="chip ${CHANNEL_CHIP[channel]}">${escapeHtml(etiqueta)}</span>`;
 }
 
 interface ConversacionDetalleRow {
@@ -2938,7 +2954,7 @@ export async function renderLeadsPage(
       // Etapa C1 el mismo humano puede aparecer como dos filas (una por canal)
       // y sin esta marca se leen como duplicados de la base.
       return `<tr data-search="${escapeHtml(search)}">
-        <td>${escapeHtml(who)} <span class="chip chip--muted">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></td>
+        <td>${escapeHtml(who)} <span class="chip ${CHANNEL_CHIP[row.channel]}">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></td>
         <td><span class="chip ${SEGMENT_CHIP[row.segment]}">${escapeHtml(SEGMENT_LABEL[row.segment])}</span></td>
         <td>${toggleSwitchHtml(`/admin/leads/${row.id}`, !row.bot_paused, `el bot para "${who}"`)}</td>
         <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
@@ -3840,6 +3856,17 @@ const CHANNEL_LABEL: Record<Channel, string> = {
   whatsapp: "WhatsApp",
   instagram: "Instagram",
   messenger: "Messenger",
+};
+
+/**
+ * Clase de color por canal. Va como `Record<Channel, ...>` y no con un default
+ * por si acaso: si mañana se agrega un canal, esto deja de compilar y obliga a
+ * elegirle un color, en vez de dejarlo gris y que nadie lo note.
+ */
+const CHANNEL_CHIP: Record<Channel, string> = {
+  whatsapp: "chip--whatsapp",
+  instagram: "chip--instagram",
+  messenger: "chip--messenger",
 };
 
 /**
