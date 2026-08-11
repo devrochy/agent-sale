@@ -123,7 +123,7 @@ describe("metaOutboundAdapter.verifyCredentials", () => {
     const resultado = await metaOutboundAdapter.verifyCredentials({
       phoneNumberId: "123456789012345",
       accessToken: "token",
-    });
+    }, "whatsapp");
 
     // A diferencia de Twilio, Meta sí puede reportar la dirección — y es
     // distinta de la clave de ruteo, que es el phone number id.
@@ -142,13 +142,13 @@ describe("metaOutboundAdapter.verifyCredentials", () => {
     );
 
     await expect(
-      metaOutboundAdapter.verifyCredentials({ phoneNumberId: "1", accessToken: "malo" }),
+      metaOutboundAdapter.verifyCredentials({ phoneNumberId: "1", accessToken: "malo" }, "whatsapp"),
     ).rejects.toThrow(/Error validating access token/);
   });
 
   it("exige el phone number id antes de llamar a la API", async () => {
     await expect(
-      metaOutboundAdapter.verifyCredentials({ accessToken: "token" }),
+      metaOutboundAdapter.verifyCredentials({ accessToken: "token" }, "whatsapp"),
     ).rejects.toThrow(/Phone Number ID/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -162,7 +162,7 @@ describe("metaOutboundAdapter.verifyCredentials", () => {
       phoneNumberId: "123456789012345",
       accessToken: "token",
       appSecret: "el-secreto",
-    });
+    }, "whatsapp");
 
     const esperado = createHmac("sha256", "el-secreto").update("token").digest("hex");
     expect(fetchMock.mock.calls[0]![0]).toContain(`appsecret_proof=${esperado}`);
@@ -174,7 +174,7 @@ describe("metaOutboundAdapter.verifyCredentials", () => {
     await metaOutboundAdapter.verifyCredentials({
       phoneNumberId: "123456789012345",
       accessToken: "token",
-    });
+    }, "whatsapp");
 
     expect(fetchMock.mock.calls[0]![0]).not.toContain("appsecret_proof");
   });
@@ -189,7 +189,140 @@ describe("metaOutboundAdapter.verifyCredentials", () => {
         phoneNumberId: "123456789012345",
         accessToken: "token",
         appSecret: "secreto-equivocado",
-      }),
+      }, "whatsapp"),
     ).rejects.toThrow(/appsecret_proof/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Instagram Direct (Fase 19, Etapa C2). Mismo proveedor y mismo host, pero
+// otra API: endpoint, cuerpo y campo del id devuelto son distintos.
+// ---------------------------------------------------------------------------
+
+const IGSID = "6789012345678901";
+
+function conexionInstagram(): ResolvedConnection {
+  return conexion({
+    id: "conn-ig",
+    channel: "instagram",
+    label: "Instagram · Meta",
+    externalId: "17841400000000001",
+    displayAddress: "@formotos",
+    credentials: { accessToken: "token-de-pagina", appSecret: "s" },
+  });
+}
+
+describe("metaOutboundAdapter.sendText — Instagram (Etapa C2)", () => {
+  it("manda el DM a /me/messages con recipient.id, no a /{id}/messages con `to`", async () => {
+    fetchMock.mockResolvedValue(respuesta({ recipient_id: IGSID, message_id: "mid.ENVIADO" }));
+
+    const id = await metaOutboundAdapter.sendText(conexionInstagram(), IGSID, "Hola");
+
+    expect(id).toBe("mid.ENVIADO");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toContain("/me/messages");
+    expect(url).not.toContain("17841400000000001");
+    expect(init.headers.Authorization).toBe("Bearer token-de-pagina");
+    expect(JSON.parse(init.body)).toEqual({
+      recipient: { id: IGSID },
+      message: { text: "Hola" },
+    });
+  });
+
+  it("el IGSID va verbatim: no se le aplica la traducción de WhatsApp", async () => {
+    fetchMock.mockResolvedValue(respuesta({ message_id: "mid.1" }));
+    await metaOutboundAdapter.sendText(conexionInstagram(), IGSID, "Hola");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).recipient.id).toBe(IGSID);
+  });
+
+  it("con media manda DOS mensajes: Instagram no admite texto y adjunto juntos", async () => {
+    fetchMock
+      .mockResolvedValueOnce(respuesta({ message_id: "mid.IMG" }))
+      .mockResolvedValueOnce(respuesta({ message_id: "mid.TEXTO" }));
+
+    const id = await metaOutboundAdapter.sendText(
+      conexionInstagram(),
+      IGSID,
+      "Mirá este casco",
+      "https://ejemplo.test/casco.jpg",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).message).toEqual({
+      attachment: { type: "image", payload: { url: "https://ejemplo.test/casco.jpg" } },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).message).toEqual({
+      text: "Mirá este casco",
+    });
+    // Se devuelve el id del texto, que es el mensaje que lleva la respuesta.
+    expect(id).toBe("mid.TEXTO");
+  });
+
+  it("lanza si Instagram acepta pero no devuelve message_id", async () => {
+    fetchMock.mockResolvedValue(respuesta({ recipient_id: IGSID }));
+    await expect(
+      metaOutboundAdapter.sendText(conexionInstagram(), IGSID, "Hola"),
+    ).rejects.toThrow(/no devolvió un id/);
+  });
+
+  it("propaga el error de la Graph API", async () => {
+    fetchMock.mockResolvedValue(
+      respuesta({ error: { message: "Fuera de la ventana de mensajería", code: 10 } }, 400),
+    );
+    await expect(
+      metaOutboundAdapter.sendText(conexionInstagram(), IGSID, "Hola"),
+    ).rejects.toThrow(/Instagram rechazó el envío.*ventana/);
+  });
+});
+
+describe("metaOutboundAdapter.verifyCredentials — Instagram (Etapa C2)", () => {
+  it("deduce el IGID y el usuario desde la Página, sin mandarle un mensaje a nadie", async () => {
+    fetchMock.mockResolvedValue(
+      respuesta({ instagram_business_account: { id: "17841400000000001", username: "formotos" } }),
+    );
+
+    const resultado = await metaOutboundAdapter.verifyCredentials(
+      { accessToken: "token-de-pagina", appSecret: "secreto" },
+      "instagram",
+    );
+
+    // El IGID es la clave de ruteo del webhook: tiene que salir del proveedor,
+    // porque no es un dato que el admin tenga a mano para tipear.
+    expect(resultado).toEqual({ externalId: "17841400000000001", displayAddress: "@formotos" });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toContain("/me?");
+    expect(url).toContain("instagram_business_account");
+    expect(init.method).toBeUndefined();
+  });
+
+  it("manda appsecret_proof para validar también el App Secret", async () => {
+    fetchMock.mockResolvedValue(
+      respuesta({ instagram_business_account: { id: "1", username: "x" } }),
+    );
+    await metaOutboundAdapter.verifyCredentials(
+      { accessToken: "token-de-pagina", appSecret: "secreto" },
+      "instagram",
+    );
+    const esperado = createHmac("sha256", "secreto").update("token-de-pagina").digest("hex");
+    expect(fetchMock.mock.calls[0]![0]).toContain(`appsecret_proof=${esperado}`);
+  });
+
+  it("rechaza con un mensaje accionable si la Página no tiene Instagram vinculado", async () => {
+    // Es el error de configuración más común y el que peor se diagnostica: el
+    // token es válido, así que sin este chequeo la conexión se guardaría bien
+    // y no llegaría nunca un mensaje.
+    fetchMock.mockResolvedValue(respuesta({ id: "pagina-sin-instagram" }));
+    await expect(
+      metaOutboundAdapter.verifyCredentials({ accessToken: "t", appSecret: "s" }, "instagram"),
+    ).rejects.toThrow(/no tiene una cuenta de Instagram vinculada/);
+  });
+
+  it("no pide Phone Number ID para Instagram", async () => {
+    fetchMock.mockResolvedValue(
+      respuesta({ instagram_business_account: { id: "1", username: "x" } }),
+    );
+    await expect(
+      metaOutboundAdapter.verifyCredentials({ accessToken: "t", appSecret: "s" }, "instagram"),
+    ).resolves.toBeDefined();
   });
 });

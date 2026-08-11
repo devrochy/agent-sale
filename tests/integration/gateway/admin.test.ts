@@ -1072,7 +1072,7 @@ describe("panel admin", () => {
 
       const response = await app.inject({
         method: "POST",
-        url: "/admin/conexiones/meta",
+        url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({
           phoneNumberId: "111222333444555",
@@ -1106,7 +1106,7 @@ describe("panel admin", () => {
 
       const response = await app.inject({
         method: "POST",
-        url: "/admin/conexiones/meta",
+        url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({
           phoneNumberId: "000111222333444",
@@ -1130,13 +1130,87 @@ describe("panel admin", () => {
       verifyCredentials.mockClear();
       const response = await app.inject({
         method: "POST",
-        url: "/admin/conexiones/meta",
+        url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({ phoneNumberId: "123", appSecret: "x" }).toString(),
       });
 
       expect(response.headers.location).toContain("error=");
       expect(verifyCredentials).not.toHaveBeenCalled();
+    });
+
+    it("da de alta una conexión de Instagram sin pedir Phone Number ID", async () => {
+      // La clave de ruteo de Instagram es el IGID, y solo lo sabe Meta: el
+      // admin no lo tipea. Guardar otra cosa daría una conexión válida a la
+      // vista cuyo webhook no matchea nunca.
+      verifyCredentials.mockResolvedValueOnce({
+        externalId: "17841400000000777",
+        displayAddress: "@formotos",
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/instagram",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          appSecret: "secreto-meta",
+          accessToken: "token-de-pagina",
+          verifyToken: "verify-meta",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{
+        channel: string;
+        provider: string;
+        external_id: string;
+        display_address: string;
+      }>(
+        `SELECT channel, provider, external_id, display_address FROM channel_connections WHERE external_id = $1`,
+        ["17841400000000777"],
+      );
+      expect(fila.rows[0]).toMatchObject({
+        channel: "instagram",
+        provider: "meta",
+        external_id: "17841400000000777",
+        display_address: "@formotos",
+      });
+
+      await adminPool.query(`DELETE FROM channel_connections WHERE external_id = $1`, [
+        "17841400000000777",
+      ]);
+      invalidateConnectionsCache();
+    });
+
+    it("rechaza un canal que el adapter de Meta todavía no atiende", async () => {
+      verifyCredentials.mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/messenger",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          appSecret: "x",
+          accessToken: "x",
+          verifyToken: "x",
+        }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(verifyCredentials).not.toHaveBeenCalled();
+    });
+
+    it("el formulario de Instagram no imprime ningún secreto en claro", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conexiones",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("Conectar Instagram");
+      expect(response.body).toContain("/admin/conexiones/meta/instagram");
+      expect(response.body).not.toContain("secreto-meta");
+      expect(response.body).not.toContain("token-de-pagina");
     });
 
     it("un admin que no es master no puede entrar a Conexiones", async () => {

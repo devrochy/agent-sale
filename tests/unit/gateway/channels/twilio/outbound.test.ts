@@ -153,7 +153,7 @@ describe("twilioOutboundAdapter.verifyCredentials", () => {
     const resultado = await twilioOutboundAdapter.verifyCredentials({
       accountSid: "ACtest",
       authToken: "token",
-    });
+    }, "whatsapp");
 
     expect(fetchAccount).toHaveBeenCalledWith("ACtest");
     expect(create).not.toHaveBeenCalled();
@@ -172,7 +172,7 @@ describe("twilioOutboundAdapter.verifyCredentials", () => {
     listIncoming.mockResolvedValue([]);
 
     await expect(
-      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "token" }),
+      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "token" }, "whatsapp"),
     ).resolves.toEqual({ externalId: null, displayAddress: null });
     expect(fetchAccount).toHaveBeenCalledWith("ACtest");
   });
@@ -181,20 +181,20 @@ describe("twilioOutboundAdapter.verifyCredentials", () => {
     listIncoming.mockRejectedValue(new Error("permisos insuficientes"));
 
     await expect(
-      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "token" }),
+      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "token" }, "whatsapp"),
     ).resolves.toEqual({ externalId: null, displayAddress: null });
   });
 
   it("propaga el rechazo del proveedor con credenciales inválidas", async () => {
     fetchAccount.mockRejectedValue(new Error("Authenticate"));
     await expect(
-      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "malo" }),
+      twilioOutboundAdapter.verifyCredentials({ accountSid: "ACtest", authToken: "malo" }, "whatsapp"),
     ).rejects.toThrow("Authenticate");
   });
 
   it("rechaza un accountSid con formato inválido antes de llamar a la API", async () => {
     await expect(
-      twilioOutboundAdapter.verifyCredentials({ accountSid: "XXmal", authToken: "token" }),
+      twilioOutboundAdapter.verifyCredentials({ accountSid: "XXmal", authToken: "token" }, "whatsapp"),
     ).rejects.toThrow(/must start with AC/);
     expect(fetchAccount).not.toHaveBeenCalled();
   });

@@ -211,14 +211,24 @@ cliente resueltos por conexión, y `/admin/conexiones` configurable.
   afirmación de esta ADR de que Etapa C era "un refactor de identidad" a secas:
   también trajo una decisión de producto (hilos separados por canal, datos de
   gestión compartidos por teléfono).
-- **Etapas C2/C3 — Instagram y Messenger.** Pendientes. Para llegar al público
-  general hace falta App Review de Meta (`pages_messaging` /
+- **Etapa C2 — Instagram Direct: completa.** Ver
+  [ADR-038](./ADR-038-instagram-direct-sobre-el-adapter-de-meta.md). Se resolvió
+  por la ruta de cuenta profesional **vinculada a una Página de Facebook**, que
+  va por Instagram Messaging sobre `graph.facebook.com` — el mismo host y el
+  mismo webhook que WhatsApp Cloud API. (Sin vincular habría ido por
+  `graph.instagram.com`, con su propio login, y habría exigido un adapter
+  aparte.)
+
+  Corrige la afirmación de esta ADR de que un solo adapter atiende los tres
+  canales "porque Meta los sirve por el mismo webhook y la misma API de envío":
+  **el webhook sí, la API de envío no**. WhatsApp usa
+  `POST /{phone_number_id}/messages` e Instagram `POST /me/messages`, con otro
+  cuerpo y otro campo para el id devuelto. Sigue habiendo un solo adapter, pero
+  despacha por `payload.object` en la entrada y por `connection.channel` en la
+  salida.
+- **Etapa C3 — Messenger.** Pendiente, y a un despacho de distancia: comparte
+  la Página, la app, el token y la API de envío con Instagram. Para llegar al
+  público general hace falta App Review de Meta (`pages_messaging` /
   `instagram_manage_messages`, Advanced Access); en modo desarrollo se puede
   conversar con admins, developers y testers de la app, que alcanza para
-  implementar y validar. Cuál API usa Instagram depende de si la cuenta
-  profesional está vinculada a una Página de Facebook: vinculada va por
-  Instagram Messaging sobre `graph.facebook.com` (mismo adapter que Messenger);
-  sin vincular va por "Instagram API with Instagram Login" sobre
-  `graph.instagram.com`, que es un adapter distinto. Esto **condiciona** la
-  afirmación de esta ADR de que un solo adapter de Meta atiende los tres
-  canales.
+  implementar y validar.

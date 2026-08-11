@@ -71,7 +71,10 @@ import { login, logout } from "../admin/auth/session.js";
 import { env } from "../config/env.js";
 import { registrarGuia } from "../domains/commerce/registrarGuia.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
-import { listConnectionsWithCredentials } from "../shared/db/connectionsDirectory.js";
+import {
+  listConnectionsWithCredentials,
+  type Channel,
+} from "../shared/db/connectionsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
@@ -338,8 +341,24 @@ export async function buildServer() {
 
   // Antes que la ruta con :connectionId, para que "meta" no se interprete como
   // un id de conexión.
-  app.post("/admin/conexiones/meta", async (request, reply) => {
-    const result = await crearConexionMeta(request.body as Record<string, string | undefined>);
+  // Canales que el adapter de Meta sabe dar de alta hoy. `messenger` sale
+  // recién en la Etapa C3: aceptarlo antes crearía una conexión que valida
+  // contra Meta pero que ningún webhook sabe rutear.
+  const CANALES_META: Channel[] = ["whatsapp", "instagram"];
+
+  // El canal va en la ruta (Etapa C2): una misma app de Meta sirve WhatsApp e
+  // Instagram, con credenciales y validación distintas por canal.
+  app.post("/admin/conexiones/meta/:channel", async (request, reply) => {
+    const { channel } = request.params as { channel: string };
+    if (!CANALES_META.includes(channel as Channel)) {
+      return reply
+        .status(303)
+        .redirect(`/admin/conexiones?error=${encodeURIComponent("Canal no soportado.")}`);
+    }
+    const result = await crearConexionMeta(
+      channel as Channel,
+      request.body as Record<string, string | undefined>,
+    );
     const redirectUrl = result.ok
       ? "/admin/conexiones?guardado=1"
       : `/admin/conexiones?error=${encodeURIComponent(result.error)}`;

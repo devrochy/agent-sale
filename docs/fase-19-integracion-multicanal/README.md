@@ -1,6 +1,6 @@
 # Fase 19 — Integración Multicanal (Instagram, Facebook/Meta)
 
-Estado: **Etapas A, B y C1 completas** (v2) — gateway multicanal, panel de conexiones, WhatsApp por Meta Cloud API e identidad de cliente por canal. Faltan C2 (Instagram) y C3 (Messenger); ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
+Estado: **Etapas A, B, C1 y C2 completas** (v2) — gateway multicanal, panel de conexiones, WhatsApp por Meta Cloud API, identidad de cliente por canal e Instagram Direct. Falta C3 (Messenger); ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-19--integración-multicanal-instagram-facebookmeta) · [PROPUESTA_V2.md §3.11](../../PROPUESTA_V2.md) · [Fase 3 — Integración WhatsApp](../fase-3-whatsapp-gateway/README.md) · [plan-escalado-multi-cliente.md](../plan-escalado-multi-cliente.md)
 
@@ -15,6 +15,8 @@ Extiende el gateway de mensajería (hoy exclusivamente WhatsApp/Twilio) con un c
 
 - [adrs/ADR-029-arquitectura-gateway-multicanal.md](./adrs/ADR-029-arquitectura-gateway-multicanal.md) — contrato de adapter genérico, dónde vive `conversations.channel`, y cómo se resuelve la ventana de mensajería de Meta Messenger frente a la de WhatsApp (ADR-019).
 - [adrs/ADR-033-meta-cloud-api-segundo-proveedor-whatsapp.md](./adrs/ADR-033-meta-cloud-api-segundo-proveedor-whatsapp.md) — Etapa B: normalización de direcciones de Meta, un hilo por cliente, y estados de entrega por webhook.
+- [adrs/ADR-037-identidad-de-cliente-por-canal.md](./adrs/ADR-037-identidad-de-cliente-por-canal.md) — Etapa C1: la identidad pasa a ser `(channel, external_id)`, conversaciones separadas por canal y datos de pedido compartidos por teléfono.
+- [adrs/ADR-038-instagram-direct-sobre-el-adapter-de-meta.md](./adrs/ADR-038-instagram-direct-sobre-el-adapter-de-meta.md) — Etapa C2: despacho por canal dentro del adapter de Meta, filtro de ecos, y las diferencias reales de la API de envío.
 
 ## Dependencias
 
@@ -30,9 +32,15 @@ Ninguna estructural sobre las Fases 13-18 — puede ejecutarse en paralelo. `con
 
 De la fase completa (las tres etapas):
 
-- [ ] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C2. El esquema ya lo soporta desde C1; falta el adapter.
+- [x] Un mensaje entrante por Instagram Direct genera una conversación con `channel = 'instagram'`, visible en el panel (Fase 18) con el mismo tratamiento que una de WhatsApp. — Etapa C2.
 - [x] El agente responde por el mismo canal **y la misma conexión** que recibió el mensaje. Implementado en la Etapa A: `sendToConversation` resuelve el adapter desde `conversations.connection_id`, y los 8 envíos al cliente lo usan. Queda ejercitado con un solo canal hasta que exista un segundo proveedor (Etapa B).
 - [x] Verificación de firma de webhook implementada y probada para el adapter de Meta, mismo rigor que Twilio (Fase 3). Etapa B: HMAC-SHA256 sobre el cuerpo crudo con comparación de tiempo constante, más el handshake `GET`, con tests unitarios y de integración.
+
+De la Etapa C2, cerrada (ver [ADR-038](./adrs/ADR-038-instagram-direct-sobre-el-adapter-de-meta.md)):
+
+- [x] Instagram Direct entra y sale por el adapter de Meta, despachando por `payload.object` en la entrada y por `connection.channel` en la salida.
+- [x] Los ecos (`is_echo`) se descartan: sin eso el bot se responde a sí mismo en bucle.
+- [x] El panel da de alta una conexión de Instagram sin pedir Phone Number ID — la clave de ruteo (el IGID) la reporta Meta al validar.
 
 De la Etapa C1, cerrada (ver [ADR-037](./adrs/ADR-037-identidad-de-cliente-por-canal.md)):
 
