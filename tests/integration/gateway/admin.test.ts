@@ -861,6 +861,40 @@ describe("panel admin", () => {
       await adminPool.query(`DELETE FROM handoff_queue WHERE id = $1`, [reasignarHandoffId]);
     });
 
+    it("reasignar al bot saca la conversación del estado escalado y pone el contador a cero", async () => {
+      // Sin esto la reasignación no sirve de nada: loop.ts corta antes de
+      // responder mientras `state.step` siga en "escalado", y la
+      // conversación queda muda para siempre. El contador tiene que volver
+      // a cero o el primer turno del bot la re-escala.
+      const handoff = await adminPool.query<{ id: string }>(
+        `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
+         VALUES ($1, 'intentos_fallidos', 'en_atencion', 'El agente no resolvió')
+         RETURNING id`,
+        [conversationId],
+      );
+      const escaladoHandoffId = handoff.rows[0]!.id;
+      await adminPool.query(
+        `UPDATE conversations SET state = '{"step": "escalado", "turnos_sin_resolver": 3}'::jsonb WHERE id = $1`,
+        [conversationId],
+      );
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/conversaciones/${escaladoHandoffId}/reasignar-bot`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+
+      const conversation = await adminPool.query<{ state: Record<string, unknown> }>(
+        `SELECT state FROM conversations WHERE id = $1`,
+        [conversationId],
+      );
+      expect(conversation.rows[0]!.state.step).toBeUndefined();
+      expect(conversation.rows[0]!.state.turnos_sin_resolver).toBe(0);
+
+      await adminPool.query(`DELETE FROM handoff_queue WHERE id = $1`, [escaladoHandoffId]);
+    });
+
     it("una segunda resolución sobre el mismo ticket no rompe (no-op)", async () => {
       const response = await app.inject({
         method: "POST",
