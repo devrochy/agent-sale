@@ -21,9 +21,10 @@ vi.mock("../../../src/gateway/sendMessage.js", () => ({
 }));
 
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
+import { createAdminSession } from "../../../src/admin/auth/adminSessionDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
-import { sendToConversation } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation, sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import {
   invalidateConnectionsCache,
   saveConnection,
@@ -37,6 +38,15 @@ const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_U
 const ADMIN_USERNAME = "colaboradora-master";
 const ADMIN_EMAIL = "colaboradora@formotos-test.com";
 const ADMIN_PASSWORD = "clave-de-prueba-segura";
+
+// Admin aparte para los tests de contraseña: cambiar la clave cierra todas
+// las sesiones de esa cuenta (ver updateAdminPassword), así que hacerlo
+// sobre el master de arriba invalidaría `sessionCookie` y voltearía el
+// resto del archivo.
+const RECUPERA_USERNAME = "olvidadiza";
+const RECUPERA_EMAIL = "olvidadiza@formotos-test.com";
+const RECUPERA_PASSWORD = "clave-vieja-de-prueba";
+const RECUPERA_PHONE = "whatsapp:+573001112233";
 
 /** Extrae "nombre=valor" del header Set-Cookie, descartando Path/HttpOnly/etc, para reusar en el header Cookie de los requests siguientes. */
 function cookieValueFrom(setCookieHeader: string | string[] | undefined): string {
@@ -63,6 +73,24 @@ let conversacionAbierta: string;
 let conversacionEscalada: string;
 let conversacionCerrada: string;
 let sessionCookie: string;
+let recuperaAdminId: string;
+// La contraseña de esa cuenta cambia a lo largo del describe de contraseña
+// —ese es justamente el punto—, así que los tests siguientes usan esta
+// variable y no la constante inicial.
+let passwordActualDeRecupera = RECUPERA_PASSWORD;
+
+/**
+ * Sesión para el admin de los tests de contraseña, abierta contra
+ * `admin_sessions` en vez de por `POST /login`: el login tiene su propio
+ * techo de 10 por minuto (ver server.ts) y este archivo ya lo roza. Lo que
+ * estos tests miran es qué pasa con la sesión al cambiar la contraseña, no
+ * cómo se creó.
+ */
+async function loginComoRecupera(): Promise<string> {
+  const token = await createAdminSession(recuperaAdminId);
+  return `agent_sale_admin_session=${token}`;
+}
+
 const customerIds: string[] = [];
 const conversationIds: string[] = [];
 // Colaboradores creados a lo largo del describe "colaboradores" — el
@@ -75,6 +103,7 @@ const adminEmails = [
   "para-desactivar@formotos-test.com",
   "con-permisos@formotos-test.com",
   "colab-conexiones@formotos.test",
+  RECUPERA_EMAIL,
 ];
 const app = await buildServer();
 
@@ -259,6 +288,14 @@ beforeAll(async () => {
   const passwordHash = await hashPassword(ADMIN_PASSWORD);
   await createAdmin(ADMIN_USERNAME, ADMIN_EMAIL, passwordHash, "master", null);
 
+  recuperaAdminId = await createAdmin(
+    RECUPERA_USERNAME,
+    RECUPERA_EMAIL,
+    await hashPassword(RECUPERA_PASSWORD),
+    "colaborador",
+    RECUPERA_PHONE,
+  );
+
   await app.ready();
 
   const loginResponse = await app.inject({
@@ -407,6 +444,157 @@ describe("panel admin", () => {
     const afterLogout = await app.inject({ method: "GET", url: "/admin", headers: { cookie } });
     expect(afterLogout.statusCode).toBe(303);
     expect(afterLogout.headers.location).toBe("/login");
+  });
+
+  describe("contraseña — cambio y recuperación", () => {
+    /** Saca el token del enlace que viajó en el WhatsApp — es la única vez que existe en claro. */
+    function tokenDelUltimoWhatsApp(): string {
+      const mock = vi.mocked(sendWhatsAppMessage);
+      const ultima = mock.mock.calls.at(-1);
+      if (!ultima) {
+        throw new Error("No se mandó ningún WhatsApp");
+      }
+      const match = /restablecer-contrasena\?token=([\w-]+)/.exec(ultima[1] as string);
+      if (!match) {
+        throw new Error(`El mensaje no trae enlace de restablecimiento: ${ultima[1]}`);
+      }
+      return match[1]!;
+    }
+
+    it("el login ofrece el camino de recuperación", async () => {
+      const response = await app.inject({ method: "GET", url: "/login" });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("/recuperar-contrasena");
+    });
+
+    it("un identificador que no existe recibe el mismo acuse y no dispara ningún mensaje", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: "/recuperar-contrasena",
+        payload: new URLSearchParams({ identifier: "no-existe@formotos-test.com" }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      // Mismo destino que el caso exitoso: si difiriera, este formulario
+      // público diría qué cuentas existen.
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/recuperar-contrasena?enviado=1");
+      expect(vi.mocked(sendWhatsAppMessage)).not.toHaveBeenCalled();
+    });
+
+    it("el enlace llega por WhatsApp, sirve una vez y deja entrar con la contraseña nueva", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const pedido = await app.inject({
+        method: "POST",
+        url: "/recuperar-contrasena",
+        payload: new URLSearchParams({ identifier: RECUPERA_USERNAME }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(pedido.statusCode).toBe(303);
+      expect(vi.mocked(sendWhatsAppMessage)).toHaveBeenCalledOnce();
+      expect(vi.mocked(sendWhatsAppMessage).mock.calls[0]![0]).toBe(RECUPERA_PHONE);
+
+      const token = tokenDelUltimoWhatsApp();
+
+      const formulario = await app.inject({
+        method: "GET",
+        url: `/restablecer-contrasena?token=${token}`,
+      });
+      expect(formulario.statusCode).toBe(200);
+      expect(formulario.body).toContain('name="password"');
+
+      const nueva = "clave-nueva-de-prueba";
+      const cambio = await app.inject({
+        method: "POST",
+        url: "/restablecer-contrasena",
+        payload: new URLSearchParams({ token, password: nueva, confirmacion: nueva }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(cambio.statusCode).toBe(303);
+      expect(cambio.headers.location).toBe("/login?contrasena=cambiada");
+
+      // El mismo enlace, otra vez: ya no dibuja formulario.
+      const reuso = await app.inject({
+        method: "GET",
+        url: `/restablecer-contrasena?token=${token}`,
+      });
+      expect(reuso.body).not.toContain('name="password"');
+      expect(reuso.body).toContain("Este enlace ya no sirve");
+
+      const conLaVieja = await app.inject({
+        method: "POST",
+        url: "/login",
+        payload: new URLSearchParams({
+          identifier: RECUPERA_EMAIL,
+          password: RECUPERA_PASSWORD,
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(conLaVieja.statusCode).toBe(401);
+
+      const conLaNueva = await app.inject({
+        method: "POST",
+        url: "/login",
+        payload: new URLSearchParams({ identifier: RECUPERA_EMAIL, password: nueva }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(conLaNueva.statusCode).toBe(303);
+      expect(conLaNueva.headers.location).toBe("/admin");
+      passwordActualDeRecupera = nueva;
+    });
+
+    it("un token inventado no abre el formulario", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/restablecer-contrasena?token=token-que-nunca-se-emitio",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain('name="password"');
+    });
+
+    it("el Perfil pide la contraseña actual para cambiarla", async () => {
+      const cookie = await loginComoRecupera();
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/perfil/contrasena",
+        payload: new URLSearchParams({
+          actual: "no-es-la-actual",
+          password: "otra-clave-cualquiera",
+          confirmacion: "otra-clave-cualquiera",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("errorContrasena=");
+      expect(decodeURIComponent(response.headers.location as string)).toContain(
+        "contraseña actual no es correcta",
+      );
+      // Y la sesión sigue viva: un intento fallido no puede cerrar sesiones.
+      const perfil = await app.inject({ method: "GET", url: "/admin/perfil", headers: { cookie } });
+      expect(perfil.statusCode).toBe(200);
+    });
+
+    it("cambiar la contraseña desde el Perfil cierra la sesión desde la que se cambió", async () => {
+      const cookie = await loginComoRecupera();
+      const nueva = "clave-final-de-prueba";
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/perfil/contrasena",
+        payload: new URLSearchParams({
+          actual: passwordActualDeRecupera,
+          password: nueva,
+          confirmacion: nueva,
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/login?contrasena=cambiada");
+      passwordActualDeRecupera = nueva;
+
+      const despues = await app.inject({ method: "GET", url: "/admin/perfil", headers: { cookie } });
+      expect(despues.statusCode).toBe(303);
+      expect(despues.headers.location).toBe("/login");
+    });
   });
 
   it("muestra el catálogo con los productos existentes", async () => {

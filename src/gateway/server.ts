@@ -11,6 +11,7 @@ import {
   activarCategoria,
   activarColaborador,
   activarPromocion,
+  cambiarContrasenaPropia,
   confirmarImportacionCsv,
   crearAliado,
   crearCategoria,
@@ -60,8 +61,12 @@ import {
   renderPerfilPage,
   renderProductosPage,
   renderPromocionesPage,
+  renderRecuperarContrasenaPage,
+  renderRestablecerContrasenaPage,
   renderTicketsPage,
   resolverTicket,
+  restablecerContrasenaConToken,
+  solicitarRecuperacionContrasena,
   setConexionActiva,
   tomarTicket,
 } from "../admin/adminPanel.js";
@@ -152,7 +157,15 @@ export async function buildServer() {
   });
 
   app.get("/login", async (request, reply) => {
-    const html = await renderLoginPage();
+    // `?contrasena=cambiada` llega desde los dos caminos que reescriben la
+    // contraseña: el enlace de recuperación y el cambio desde el Perfil.
+    // Los dos cierran la sesión, así que el aviso tiene que salir acá y no
+    // en la página desde donde se hizo el cambio.
+    const { contrasena } = request.query as { contrasena?: string };
+    const html = await renderLoginPage(
+      undefined,
+      contrasena === "cambiada" ? "Contraseña actualizada. Entrá con la nueva." : undefined,
+    );
     if (!html) {
       return reply.status(404).send();
     }
@@ -187,6 +200,81 @@ export async function buildServer() {
         maxAge: 7 * 24 * 60 * 60,
       });
       return reply.status(303).redirect("/admin");
+    },
+  );
+
+  // Recuperación de contraseña (ver
+  // docs/fase-11-panel-admin-dashboard/contrasena.md). Igual que
+  // `/login`/`/logout`, viven fuera de `/admin` y por eso el hook de auth
+  // no las toca: son justamente las rutas para quien no puede autenticarse.
+  app.get("/recuperar-contrasena", async (request, reply) => {
+    const html = await renderRecuperarContrasenaPage(request.query as { enviado?: string });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  // 3 por minuto: cada pedido válido gasta un mensaje de WhatsApp al
+  // teléfono de un admin. Sin este techo, el formulario público es un
+  // botón para inundar de mensajes a alguien que no pidió nada.
+  app.post(
+    "/recuperar-contrasena",
+    { config: { rateLimit: { max: 3, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { identifier } = request.body as { identifier?: string };
+      if (identifier) {
+        await solicitarRecuperacionContrasena(identifier);
+      }
+      // Siempre el mismo destino, exista o no la cuenta — ver
+      // `solicitarRecuperacionContrasena`.
+      return reply.status(303).redirect("/recuperar-contrasena?enviado=1");
+    },
+  );
+
+  app.get("/restablecer-contrasena", async (request, reply) => {
+    const html = await renderRestablecerContrasenaPage(
+      request.query as { token?: string; error?: string },
+    );
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post(
+    "/restablecer-contrasena",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { token, password, confirmacion } = request.body as {
+        token?: string;
+        password?: string;
+        confirmacion?: string;
+      };
+      if (!token || !password) {
+        return reply.status(303).redirect("/recuperar-contrasena");
+      }
+      const result = await restablecerContrasenaConToken({
+        token,
+        password,
+        confirmacion: confirmacion ?? "",
+      });
+      if (result.ok) {
+        // La cookie de esta sesión —si la había— ya no vale: cambiar la
+        // contraseña borra todas las sesiones del admin.
+        reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+        return reply.status(303).redirect("/login?contrasena=cambiada");
+      }
+      // El token sigue vigente cuando el error fue de la contraseña escrita
+      // (corta, o las dos no coinciden): se vuelve al mismo formulario. Si
+      // el enlace ya no sirve, no hay formulario al que volver.
+      return reply
+        .status(303)
+        .redirect(
+          result.tokenVigente
+            ? `/restablecer-contrasena?token=${encodeURIComponent(token)}&error=${encodeURIComponent(result.error)}`
+            : "/restablecer-contrasena",
+        );
     },
   );
 
@@ -472,8 +560,12 @@ export async function buildServer() {
   // colaborador — a propósito por fuera del preHandler de arriba, que solo
   // gatea `/admin/colaboradores`.
   app.get("/admin/perfil", async (request, reply) => {
-    const { error, guardado } = request.query as { error?: string; guardado?: string };
-    const html = await renderPerfilPage(request.admin!, { error, guardado });
+    const { error, guardado, errorContrasena } = request.query as {
+      error?: string;
+      guardado?: string;
+      errorContrasena?: string;
+    };
+    const html = await renderPerfilPage(request.admin!, { error, guardado, errorContrasena });
     if (!html) {
       return reply.status(404).send();
     }
@@ -500,6 +592,36 @@ export async function buildServer() {
       : `/admin/perfil?error=${encodeURIComponent(result.error)}`;
     return reply.status(303).redirect(redirectUrl);
   });
+
+  // Cambio de contraseña con sesión iniciada. Va bajo `/admin`, así que el
+  // hook de auth ya garantizó la sesión; la contraseña actual se pide igual
+  // dentro de `cambiarContrasenaPropia` (ver por qué, allá).
+  app.post(
+    "/admin/perfil/contrasena",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { actual, password, confirmacion } = request.body as {
+        actual?: string;
+        password?: string;
+        confirmacion?: string;
+      };
+      const result = await cambiarContrasenaPropia(request.admin!, {
+        actual: actual ?? "",
+        password: password ?? "",
+        confirmacion: confirmacion ?? "",
+      });
+      if (!result.ok) {
+        return reply
+          .status(303)
+          .redirect(`/admin/perfil?errorContrasena=${encodeURIComponent(result.error)}`);
+      }
+      // La sesión propia acaba de morir junto con las demás — sin limpiar la
+      // cookie, el redirect a /login rebotaría contra una cookie que ya no
+      // resuelve y el usuario vería el login sin entender por qué.
+      reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+      return reply.status(303).redirect("/login?contrasena=cambiada");
+    },
+  );
 
   // Chequeo de disponibilidad en vivo (Fase 13 v2): cualquier admin
   // autenticado, no solo master — lo usa tanto el alta de un colaborador

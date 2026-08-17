@@ -2,18 +2,26 @@ import type { PoolClient } from "pg";
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import {
   createAdmin,
+  findAdminByUsernameOrEmail,
+  getAdminById,
   isAdminRole,
   listAdmins,
   setAdminActive,
+  updateAdminPassword,
   updateAdminPermissions,
   updateAdminProfile,
   type AdminPermissions,
   type AdminRecord,
 } from "./auth/adminsDirectory.js";
-import { hashPassword } from "./auth/passwordHash.js";
+import { hashPassword, verifyPassword } from "./auth/passwordHash.js";
+import {
+  consumePasswordResetToken,
+  createPasswordResetToken,
+  resolvePasswordResetToken,
+} from "./auth/passwordReset.js";
 import { env } from "../config/env.js";
 import { outboundAdapterFor } from "../gateway/channels/registry.js";
-import { sendToConversation } from "../gateway/sendMessage.js";
+import { sendToConversation, sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import {
   getConnection,
   listConnections,
@@ -929,6 +937,12 @@ table.resizing { cursor: col-resize; user-select: none; }
 .toolpill__count { font-family: var(--font-mono); font-weight: 700; color: var(--ignition); }
 .flowfoot { margin-top: 14px; font-size: 12px; color: var(--ink-faint); font-family: var(--font-mono); }
 .connection { padding: 22px 24px; max-width: 640px; }
+.connection + .connection { margin-top: 22px; }
+/* Enlace de pie de las paginas de credenciales (login, recuperar): no es una
+   accion del formulario, asi que no va en .formfoot ni compite con el boton. */
+.authlink { margin: 18px 0 0; text-align: center; font-size: 13px; }
+.authlink a { color: var(--ink-faint); text-decoration: none; border-bottom: 1px solid var(--border); padding-bottom: 1px; }
+.authlink a:hover { color: var(--ink); border-bottom-color: currentColor; }
 .connection__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
 .connection__head h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; }
 .connection__badge { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
@@ -1217,7 +1231,11 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
 .banner--error { background: var(--redline-soft); color: var(--redline); }
 .banner--warn { background: rgba(156, 97, 8, 0.12); color: var(--ignition); }
-@media (prefers-color-scheme: dark) { .banner--warn { background: rgba(232, 163, 61, 0.16); } }
+/* Este banner ajusta su fondo por regla y no por token, asi que necesita
+   los dos caminos del tema a mano — ver apariencia-tema.md. Sin el segundo,
+   "Oscuro" forzado sobre un sistema claro lo dejaba con el fondo claro. */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .banner--warn { background: rgba(232, 163, 61, 0.16); } }
+:root[data-theme="dark"] .banner--warn { background: rgba(232, 163, 61, 0.16); }
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
@@ -2411,7 +2429,7 @@ const CLIENT_SCRIPT = `
  * protegido por el hook de auth de server.ts, que redirige acá si no hay
  * sesión.
  */
-export async function renderLoginPage(error?: string): Promise<string | null> {
+export async function renderLoginPage(error?: string, notice?: string): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
@@ -2419,7 +2437,9 @@ export async function renderLoginPage(error?: string): Promise<string | null> {
 
   const errorBanner = error
     ? `<div class="banner banner--error">${escapeHtml(error)}</div>`
-    : "";
+    : notice
+      ? `<div class="banner banner--ok">${escapeHtml(notice)}</div>`
+      : "";
 
   const body = `
     <div class="pagehead">
@@ -2440,9 +2460,241 @@ export async function renderLoginPage(error?: string): Promise<string | null> {
         </div>
         <div class="formfoot"><button type="submit" class="btn btn--primary">${ICON_IGNITION}Entrar</button></div>
       </form>
+      <p class="authlink"><a href="/recuperar-contrasena">¿Olvidaste tu contraseña?</a></p>
     </div>
   `;
   return layout(`${brandName(tenant)} — Iniciar sesión`, null, body);
+}
+
+/**
+ * Paso 1 de la recuperación (ver
+ * docs/fase-11-panel-admin-dashboard/contrasena.md): pedir el enlace. Con
+ * `enviado` muestra el acuse en vez del formulario — el acuse es el mismo
+ * exista o no la cuenta, así que esta página nunca sabe a quién le habló.
+ */
+export async function renderRecuperarContrasenaPage(query: {
+  enviado?: string;
+}): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const contenido = query.enviado
+    ? `
+      <div class="panel connection">
+        <div class="banner banner--ok">Listo. Si esa cuenta existe y tiene un teléfono cargado, ya le llegó un WhatsApp con el enlace.</div>
+        <p class="hint">El enlace vence en 30 minutos y sirve una sola vez. Si no llega nada, revisá con un administrador master que la cuenta tenga teléfono.</p>
+        <div class="formfoot"><a class="btn" href="/login">Volver a iniciar sesión</a></div>
+      </div>
+    `
+    : `
+      <div class="panel connection">
+        <form method="POST" action="/recuperar-contrasena">
+          <div class="field">
+            <label for="recuperar-identifier">Usuario o correo</label>
+            <input type="text" id="recuperar-identifier" name="identifier" required autofocus autocomplete="username">
+            <p class="hint">Te mandamos un enlace por WhatsApp al teléfono de esa cuenta.</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Enviarme el enlace</button></div>
+        </form>
+        <p class="authlink"><a href="/login">Volver a iniciar sesión</a></p>
+      </div>
+    `;
+
+  const body = `
+    <div class="pagehead">
+      <div class="loginmark" aria-hidden="true">${ICON_IGNITION}</div>
+      <p class="eyebrow">${escapeHtml(brandName(tenant))}</p>
+      <h1>Recuperar contraseña</h1>
+    </div>
+    ${contenido}
+  `;
+  return layout(`${brandName(tenant)} — Recuperar contraseña`, null, body);
+}
+
+/**
+ * Arma el enlace sobre el origen de `PUBLIC_WEBHOOK_URL`, que ya es la URL
+ * pública real de este mismo proceso — mismo criterio que
+ * `buildAdvisorLink` en escalarHumano.ts, y una variable de entorno menos.
+ *
+ * Deliberadamente NO se arma con el header `Host` del pedido: quien dispara
+ * este envío es un anónimo desde el formulario público, y con el Host bajo
+ * su control podría hacer que al admin le llegue un enlace a un dominio
+ * suyo, con el token adentro.
+ */
+function buildPasswordResetLink(token: string): string {
+  return `${new URL(env.publicWebhookUrl).origin}/restablecer-contrasena?token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Emite y manda el enlace, y **no devuelve nada que distinga los casos**.
+ * Que el identificador no exista, que la cuenta esté desactivada o que no
+ * tenga teléfono cargado terminan igual que el éxito: si no, este
+ * formulario público sería un oráculo para averiguar qué usuarios existen.
+ *
+ * Los fallos sí quedan en el log del servidor, que es donde un admin puede
+ * mirarlos sin ser el atacante.
+ */
+export async function solicitarRecuperacionContrasena(identifier: string): Promise<void> {
+  const normalized = identifier.trim().toLowerCase();
+  if (!normalized) {
+    return;
+  }
+  const resetLogger = logger.child({ event: "admin.recuperar_contrasena" });
+  try {
+    const admin = await findAdminByUsernameOrEmail(normalized);
+    if (!admin || !admin.active || !admin.phone) {
+      resetLogger.info(
+        { encontrado: Boolean(admin), activo: admin?.active ?? false, conTelefono: Boolean(admin?.phone) },
+        "Pedido de recuperación sin destinatario — no se manda nada",
+      );
+      return;
+    }
+    const token = await createPasswordResetToken(admin.id);
+    const settings = await getSettings();
+    const marca = settings ? brandName(settings) : "el panel";
+    await sendWhatsAppMessage(
+      admin.phone,
+      `🔐 Restablecer contraseña — ${marca}\n\n` +
+        `Hola ${admin.username}. Abrí este enlace para elegir una contraseña nueva:\n${buildPasswordResetLink(token)}\n\n` +
+        `Vence en 30 minutos y sirve una sola vez. Si no fuiste vos, ignorá este mensaje: tu contraseña sigue igual.`,
+    );
+    resetLogger.info({ adminId: admin.id }, "Enlace de recuperación enviado");
+  } catch (error) {
+    // Best-effort, mismo criterio que las notificaciones proactivas de
+    // escalarHumano.ts: si WhatsApp falla, el formulario igual responde el
+    // acuse neutro. Reventar acá le confirmaría al de afuera que la cuenta
+    // existe, que es justo lo que este flujo no puede decir.
+    resetLogger.warn({ error }, "No se pudo completar el pedido de recuperación");
+  }
+}
+
+/**
+ * Paso 2: el formulario de contraseña nueva, detrás del token. Se valida
+ * el token antes de dibujar nada — mostrar los campos y recién al enviar
+ * decir "el enlace venció" hace escribir dos veces una contraseña para
+ * nada.
+ */
+export async function renderRestablecerContrasenaPage(query: {
+  token?: string;
+  error?: string;
+}): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const token = query.token ?? "";
+  const valido = token ? await resolvePasswordResetToken(token) : null;
+
+  const contenido = valido
+    ? `
+      <div class="panel connection">
+        ${query.error ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>` : ""}
+        <form method="POST" action="/restablecer-contrasena">
+          <input type="hidden" name="token" value="${escapeHtml(token)}">
+          <div class="field">
+            <label for="restablecer-password">Contraseña nueva</label>
+            <input type="password" id="restablecer-password" name="password" required minlength="8" autofocus autocomplete="new-password">
+            <p class="hint">Mínimo 8 caracteres.</p>
+          </div>
+          <div class="field">
+            <label for="restablecer-confirmacion">Repetila</label>
+            <input type="password" id="restablecer-confirmacion" name="confirmacion" required minlength="8" autocomplete="new-password">
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar contraseña</button></div>
+        </form>
+      </div>
+    `
+    : `
+      <div class="panel connection">
+        <div class="banner banner--error">Este enlace ya no sirve: venció, ya se usó, o no es válido.</div>
+        <p class="hint">Los enlaces duran 30 minutos y sirven una sola vez. Pedí uno nuevo y usalo apenas llegue.</p>
+        <div class="formfoot"><a class="btn btn--primary" href="/recuperar-contrasena">Pedir otro enlace</a></div>
+      </div>
+    `;
+
+  const body = `
+    <div class="pagehead">
+      <div class="loginmark" aria-hidden="true">${ICON_IGNITION}</div>
+      <p class="eyebrow">${escapeHtml(brandName(tenant))}</p>
+      <h1>Elegí tu contraseña</h1>
+    </div>
+    ${contenido}
+  `;
+  return layout(`${brandName(tenant)} — Elegí tu contraseña`, null, body);
+}
+
+/** Único lugar donde se decide qué contraseña se acepta — lo comparten el alta de colaborador, el cambio desde el Perfil y el restablecimiento por enlace. */
+function validarContrasenaNueva(password: string, confirmacion: string): string | null {
+  if (password.length < 8) {
+    return "La contraseña debe tener al menos 8 caracteres.";
+  }
+  if (password !== confirmacion) {
+    return "Las dos contraseñas no coinciden.";
+  }
+  return null;
+}
+
+/**
+ * Paso 3: consumir el token y reescribir la contraseña. El orden importa —
+ * primero se consume (que es lo que resuelve el doble envío, ver
+ * `consumePasswordResetToken`) y recién después se cambia. Al revés, dos
+ * envíos simultáneos podrían cambiarla dos veces.
+ *
+ * `updateAdminPassword` cierra además todas las sesiones del admin: quien
+ * llegó acá por haber perdido la contraseña bien puede haberla perdido
+ * porque alguien más la tiene.
+ */
+export async function restablecerContrasenaConToken(input: {
+  token: string;
+  password: string;
+  confirmacion: string;
+}): Promise<{ ok: true } | { ok: false; error: string; tokenVigente: boolean }> {
+  const errorValidacion = validarContrasenaNueva(input.password, input.confirmacion);
+  if (errorValidacion) {
+    // El token no se toca: el error es de la contraseña escrita, no del
+    // enlace, y quemarlo obligaría a pedir otro por un typo.
+    return { ok: false, error: errorValidacion, tokenVigente: true };
+  }
+  const consumed = await consumePasswordResetToken(input.token);
+  if (!consumed) {
+    return { ok: false, error: "Este enlace ya no sirve.", tokenVigente: false };
+  }
+  const admin = await getAdminById(consumed.adminId);
+  if (!admin || !admin.active) {
+    return { ok: false, error: "Esta cuenta ya no está activa.", tokenVigente: false };
+  }
+  await updateAdminPassword(consumed.adminId, await hashPassword(input.password));
+  logger.info({ event: "admin.contrasena_restablecida", adminId: consumed.adminId }, "Contraseña restablecida por enlace");
+  return { ok: true };
+}
+
+/**
+ * Cambio de contraseña con sesión iniciada, desde el Perfil. Pide la
+ * actual: la cookie sola no alcanza para reescribir la credencial de la
+ * cuenta, porque un navegador prestado o abierto es exactamente el caso
+ * contra el que sirve pedirla.
+ */
+export async function cambiarContrasenaPropia(
+  admin: AdminRecord,
+  input: { actual: string; password: string; confirmacion: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const errorValidacion = validarContrasenaNueva(input.password, input.confirmacion);
+  if (errorValidacion) {
+    return { ok: false, error: errorValidacion };
+  }
+  const stored = await findAdminByUsernameOrEmail(admin.username);
+  if (!stored || !(await verifyPassword(input.actual, stored.passwordHash))) {
+    return { ok: false, error: "La contraseña actual no es correcta." };
+  }
+  if (input.actual === input.password) {
+    return { ok: false, error: "La contraseña nueva tiene que ser distinta de la actual." };
+  }
+  await updateAdminPassword(admin.id, await hashPassword(input.password));
+  logger.info({ event: "admin.contrasena_cambiada", adminId: admin.id }, "Contraseña cambiada desde el Perfil");
+  return { ok: true };
 }
 
 interface OverviewKpiRow {
@@ -6467,7 +6719,7 @@ export async function crearColaborador(
  */
 export async function renderPerfilPage(
   admin: AdminRecord,
-  query: { error?: string; guardado?: string },
+  query: { error?: string; guardado?: string; errorContrasena?: string },
 ): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
@@ -6537,6 +6789,39 @@ export async function renderPerfilPage(
           </div>
         </div>
         <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar cambios</button></div>
+      </form>
+    </div>
+    <div class="panel connection">
+      <div class="blockhead">
+        <h2>Contraseña</h2>
+        <span class="hint">se cierran todas las sesiones</span>
+      </div>
+      ${query.errorContrasena ? `<div class="banner banner--error">${escapeHtml(query.errorContrasena)}</div>` : ""}
+      ${
+        // El enlace de recuperación se manda por WhatsApp y no hay otro
+        // canal (ver contrasena.md), así que una cuenta sin teléfono no
+        // tiene forma de volver si olvida la contraseña. Se avisa acá, que
+        // es donde está el campo para arreglarlo, y no en el login, que es
+        // donde ya sería tarde.
+        admin.phone
+          ? ""
+          : `<div class="banner banner--warn">Esta cuenta no tiene teléfono cargado: si olvidás la contraseña no vas a poder recuperarla sola. Cargalo arriba.</div>`
+      }
+      <form method="POST" action="/admin/perfil/contrasena">
+        <div class="field">
+          <label for="perfil-password-actual">Contraseña actual</label>
+          <input type="password" id="perfil-password-actual" name="actual" required autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="perfil-password-nueva">Contraseña nueva</label>
+          <input type="password" id="perfil-password-nueva" name="password" required minlength="8" autocomplete="new-password">
+          <p class="hint">Mínimo 8 caracteres.</p>
+        </div>
+        <div class="field">
+          <label for="perfil-password-confirmacion">Repetila</label>
+          <input type="password" id="perfil-password-confirmacion" name="confirmacion" required minlength="8" autocomplete="new-password">
+        </div>
+        <div class="formfoot"><button type="submit" class="btn">Cambiar contraseña</button></div>
       </form>
     </div>
   `;

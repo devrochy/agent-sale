@@ -27,6 +27,7 @@ Cambios sobre el panel ya construido, que no pertenecen a ninguna sub-fase de la
 
 - [apariencia-tema.md](./apariencia-tema.md) — selector de apariencia **Sistema / Claro / Oscuro** en el menú de cuenta. La paleta oscura ya existía bajo `prefers-color-scheme`; lo que agrega es poder elegirla a mano, con la preferencia guardada por dispositivo.
 - [configuracion-por-pestanas.md](./configuracion-por-pestanas.md) — las siete secciones de Configuración pasan a **cinco pestañas**, cada una con el estado real de su área (`Activo`, `Sin definir`, `Conectado`…). Incluye el rediseño de Voz de marca, donde los `textarea` no tenían ningún estilo y el tope de 500 caracteres era invisible hasta que el formulario rebotaba.
+- [contrasena.md](./contrasena.md) — **cambiar la contraseña** desde el Perfil y **recuperarla** desde el login. El enlace de recuperación va por WhatsApp al teléfono del admin, porque el proyecto no tiene correo y sí tiene ese canal; el token se guarda hasheado, vence a los 30 minutos y sirve una sola vez.
 
 ## Orden de las sub-fases
 
