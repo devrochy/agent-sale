@@ -14,30 +14,58 @@ de ser es ver `develop` corriendo sin pedir permiso a nadie.
 
 ## Topología
 
-Coolify corre en la máquina de desarrollo, no en un VPS. La exposición
-pública es por Cloudflare Tunnel: no hay puertos abiertos en el router ni
-dependencia de la IP residencial, que es dinámica.
+Coolify corre en la máquina de desarrollo, no en un VPS.
 
 ```
-Internet
-   │
-   ▼
-Cloudflare (DNS + TLS)
-   │  app.formotos.com   ──┐
-   │  test.formotos.com  ──┤
-   ▼                       │
-cloudflared (túnel saliente, sin puertos entrantes)
-   │
-   ▼
 Traefik (proxy de Coolify, :80) ── enruta por Host
-   ├── app  → contenedor production :3000
-   └── test → contenedor test :3000
+   ├── app.formotos.com   → contenedor production :3000
+   └── test.formotos.com  → contenedor test :3000
 ```
 
-TLS lo termina Cloudflare, no Coolify: el túnel entrega tráfico plano a
-Traefik en la red interna. Por eso **no** hay que activar Let's Encrypt
-en los dominios de Coolify — el certificado nunca podría validarse, no
-hay un `:80` alcanzable desde fuera.
+Los dos dominios ya están declarados en Coolify y Traefik enruta por
+`Host`, pero **todavía no son alcanzables desde Internet**: falta la
+exposición pública (ver más abajo). Mientras tanto, cada entorno se
+alcanza en la red local por el dominio `*.sslip.io` que Coolify generó.
+
+### Exposición pública: pendiente
+
+El plan es Cloudflare Tunnel — sin puertos abiertos en el router ni
+dependencia de la IP residencial, que es dinámica. Está bloqueado por el
+DNS, no por Coolify:
+
+`formotos.com` delega en `daphne/jake.ns.cloudflare.com`, nameservers de
+una cuenta de Cloudflare de terceros (quien administra el sitio en
+45.32.174.19). La zona en la cuenta propia está en estado `pending`,
+esperando `amir/gene.ns.cloudflare.com`. Y Cloudflare solo permite
+enlazar un túnel con hostnames de zonas de **la misma cuenta**: sin
+redelegar los nameservers no hay forma de publicar `app.formotos.com`
+por el túnel.
+
+Redelegar no es gratis, y por eso está en pausa: en esa zona vive el
+correo (MX de Zoho, SPF, DKIM en `default._domainkey` y
+`mail._domainkey`, DMARC) y cuatro subdominios _proxied_ —`test`,
+`mail`, `ftp`, `webmail`— cuyo origen real no se puede leer desde fuera.
+Moverla a ciegas es arriesgarse a tumbar el correo.
+
+Cuando se retome, el orden es:
+
+1. Conseguir el export de la zona actual (Cloudflare lo genera en un
+   clic) o acceso de miembro a esa cuenta.
+2. Replicar la zona completa en la cuenta propia, con los registros
+   _proxied_ resueltos a su origen real.
+3. Cambiar los nameservers en el registrador a `amir/gene`.
+4. Crear el túnel, sus dos public hostnames apuntando a
+   `http://172.18.0.1:80`, y los CNAME de `app.` y `test.` al túnel.
+
+TLS lo terminará Cloudflare, no Coolify: el túnel entrega tráfico plano
+a Traefik. Por eso **no** hay que activar Let's Encrypt en los dominios
+de Coolify — el certificado nunca podría validarse, no hay un `:80`
+alcanzable desde fuera.
+
+Consecuencia mientras tanto: `PUBLIC_WEBHOOK_URL` apunta al dominio
+definitivo, así que los webhooks entrantes de Meta/Twilio no llegan y
+los enlaces de asesor y de reseña que recibe el cliente no abren. Los
+entornos sirven para todo lo demás.
 
 Cada entorno tiene sus propios recursos, sin nada compartido:
 
@@ -150,10 +178,14 @@ curl -s https://app.formotos.com/healthz    # {"status":"ok"}
 curl -s https://test.formotos.com/healthz
 ```
 
-Un `521` de Cloudflare significa que el túnel está arriba pero el origen
-no responde: casi siempre el contenedor caído o Traefik sin la ruta del
-dominio. Un `530` es el túnel mismo caído (`cloudflared` no está
-corriendo).
+Mientras la exposición pública siga pendiente, esos dos `curl` no van a
+responder desde fuera: verificar contra el dominio `*.sslip.io` de cada
+entorno, desde la propia máquina.
+
+Cuando el túnel esté activo, un `521` de Cloudflare significa que el
+túnel está arriba pero el origen no responde (casi siempre el contenedor
+caído o Traefik sin la ruta del dominio), y un `530` que el túnel mismo
+está caído (`cloudflared` no corriendo).
 
 ## Gotchas conocidos
 
