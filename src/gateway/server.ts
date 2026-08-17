@@ -71,10 +71,7 @@ import { login, logout } from "../admin/auth/session.js";
 import { env } from "../config/env.js";
 import { registrarGuia } from "../domains/commerce/registrarGuia.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
-import {
-  listConnectionsWithCredentials,
-  type Channel,
-} from "../shared/db/connectionsDirectory.js";
+import { listConnectionsWithCredentials, type Channel } from "../shared/db/connectionsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
@@ -162,27 +159,36 @@ export async function buildServer() {
     return reply.type("text/html").send(html);
   });
 
-  app.post("/login", async (request, reply) => {
-    const { identifier, password } = request.body as { identifier?: string; password?: string };
-    const token = identifier && password ? await login(identifier, password) : null;
+  // Límite propio y estrecho para el login (el global de arriba, 200/min,
+  // es de tráfico normal y deja espacio de sobra para fuerza bruta). Se
+  // volvió necesario al publicar el panel en Internet: sin esto son ~288k
+  // intentos de contraseña al día por IP. 10 por minuto no estorba a nadie
+  // que sepa su contraseña y corta el barrido automatizado.
+  app.post(
+    "/login",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { identifier, password } = request.body as { identifier?: string; password?: string };
+      const token = identifier && password ? await login(identifier, password) : null;
 
-    if (!token) {
-      const html = await renderLoginPage("Correo o contraseña incorrectos.");
-      if (!html) {
-        return reply.status(404).send();
+      if (!token) {
+        const html = await renderLoginPage("Correo o contraseña incorrectos.");
+        if (!html) {
+          return reply.status(404).send();
+        }
+        return reply.status(401).type("text/html").send(html);
       }
-      return reply.status(401).type("text/html").send(html);
-    }
 
-    reply.setCookie(SESSION_COOKIE_NAME, token, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: request.protocol === "https",
-      maxAge: 7 * 24 * 60 * 60,
-    });
-    return reply.status(303).redirect("/admin");
-  });
+      reply.setCookie(SESSION_COOKIE_NAME, token, {
+        path: "/",
+        httpOnly: true,
+        sameSite: "lax",
+        secure: request.protocol === "https",
+        maxAge: 7 * 24 * 60 * 60,
+      });
+      return reply.status(303).redirect("/admin");
+    },
+  );
 
   app.post("/logout", async (request, reply) => {
     const token = request.cookies?.[SESSION_COOKIE_NAME];
@@ -243,21 +249,27 @@ export async function buildServer() {
     const { conversationId } = request.params as { conversationId: string };
     const { estado } = request.query as { estado?: string };
     await activarBotConversacion(conversationId);
-    return reply.status(303).redirect(`/admin/conversaciones?estado=${estado ?? "abiertas"}&c=${conversationId}`);
+    return reply
+      .status(303)
+      .redirect(`/admin/conversaciones?estado=${estado ?? "abiertas"}&c=${conversationId}`);
   });
 
   app.post("/admin/conversaciones/:conversationId/bot/desactivar", async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
     const { estado } = request.query as { estado?: string };
     await desactivarBotConversacion(conversationId);
-    return reply.status(303).redirect(`/admin/conversaciones?estado=${estado ?? "abiertas"}&c=${conversationId}`);
+    return reply
+      .status(303)
+      .redirect(`/admin/conversaciones?estado=${estado ?? "abiertas"}&c=${conversationId}`);
   });
 
   app.post("/admin/conversaciones/:conversationId/mensaje", async (request, reply) => {
     const { conversationId } = request.params as { conversationId: string };
     const { mensaje, estado } = request.body as { mensaje?: string; estado?: string };
     await enviarMensajeHumano(conversationId, mensaje ?? "");
-    return reply.status(303).redirect(`/admin/conversaciones?estado=${estado ?? "escaladas"}&c=${conversationId}`);
+    return reply
+      .status(303)
+      .redirect(`/admin/conversaciones?estado=${estado ?? "escaladas"}&c=${conversationId}`);
   });
 
   app.get("/admin/leads", async (request, reply) => {
@@ -289,7 +301,13 @@ export async function buildServer() {
       municipality?: string;
       city?: string;
     };
-    await guardarInfoLead(customerId, { fullName: fullName ?? null, idDocument: idDocument ?? null, address: address ?? null, municipality: municipality ?? null, city: city ?? null });
+    await guardarInfoLead(customerId, {
+      fullName: fullName ?? null,
+      idDocument: idDocument ?? null,
+      address: address ?? null,
+      municipality: municipality ?? null,
+      city: city ?? null,
+    });
     return reply.status(303).redirect("/admin/leads?guardado=1");
   });
 
@@ -622,15 +640,16 @@ export async function buildServer() {
   });
 
   app.get("/admin/productos", async (request, reply) => {
-    const { error, guardado, allyId, categoryId, creados, actualizados, errores } = request.query as {
-      error?: string;
-      guardado?: string;
-      allyId?: string;
-      categoryId?: string;
-      creados?: string;
-      actualizados?: string;
-      errores?: string;
-    };
+    const { error, guardado, allyId, categoryId, creados, actualizados, errores } =
+      request.query as {
+        error?: string;
+        guardado?: string;
+        allyId?: string;
+        categoryId?: string;
+        creados?: string;
+        actualizados?: string;
+        errores?: string;
+      };
     const html = await renderProductosPage(request.admin!, {
       error,
       guardado,
@@ -657,7 +676,10 @@ export async function buildServer() {
 
   app.post("/admin/pedidos/:orderId/guia", async (request, reply) => {
     const { orderId } = request.params as { orderId: string };
-    const { trackingNumber, carrier } = request.body as { trackingNumber?: string; carrier?: string };
+    const { trackingNumber, carrier } = request.body as {
+      trackingNumber?: string;
+      carrier?: string;
+    };
     const result = await registrarGuia(orderId, {
       trackingNumber: trackingNumber ?? "",
       carrier: carrier ?? "",
@@ -716,7 +738,9 @@ export async function buildServer() {
     if (!allyId) {
       return reply
         .status(303)
-        .redirect(`/admin/productos?error=${encodeURIComponent("Elegí un aliado antes de confirmar la carga.")}`);
+        .redirect(
+          `/admin/productos?error=${encodeURIComponent("Elegí un aliado antes de confirmar la carga.")}`,
+        );
     }
     const toArray = (value: string | string[] | undefined): string[] =>
       value === undefined ? [] : Array.isArray(value) ? value : [value];
@@ -770,7 +794,10 @@ export async function buildServer() {
   app.post("/admin/aliados/:allyId", async (request, reply) => {
     const { allyId } = request.params as { allyId: string };
     const { name, contactInfo } = request.body as { name?: string; contactInfo?: string };
-    const result = await guardarAliado(allyId, { name: name ?? "", contactInfo: contactInfo ?? "" });
+    const result = await guardarAliado(allyId, {
+      name: name ?? "",
+      contactInfo: contactInfo ?? "",
+    });
     const redirectUrl = result.ok
       ? "/admin/aliados?guardado=1"
       : `/admin/aliados?error=${encodeURIComponent(result.error)}`;
@@ -823,7 +850,8 @@ export async function buildServer() {
       sortOrder?: string;
       complementIds?: string | string[];
     };
-    const complementIdsList = complementIds === undefined ? [] : ([] as string[]).concat(complementIds);
+    const complementIdsList =
+      complementIds === undefined ? [] : ([] as string[]).concat(complementIds);
     const result = await guardarCategoria(categoryId, {
       name: name ?? "",
       parentId: parentId ?? "",
@@ -867,7 +895,10 @@ export async function buildServer() {
 
   app.post("/admin/promociones/:promotionId", async (request, reply) => {
     const { promotionId } = request.params as { promotionId: string };
-    const result = await guardarPromocion(promotionId, request.body as Parameters<typeof crearPromocion>[0]);
+    const result = await guardarPromocion(
+      promotionId,
+      request.body as Parameters<typeof crearPromocion>[0],
+    );
     const redirectUrl = result.ok
       ? "/admin/promociones?guardado=1"
       : `/admin/promociones?error=${encodeURIComponent(result.error)}`;
