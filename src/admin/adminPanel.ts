@@ -3223,10 +3223,21 @@ export async function reasignarTicketABot(handoffId: string, admin: AdminRecord)
     if (!row) {
       return null;
     }
-    // Por si el admin había pausado el bot de esta conversación puntual
-    // (Fase 18, toggle del detalle) — sin esto, devolver el ticket al
-    // bot no serviría de nada, seguiría sin responder.
-    await client.query(`UPDATE conversations SET bot_paused = false WHERE id = $1`, [row.conversation_id]);
+    // Dos cosas, y las dos son imprescindibles para que el bot retome:
+    // `bot_paused`, por si el admin lo había pausado desde el toggle del
+    // detalle (Fase 18); y `state.step`, que quedó en "escalado" al abrirse
+    // el ticket — `loop.ts` corta antes de responder mientras siga ahí, así
+    // que sin quitarlo la conversación queda muda para siempre y reasignar
+    // no sirve de nada. El contador vuelve a cero en la misma sentencia: con
+    // los turnos acumulados que dispararon el escalamiento, el primer turno
+    // del bot lo re-escalaría de inmediato.
+    await client.query(
+      `UPDATE conversations
+         SET bot_paused = false,
+             state = (state - 'step') || '{"turnos_sin_resolver": 0}'::jsonb
+       WHERE id = $1`,
+      [row.conversation_id],
+    );
     const phoneNumber = await getConversationCustomerPhone(client, row.conversation_id);
     return { conversationId: row.conversation_id, phoneNumber };
   });

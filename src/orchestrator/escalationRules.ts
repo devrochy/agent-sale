@@ -37,7 +37,13 @@ export const DEFAULT_ESCALATION_CONFIG: EscalationConfig = {
       ],
     },
   ],
-  maxIntentosFallidos: 3,
+  // Subido de 3 a 10 tras probar con conversaciones reales: con 3, una
+  // charla normal —saludo, pregunta por la tienda, respuesta a una
+  // repregunta— escalaba a un humano antes de llegar a hablar de productos.
+  // Solo cuentan los turnos en que el agente no usó ninguna tool, y el
+  // contador se resetea apenas usa una, así que 10 sigue detectando al
+  // agente que da vueltas sin resolver.
+  maxIntentosFallidos: 10,
   montoAltoThreshold: 1000000,
 };
 
