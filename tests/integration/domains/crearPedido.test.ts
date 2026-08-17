@@ -41,7 +41,7 @@ let settingsId: string;
 
 beforeAll(async () => {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3040000001') RETURNING id`,
+    `INSERT INTO customers (external_id, contact_phone) VALUES ('whatsapp:+3040000001', '+3040000001') RETURNING id`,
   );
   customerA = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(
@@ -51,7 +51,7 @@ beforeAll(async () => {
   conversationA = conversation.rows[0]!.id;
 
   const customerBRow = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3040000002') RETURNING id`,
+    `INSERT INTO customers (external_id, contact_phone) VALUES ('whatsapp:+3040000002', '+3040000002') RETURNING id`,
   );
   customerB = customerBRow.rows[0]!.id;
   const conversationBRow = await adminPool.query<{ id: string }>(
@@ -428,7 +428,16 @@ describe("crearPedido", () => {
         status: "faltan_datos_cliente",
         total: 100000,
         missing_fields: ["address", "id_document", "full_name"],
-        existing_data: { address: null, id_document: null, full_name: null, municipality: null, city: null },
+        // `phone` no falta: por WhatsApp la dirección del canal ya es el
+        // teléfono (Fase 19, Etapa C1).
+        existing_data: {
+          address: null,
+          id_document: null,
+          full_name: null,
+          municipality: null,
+          city: null,
+          phone: "+3040000002",
+        },
       });
 
       const count = await adminPool.query(`SELECT COUNT(*) FROM orders WHERE quote_id = $1`, [
@@ -511,6 +520,7 @@ describe("crearPedido", () => {
           full_name: "Cliente B De Prueba",
           municipality: "Envigado",
           city: "Medellín",
+          phone: "+3040000002",
         },
       });
     });
@@ -567,7 +577,7 @@ describe("crearPedido", () => {
 
     beforeAll(async () => {
       const customer = await adminPool.query<{ id: string }>(
-        `INSERT INTO customers (phone_number) VALUES ('3040000003') RETURNING id`,
+        `INSERT INTO customers (external_id, contact_phone) VALUES ('whatsapp:+3040000003', '+3040000003') RETURNING id`,
       );
       customerC = customer.rows[0]!.id;
       const conversation = await adminPool.query<{ id: string }>(
@@ -644,5 +654,161 @@ describe("crearPedido", () => {
         order_id: result.order_id,
       });
     });
+  });
+});
+
+describe("crearPedido — datos del cliente entre canales (Fase 19, Etapa C1)", () => {
+  const TELEFONO = "+573040000900";
+  let customerWapp: string;
+  let customerIg: string;
+  let conversationIg: string;
+
+  beforeAll(async () => {
+    // El mismo humano, dos identidades de canal. La de WhatsApp ya compró y
+    // tiene sus datos de entrega guardados; la de Instagram acaba de escribir
+    // y solo dejó su teléfono.
+    const wapp = await adminPool.query<{ id: string }>(
+      `INSERT INTO customers (channel, external_id, contact_phone, address, id_document, full_name, city)
+       VALUES ('whatsapp', $1, $2, 'Calle 100 # 5-5', '111222333', 'Rob Aguilar', 'Medellín')
+       RETURNING id`,
+      [`whatsapp:${TELEFONO}`, TELEFONO],
+    );
+    customerWapp = wapp.rows[0]!.id;
+
+    const ig = await adminPool.query<{ id: string }>(
+      `INSERT INTO customers (channel, external_id, contact_phone)
+       VALUES ('instagram', '17841400000000900', $1) RETURNING id`,
+      [TELEFONO],
+    );
+    customerIg = ig.rows[0]!.id;
+
+    const conv = await adminPool.query<{ id: string }>(
+      `INSERT INTO conversations (customer_id, channel) VALUES ($1, 'instagram') RETURNING id`,
+      [customerIg],
+    );
+    conversationIg = conv.rows[0]!.id;
+  });
+
+  afterAll(async () => {
+    await adminPool.query(
+      `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+      [conversationIg],
+    );
+    await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationIg]);
+    await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationIg]);
+    await adminPool.query(`DELETE FROM customers WHERE id IN ($1, $2)`, [customerWapp, customerIg]);
+  });
+
+  it("reusa los datos de entrega de la otra identidad cuando el teléfono coincide", async () => {
+    const quote = await generarCotizacion(conversationIg, customerIg, {
+      items: [{ variant_id: variantA, quantity: 1 }],
+    });
+
+    const result = await crearPedido(
+      "sid-c1-cruce",
+      { quote_id: quote.quote_id, payment_method: "transferencia", delivery_method: "domicilio" },
+      1000000,
+    );
+
+    // No confirma nada por sí solo: el modelo tiene que confirmárselos al
+    // cliente igual que con cualquier dato guardado (ADR-033). Lo que evita
+    // es volver a pedirle cédula y dirección a alguien que ya las dio.
+    expect(result.status).toBe("faltan_datos_cliente");
+    expect(result.missing_fields).toEqual([]);
+    expect(result.existing_data).toEqual({
+      address: "Calle 100 # 5-5",
+      id_document: "111222333",
+      full_name: "Rob Aguilar",
+      municipality: null,
+      city: "Medellín",
+      phone: TELEFONO,
+    });
+  });
+
+  it("no cruza datos con un cliente cuyo teléfono no coincide", async () => {
+    const otro = await adminPool.query<{ id: string }>(
+      `INSERT INTO customers (channel, external_id, contact_phone)
+       VALUES ('instagram', '17841400000000901', '+573040000999') RETURNING id`,
+    );
+    const otroId = otro.rows[0]!.id;
+    const conv = await adminPool.query<{ id: string }>(
+      `INSERT INTO conversations (customer_id, channel) VALUES ($1, 'instagram') RETURNING id`,
+      [otroId],
+    );
+    const convId = conv.rows[0]!.id;
+
+    const quote = await generarCotizacion(convId, otroId, {
+      items: [{ variant_id: variantA, quantity: 1 }],
+    });
+    const result = await crearPedido(
+      "sid-c1-sin-cruce",
+      { quote_id: quote.quote_id, payment_method: "transferencia", delivery_method: "domicilio" },
+      1000000,
+    );
+
+    expect(result.missing_fields).toEqual(["address", "id_document", "full_name"]);
+    expect(result.existing_data).toMatchObject({ address: null, phone: "+573040000999" });
+
+    await adminPool.query(
+      `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+      [convId],
+    );
+    await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [convId]);
+    await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [convId]);
+    await adminPool.query(`DELETE FROM customers WHERE id = $1`, [otroId]);
+  });
+
+  it("pide el teléfono cuando el canal no lo trae y el cliente no lo dio", async () => {
+    const sinTel = await adminPool.query<{ id: string }>(
+      `INSERT INTO customers (channel, external_id) VALUES ('instagram', '17841400000000902') RETURNING id`,
+    );
+    const sinTelId = sinTel.rows[0]!.id;
+    const conv = await adminPool.query<{ id: string }>(
+      `INSERT INTO conversations (customer_id, channel) VALUES ($1, 'instagram') RETURNING id`,
+      [sinTelId],
+    );
+    const convId = conv.rows[0]!.id;
+
+    const quote = await generarCotizacion(convId, sinTelId, {
+      items: [{ variant_id: variantA, quantity: 1 }],
+    });
+    const result = await crearPedido(
+      "sid-c1-sin-telefono",
+      { quote_id: quote.quote_id, payment_method: "transferencia", delivery_method: "domicilio" },
+      1000000,
+    );
+
+    expect(result.missing_fields).toContain("phone");
+
+    // Y al darlo queda guardado, que es lo que permite reconocerlo si vuelve
+    // por otro canal.
+    await crearPedido(
+      "sid-c1-con-telefono",
+      {
+        quote_id: quote.quote_id,
+        payment_method: "transferencia",
+        delivery_method: "domicilio",
+        customer_data: { ...customerData, phone: TELEFONO, save_permanently: true },
+      },
+      1000000,
+    );
+    const fila = await adminPool.query<{ contact_phone: string | null }>(
+      `SELECT contact_phone FROM customers WHERE id = $1`,
+      [sinTelId],
+    );
+    expect(fila.rows[0]!.contact_phone).toBe(TELEFONO);
+
+    await adminPool.query(
+      `DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`,
+      [convId],
+    );
+    await adminPool.query(`DELETE FROM orders WHERE conversation_id = $1`, [convId]);
+    await adminPool.query(
+      `DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`,
+      [convId],
+    );
+    await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [convId]);
+    await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [convId]);
+    await adminPool.query(`DELETE FROM customers WHERE id = $1`, [sinTelId]);
   });
 });

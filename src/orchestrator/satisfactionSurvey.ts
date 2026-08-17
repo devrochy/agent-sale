@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import { env } from "../config/env.js";
 import { sendToConversation } from "../gateway/sendMessage.js";
 import { verifyDelivery } from "../jobs/verifyDelivery.js";
+import type { Channel } from "../shared/db/connectionsDirectory.js";
 import { createReviewToken, withTransaction } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { appendMessage } from "./memory.js";
@@ -47,20 +48,23 @@ interface PendingSurveyRow {
   conversation_id: string;
 }
 
-async function findPendingSurvey(customerPhone: string): Promise<string | null> {
+async function findPendingSurvey(
+  customerExternalId: string,
+  channel: Channel,
+): Promise<string | null> {
   return withTransaction(async (client) => {
     const result = await client.query<PendingSurveyRow>(
       `SELECT c.id AS conversation_id
        FROM conversations c
        JOIN customers cu ON cu.id = c.customer_id
-       WHERE cu.phone_number = $1
+       WHERE cu.channel = $2 AND cu.external_id = $1
          AND c.status = 'closed'
          AND c.survey_sent_at IS NOT NULL
          AND c.survey_reply_processed_at IS NULL
          AND c.survey_sent_at >= now() - interval '${SURVEY_REPLY_WINDOW_HOURS} hours'
        ORDER BY c.closed_at DESC
        LIMIT 1`,
-      [customerPhone],
+      [customerExternalId, channel],
     );
     return result.rows[0]?.conversation_id ?? null;
   });
@@ -105,11 +109,14 @@ function buildReviewFormLink(token: string): string {
  * futuros no relacionados como si fueran la respuesta de la encuesta.
  */
 export async function tryCaptureSurveyReply(
-  customerPhone: string,
+  customerExternalId: string,
+  channel: Channel,
   body: string,
   parentLogger: Logger,
 ): Promise<void> {
-  const conversationId = await findPendingSurvey(customerPhone);
+  // El canal acota la búsqueda (Etapa C1): un "5" que entra por Instagram no
+  // puede calificar la conversación de WhatsApp que se cerró ayer.
+  const conversationId = await findPendingSurvey(customerExternalId, channel);
   if (!conversationId) {
     return;
   }

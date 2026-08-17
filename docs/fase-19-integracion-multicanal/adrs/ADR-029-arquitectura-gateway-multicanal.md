@@ -204,7 +204,40 @@ cliente resueltos por conexión, y `/admin/conexiones` configurable.
   conversación **no** pasó a filtrar por conexión (la decisión de producto fue
   "un cliente, una conversación"), y por lo mismo el bug de `findPendingSurvey`
   se disolvió sin necesidad de arreglo. Desbloquea la Fase 21.
-- **Etapa C — Instagram y Messenger.** Refactor de identidad de `customers`.
-  Requiere App Review de Meta para `pages_messaging` /
-  `instagram_manage_messages`; en modo desarrollo solo se puede escribir a
-  admins y testers de la app.
+- **Etapa C1 — identidad de cliente por canal: completa.** Ver
+  [ADR-037](./ADR-037-identidad-de-cliente-por-canal.md). Migración `0054`:
+  `customers.phone_number` → `external_id`, `UNIQUE (channel, external_id)` y
+  `contact_phone`. Es el prerequisito de C2/C3, y de paso corrige la
+  afirmación de esta ADR de que Etapa C era "un refactor de identidad" a secas:
+  también trajo una decisión de producto (hilos separados por canal, datos de
+  gestión compartidos por teléfono).
+- **Etapa C2 — Instagram Direct: completa.** Ver
+  [ADR-038](./ADR-038-instagram-direct-sobre-el-adapter-de-meta.md). Se resolvió
+  por la ruta de cuenta profesional **vinculada a una Página de Facebook**, que
+  va por Instagram Messaging sobre `graph.facebook.com` — el mismo host y el
+  mismo webhook que WhatsApp Cloud API. (Sin vincular habría ido por
+  `graph.instagram.com`, con su propio login, y habría exigido un adapter
+  aparte.)
+
+  Corrige la afirmación de esta ADR de que un solo adapter atiende los tres
+  canales "porque Meta los sirve por el mismo webhook y la misma API de envío":
+  **el webhook sí, la API de envío no**. WhatsApp usa
+  `POST /{phone_number_id}/messages` e Instagram `POST /me/messages`, con otro
+  cuerpo y otro campo para el id devuelto. Sigue habiendo un solo adapter, pero
+  despacha por `payload.object` en la entrada y por `connection.channel` en la
+  salida.
+- **Etapa C3 — Messenger.** Pendiente, y a un despacho de distancia: comparte
+  la Página, la app, el token y la API de envío con Instagram. Para llegar al
+  público general hace falta App Review de Meta (`pages_messaging` /
+  `instagram_manage_messages`, Advanced Access).
+
+  ⚠️ **Corrección:** esta ADR afirmaba que "en modo desarrollo se puede
+  conversar con admins, developers y testers, que alcanza para implementar y
+  validar". Para **Instagram eso es falso**: la documentación de Meta exige que
+  la app esté en modo **Activo** para recibir webhooks
+  ([Webhooks — Instagram Platform](https://developers.facebook.com/docs/instagram-platform/webhooks)).
+  En modo desarrollo el webhook no dispara nunca, y no hay error que lo
+  explique. Pasar a Activo **no** es App Review —es un interruptor, y con
+  acceso estándar la app sigue limitada a las cuentas con rol—, pero exige
+  tener cargadas una URL de política de privacidad válida y una categoría de
+  app. Ver el bloqueo abierto en el README de la fase.

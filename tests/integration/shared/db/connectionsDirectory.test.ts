@@ -252,7 +252,7 @@ describe("connectionsDirectory", () => {
     expect(primary).not.toBeNull();
 
     const customer = await adminPool.query<{ id: string }>(
-      `INSERT INTO customers (phone_number) VALUES ('whatsapp:+570000000777') RETURNING id`,
+      `INSERT INTO customers (external_id) VALUES ('whatsapp:+570000000777') RETURNING id`,
     );
     const customerId = customer.rows[0]!.id;
     const conversacion = await adminPool.query<{ id: string }>(

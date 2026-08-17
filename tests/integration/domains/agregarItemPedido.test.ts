@@ -46,7 +46,7 @@ async function crearPedidoAbierto(messageSid: string, quantity = 1): Promise<{ o
 
 beforeAll(async () => {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3040000003') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('3040000003') RETURNING id`,
   );
   customerA = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(

@@ -102,7 +102,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         customer_data: {
           type: "object",
           description:
-            "Datos de entrega del cliente para este pedido. Requerido para que el pedido quede confirmado — si no se manda (o falta address/id_document/full_name), la tool devuelve status 'faltan_datos_cliente' con lo que ya haya guardado (existing_data) y qué falta (missing_fields), sin confirmar nada. Nunca reutilices en silencio datos guardados de un pedido anterior: confirmá explícitamente con el cliente (ej. '¿tu dirección sigue siendo la misma?') antes de volver a llamar la tool con customer_data.",
+            "Datos de entrega del cliente para este pedido. Requerido para que el pedido quede confirmado — si no se manda (o falta alguno), la tool devuelve status 'faltan_datos_cliente' con lo que ya haya guardado (existing_data) y qué falta (missing_fields), sin confirmar nada. Nunca reutilices en silencio datos guardados de un pedido anterior: confirmá explícitamente con el cliente (ej. '¿tu dirección sigue siendo la misma?') antes de volver a llamar la tool con customer_data.",
           properties: {
             address: { type: "string", description: "Dirección de entrega." },
             id_document: { type: "string", description: "Número de cédula o documento de identidad." },
@@ -112,6 +112,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             },
             municipality: { type: "string", description: "Municipio, si el cliente lo menciona (opcional)." },
             city: { type: "string", description: "Ciudad, si el cliente lo menciona (opcional)." },
+            phone: {
+              type: "string",
+              description:
+                "Teléfono de contacto. Solo pedilo si 'phone' aparece en missing_fields — pasa cuando el cliente escribe por Instagram o Messenger, donde no tenemos su número. Por WhatsApp ya lo tenemos y no hay que preguntarlo.",
+            },
             save_permanently: {
               type: "boolean",
               description: "true si el cliente aceptó guardar estos datos para futuros pedidos.",

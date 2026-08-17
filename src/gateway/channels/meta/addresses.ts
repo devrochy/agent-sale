@@ -3,7 +3,7 @@
  *
  * El canónico es `whatsapp:+E164` (regla fijada en ADR-029): el prefijo es
  * sintaxis de transporte de Twilio, pero se conserva como formato interno
- * porque está grabado en `customers.phone_number`, en `admins.phone` y en los
+ * porque está grabado en `customers.external_id`, en `admins.phone` y en los
  * helpers del panel. **El adapter es el único dueño de traducirlo.**
  *
  * Meta manda y recibe el `wa_id` en dígitos pelados: `573184935933`.

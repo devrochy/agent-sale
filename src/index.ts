@@ -3,7 +3,7 @@ import { buildServer } from "./gateway/server.js";
 import { startJobScheduler } from "./jobs/scheduler.js";
 import { startConsumer } from "./orchestrator/consumer.js";
 import { startDebounceScheduler } from "./orchestrator/debounceScheduler.js";
-import { ensureConnectionsFromEnv } from "./shared/db/index.js";
+import { ensureConnectionsFromEnv, ensureSettingsRow } from "./shared/db/index.js";
 
 /**
  * Entrypoint único del monolito modular: arranca el servidor HTTP del
@@ -18,6 +18,11 @@ import { ensureConnectionsFromEnv } from "./shared/db/index.js";
 // Antes de aceptar tráfico: sin la conexión sembrada, el primer webhook
 // entrante no encontraría a qué conexión pertenece y el mensaje del cliente
 // se perdería (Twilio no reintenta de forma confiable). Es idempotente.
+// La fila singleton de `settings` no nace de ninguna migración (ver
+// ensureSettingsRow): sin ella el panel responde 404 en /login y una
+// instalación nueva parece rota. Va antes que las conexiones porque el
+// panel es lo primero que se abre en un despliegue recién hecho.
+await ensureSettingsRow();
 await ensureConnectionsFromEnv();
 
 const app = await buildServer();

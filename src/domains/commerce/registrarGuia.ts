@@ -31,9 +31,9 @@ export async function registrarGuia(orderId: string, input: RegistrarGuiaInput):
       shipped_at: string | null;
       conversation_id: string;
       public_order_number: string;
-      phone_number: string;
+      external_id: string;
     }>(
-      `SELECT o.shipped_at, o.conversation_id, o.public_order_number, c.phone_number
+      `SELECT o.shipped_at, o.conversation_id, o.public_order_number, c.external_id
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        WHERE o.id = $1
@@ -57,7 +57,7 @@ export async function registrarGuia(orderId: string, input: RegistrarGuiaInput):
       isFirstTime,
       conversationId: order.conversation_id,
       publicOrderNumber: order.public_order_number,
-      phoneNumber: order.phone_number,
+      phoneNumber: order.external_id,
     };
   });
 

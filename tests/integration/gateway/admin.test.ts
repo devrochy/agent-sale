@@ -112,7 +112,7 @@ beforeAll(async () => {
   );
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000000', 'Cliente Overview') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000000', 'Cliente Overview') RETURNING id`,
   );
   customerIds.push(customer.rows[0]!.id);
   const conversation = await adminPool.query<{ id: string }>(
@@ -131,7 +131,7 @@ beforeAll(async () => {
   // mensaje trae tool_calls para probar que la vista reusa el mismo
   // renderMessageBody() del inbox del asesor (handoffView.ts).
   const customerEscalado = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000006', 'Cliente Escalado') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000006', 'Cliente Escalado') RETURNING id`,
   );
   customerIds.push(customerEscalado.rows[0]!.id);
   const conversationEscalada = await adminPool.query<{ id: string }>(
@@ -161,7 +161,7 @@ beforeAll(async () => {
   // Ticket de riesgo ("Vigilante", Fase 12.1) — reason 'queja' debe
   // resaltarse distinto de un escalamiento rutinario como el de arriba.
   const customerQueja = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000005', 'Cliente Molesto') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000005', 'Cliente Molesto') RETURNING id`,
   );
   customerIds.push(customerQueja.rows[0]!.id);
   const conversationQueja = await adminPool.query<{ id: string }>(
@@ -182,7 +182,7 @@ beforeAll(async () => {
 
   // Conversación cerrada — cubre el tab "Cerradas".
   const customerCerrado = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('whatsapp:+573000000002') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('whatsapp:+573000000002') RETURNING id`,
   );
   customerIds.push(customerCerrado.rows[0]!.id);
   const conversationCerrada = await adminPool.query<{ id: string }>(
@@ -200,7 +200,7 @@ beforeAll(async () => {
   // Leads con cotización y con pedido — cubren las 4 categorías del
   // funnel de metricas-cierre-ventas.md que la vista de Leads reusa.
   const customerCotizacion = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000003', 'Cliente Con Cotización') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000003', 'Cliente Con Cotización') RETURNING id`,
   );
   customerIds.push(customerCotizacion.rows[0]!.id);
   const conversationCotizacion = await adminPool.query<{ id: string }>(
@@ -229,7 +229,7 @@ beforeAll(async () => {
   );
 
   const customerPedido = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000004', 'Cliente Con Pedido') RETURNING id`,
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000004', 'Cliente Con Pedido') RETURNING id`,
   );
   customerIds.push(customerPedido.rows[0]!.id);
   const conversationPedido = await adminPool.query<{ id: string }>(
@@ -673,7 +673,7 @@ describe("panel admin", () => {
 
     beforeAll(async () => {
       const customer = await adminPool.query<{ id: string }>(
-        `INSERT INTO customers (phone_number, name) VALUES ('whatsapp:+573000000007', 'Cliente Fase 18') RETURNING id`,
+        `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000007', 'Cliente Fase 18') RETURNING id`,
       );
       customerId = customer.rows[0]!.id;
       const conversation = await adminPool.query<{ id: string }>(
@@ -1072,7 +1072,7 @@ describe("panel admin", () => {
 
       const response = await app.inject({
         method: "POST",
-        url: "/admin/conexiones/meta",
+        url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({
           phoneNumberId: "111222333444555",
@@ -1106,7 +1106,7 @@ describe("panel admin", () => {
 
       const response = await app.inject({
         method: "POST",
-        url: "/admin/conexiones/meta",
+        url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({
           phoneNumberId: "000111222333444",
@@ -1130,13 +1130,87 @@ describe("panel admin", () => {
       verifyCredentials.mockClear();
       const response = await app.inject({
         method: "POST",
-        url: "/admin/conexiones/meta",
+        url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({ phoneNumberId: "123", appSecret: "x" }).toString(),
       });
 
       expect(response.headers.location).toContain("error=");
       expect(verifyCredentials).not.toHaveBeenCalled();
+    });
+
+    it("da de alta una conexión de Instagram sin pedir Phone Number ID", async () => {
+      // La clave de ruteo de Instagram es el IGID, y solo lo sabe Meta: el
+      // admin no lo tipea. Guardar otra cosa daría una conexión válida a la
+      // vista cuyo webhook no matchea nunca.
+      verifyCredentials.mockResolvedValueOnce({
+        externalId: "17841400000000777",
+        displayAddress: "@formotos",
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/instagram",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          appSecret: "secreto-meta",
+          accessToken: "token-de-pagina",
+          verifyToken: "verify-meta",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{
+        channel: string;
+        provider: string;
+        external_id: string;
+        display_address: string;
+      }>(
+        `SELECT channel, provider, external_id, display_address FROM channel_connections WHERE external_id = $1`,
+        ["17841400000000777"],
+      );
+      expect(fila.rows[0]).toMatchObject({
+        channel: "instagram",
+        provider: "meta",
+        external_id: "17841400000000777",
+        display_address: "@formotos",
+      });
+
+      await adminPool.query(`DELETE FROM channel_connections WHERE external_id = $1`, [
+        "17841400000000777",
+      ]);
+      invalidateConnectionsCache();
+    });
+
+    it("rechaza un canal que el adapter de Meta todavía no atiende", async () => {
+      verifyCredentials.mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/messenger",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          appSecret: "x",
+          accessToken: "x",
+          verifyToken: "x",
+        }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(verifyCredentials).not.toHaveBeenCalled();
+    });
+
+    it("el formulario de Instagram no imprime ningún secreto en claro", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conexiones",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("Conectar Instagram");
+      expect(response.body).toContain("/admin/conexiones/meta/instagram");
+      expect(response.body).not.toContain("secreto-meta");
+      expect(response.body).not.toContain("token-de-pagina");
     });
 
     it("un admin que no es master no puede entrar a Conexiones", async () => {

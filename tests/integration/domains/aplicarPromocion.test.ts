@@ -38,7 +38,7 @@ let settingsId: string;
 
 async function seedContext(phone: string) {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
     [phone],
   );
   const conversation = await adminPool.query<{ id: string }>(

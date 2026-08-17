@@ -192,7 +192,7 @@ interface PedidoRow {
   delivery_method: string;
   total: string;
   created_at: string;
-  phone_number: string;
+  external_id: string;
   customer_name: string | null;
   delivery_address: string | null;
   delivery_id_document: string | null;
@@ -454,7 +454,7 @@ async function navRail(
     conexionesActivas.length === 0
       ? "Sin canal configurado"
       : conexionesActivas.length === 1
-        ? `${conexionesActivas[0]!.channel === "whatsapp" ? "WhatsApp" : conexionesActivas[0]!.channel} configurado`
+        ? `${CHANNEL_LABEL[conexionesActivas[0]!.channel]} configurado`
         : `${conexionesActivas.length} canales configurados`;
 
   const perfilActive = active === "perfil";
@@ -599,6 +599,16 @@ const STYLE_BLOCK = `
   --go-soft: rgba(46, 125, 79, 0.1);
   --violet: #6E4EA6;
   --violet-soft: rgba(110, 78, 166, 0.1);
+  /* Canales (Fase 19): el tono de marca de cada uno, bajado de saturación
+     para convivir con el resto de la paleta. El color hace el trabajo de
+     reconocimiento antes que el texto — en la tabla de Clientes se escanea
+     una columna entera de un vistazo. */
+  --wa: #1A8049;
+  --wa-soft: rgba(37, 211, 102, 0.14);
+  --ig: #B32D74;
+  --ig-soft: rgba(225, 48, 108, 0.12);
+  --fb: #1264C8;
+  --fb-soft: rgba(0, 132, 255, 0.12);
   --shadow: 0 1px 2px rgba(20, 24, 29, 0.04), 0 8px 24px rgba(20, 24, 29, 0.06);
   --font-display: "Oxanium", ui-monospace, monospace;
   --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
@@ -611,6 +621,9 @@ const STYLE_BLOCK = `
     --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
     --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
     --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
+    --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
+    --ig: #F06AA0; --ig-soft: rgba(225,48,108,0.18);
+    --fb: #5AA9FF; --fb-soft: rgba(0,132,255,0.18);
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);
   }
 }
@@ -793,6 +806,9 @@ section.block { margin-bottom: 34px; }
 .chip--inactive { color: var(--redline); background: var(--panel-inset); }
 .chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
 .chip--violet { color: var(--violet); background: var(--violet-soft); }
+.chip--whatsapp { color: var(--wa); background: var(--wa-soft); }
+.chip--instagram { color: var(--ig); background: var(--ig-soft); }
+.chip--messenger { color: var(--fb); background: var(--fb-soft); }
 @media (max-width: 560px) { .convrow { grid-template-columns: 1fr; } .convrow__meta { grid-column: 1; justify-content: flex-start; } }
 .empty { padding: 28px 20px; color: var(--ink-faint); font-size: 13px; }
 table { border-collapse: collapse; width: 100%; min-width: 720px; table-layout: fixed; font-size: 13.5px; }
@@ -2244,7 +2260,7 @@ interface ActividadDiaRow {
 
 interface ConversacionRecienteRow {
   customer_name: string | null;
-  phone_number: string;
+  external_id: string;
   content: string;
   created_at: string;
   has_order: boolean;
@@ -2308,7 +2324,7 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
     );
 
     const recientesResult = await client.query<ConversacionRecienteRow>(
-      `SELECT c.name AS customer_name, c.phone_number, m.content, m.created_at,
+      `SELECT c.name AS customer_name, c.external_id, m.content, m.created_at,
               exists(select 1 from orders o where o.conversation_id = conv.id) AS has_order,
               exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS has_open_handoff
        FROM conversations conv
@@ -2350,7 +2366,7 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
       if (row.has_order) chip = '<span class="chip chip--go">Pedido confirmado</span>';
       else if (row.has_open_handoff) chip = '<span class="chip chip--redline">Escalada</span>';
       return `<li class="convrow">
-        <span class="convrow__who">${escapeHtml(row.customer_name ?? row.phone_number)}</span>
+        <span class="convrow__who">${escapeHtml(row.customer_name ?? row.external_id)}</span>
         <span class="convrow__meta">${chip}${formatRelativo(row.created_at)}</span>
         <span class="convrow__msg">${escapeHtml(row.content)}</span>
       </li>`;
@@ -2467,7 +2483,7 @@ interface ConversacionListRow {
   id: string;
   status: string;
   customer_name: string | null;
-  phone_number: string;
+  external_id: string;
   channel: Channel;
   /** `null` en conversaciones anteriores al backfill o con la conexión retirada. */
   provider: Provider | null;
@@ -2483,9 +2499,9 @@ interface ConversacionListRow {
  * entrar por Twilio o por Meta, y saber por cuál importa para diagnosticar.
  */
 function conversacionCanalChip(channel: Channel, provider: Provider | null): string {
-  const canal = channel === "whatsapp" ? "WhatsApp" : channel;
+  const canal = CHANNEL_LABEL[channel];
   const etiqueta = provider ? `${canal} · ${PROVIDER_LABEL[provider]}` : canal;
-  return `<span class="chip chip--muted">${escapeHtml(etiqueta)}</span>`;
+  return `<span class="chip ${CHANNEL_CHIP[channel]}">${escapeHtml(etiqueta)}</span>`;
 }
 
 interface ConversacionDetalleRow {
@@ -2495,7 +2511,7 @@ interface ConversacionDetalleRow {
   closed_at: string | null;
   bot_paused: boolean;
   customer_name: string | null;
-  phone_number: string;
+  external_id: string;
   handoff_id: string | null;
   handoff_reason: string | null;
   handoff_status: string | null;
@@ -2529,7 +2545,7 @@ export async function renderConversacionesPage(
 
   const { lista, detalle, mensajes } = await withTransaction(async (client) => {
     const listaResult = await client.query<ConversacionListRow>(
-      `SELECT conv.id, conv.status, c.name AS customer_name, c.phone_number,
+      `SELECT conv.id, conv.status, c.name AS customer_name, c.external_id,
               conv.channel, cx.provider,
               m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
               exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada
@@ -2552,7 +2568,7 @@ export async function renderConversacionesPage(
 
     const detalleResult = await client.query<ConversacionDetalleRow>(
       `SELECT conv.id, conv.status, conv.started_at, conv.closed_at, conv.bot_paused,
-              c.name AS customer_name, c.phone_number,
+              c.name AS customer_name, c.external_id,
               h.id AS handoff_id, h.reason AS handoff_reason, h.status AS handoff_status,
               h.summary AS handoff_summary, a.username AS handoff_assigned_to,
               exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada
@@ -2589,7 +2605,7 @@ export async function renderConversacionesPage(
 
   const listaHtml = lista
     .map((row) => {
-      const who = row.customer_name ?? row.phone_number;
+      const who = row.customer_name ?? row.external_id;
       return `<li>
         <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/conversaciones?estado=${estado}&c=${row.id}">
           <div class="convitem__row">
@@ -2605,7 +2621,7 @@ export async function renderConversacionesPage(
 
   let detalleHtml = `<div class="thread__empty">Selecciona una conversación de la lista.</div>`;
   if (detalle) {
-    const who = detalle.customer_name ?? detalle.phone_number;
+    const who = detalle.customer_name ?? detalle.external_id;
     const bubbles = mensajes
       .map(
         (row) =>
@@ -2701,7 +2717,7 @@ export async function renderConversacionesPage(
         <div>
           <h2>${escapeHtml(who)}</h2>
           <div class="thread__metarow">
-            <span class="thread__meta">${escapeHtml(detalle.phone_number)} ${conversacionEstadoChip(detalle.status, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
+            <span class="thread__meta">${escapeHtml(detalle.external_id)} ${conversacionEstadoChip(detalle.status, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
           </div>
         </div>
         <div class="thread__headactions">
@@ -2778,7 +2794,7 @@ const SEGMENT_CHIP: Record<CustomerSegment, string> = {
 
 const LEADS_QUERY = `
   SELECT
-    c.id, c.name, c.phone_number, c.created_at, c.bot_paused,
+    c.id, c.name, c.external_id, c.channel, c.contact_phone, c.created_at, c.bot_paused,
     c.full_name, c.id_document, c.address, c.municipality, c.city,
     m.content AS ultimo_mensaje,
     CASE
@@ -2820,7 +2836,9 @@ const LEADS_QUERY = `
 interface LeadRow {
   id: string;
   name: string | null;
-  phone_number: string;
+  external_id: string;
+  channel: Channel;
+  contact_phone: string | null;
   created_at: string;
   bot_paused: boolean;
   full_name: string | null;
@@ -2852,7 +2870,7 @@ async function fetchLeads(): Promise<LeadRowWithSegment[]> {
 
 /** Modal "ver/editar información del cliente" (Fase 23 sub-fase 3, ver ADR-036) — edita el perfil permanente (`customers.*`), nunca `orders.delivery_*` (esa es la copia congelada de un pedido en curso, Fase 15/ADR-033). */
 function leadDetailDialogHtml(dialogId: string, row: LeadRowWithSegment): string {
-  const who = row.name ?? row.phone_number;
+  const who = row.name ?? row.external_id;
   return `<dialog id="${dialogId}" class="modal">
     <div class="blockhead"><h2>Información de ${escapeHtml(who)}</h2></div>
     <form method="POST" action="/admin/leads/${row.id}">
@@ -2860,9 +2878,16 @@ function leadDetailDialogHtml(dialogId: string, row: LeadRowWithSegment): string
         <label for="${dialogId}-nombre">Nombre completo</label>
         <input type="text" id="${dialogId}-nombre" name="fullName" value="${escapeHtml(row.full_name ?? "")}">
       </div>
-      <div class="field">
-        <label for="${dialogId}-telefono">Teléfono</label>
-        <input type="text" id="${dialogId}-telefono" value="${escapeHtml(row.phone_number)}" disabled>
+      <div class="fieldgrid">
+        <div class="field">
+          <label for="${dialogId}-direccion-canal">Dirección en ${escapeHtml(CHANNEL_LABEL[row.channel])}</label>
+          <input type="text" id="${dialogId}-direccion-canal" value="${escapeHtml(row.external_id)}" disabled>
+          <p class="hint">Por dónde escribió. No se edita: es la clave con la que el agente le responde.</p>
+        </div>
+        <div class="field">
+          <label for="${dialogId}-telefono">Teléfono de contacto</label>
+          <input type="text" id="${dialogId}-telefono" value="${escapeHtml(row.contact_phone ?? "")}" disabled>
+        </div>
       </div>
       <div class="field">
         <label for="${dialogId}-cedula">Cédula</label>
@@ -2915,18 +2940,21 @@ export async function renderLeadsPage(
 
   const tableRows = rows
     .map((row) => {
-      const who = row.name ?? row.phone_number;
+      const who = row.name ?? row.external_id;
       const promoDialogId = `promo-lead-${row.id}`;
       const detailDialogId = `detalle-lead-${row.id}`;
-      const search = [row.name, row.phone_number, row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
+      const search = [row.name, row.external_id, row.contact_phone, CHANNEL_LABEL[row.channel], row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
       // Ver ADR-035 "Leads no puede crear una promoción 1:1": la promoción
       // queda anclada al segmento del cliente, no al cliente puntual.
       const warning = `Esta promoción aplicará a todos los clientes clasificados como "${SEGMENT_LABEL[row.segment]}", no solo a ${who}.`;
+      // El canal va pegado al nombre y no en una columna propia: desde la
+      // Etapa C1 el mismo humano puede aparecer como dos filas (una por canal)
+      // y sin esta marca se leen como duplicados de la base.
       return `<tr data-search="${escapeHtml(search)}">
-        <td>${escapeHtml(who)}</td>
+        <td>${escapeHtml(who)} <span class="chip ${CHANNEL_CHIP[row.channel]}">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></td>
         <td><span class="chip ${SEGMENT_CHIP[row.segment]}">${escapeHtml(SEGMENT_LABEL[row.segment])}</span></td>
         <td>${toggleSwitchHtml(`/admin/leads/${row.id}`, !row.bot_paused, `el bot para "${who}"`)}</td>
         <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
@@ -2997,7 +3025,7 @@ export async function exportLeadsCsv(): Promise<string | null> {
     ["nombre", "telefono", "ultimo_mensaje", "estado", "clasificacion", "pedidos", "ultima_compra", "ciudad", "cliente_desde"],
     rows.map((row) => [
       row.name ?? "",
-      row.phone_number,
+      row.external_id,
       row.ultimo_mensaje ?? "",
       LEAD_ESTADO_LABEL[row.estado],
       SEGMENT_LABEL[row.segment],
@@ -3047,13 +3075,13 @@ export async function desactivarBotConversacion(conversationId: string): Promise
 
 /** Único punto que resuelve el teléfono del cliente dueño de una conversación — reusado por tomarTicket/resolverTicket/reasignarTicketABot para notificarlo por WhatsApp. */
 async function getConversationCustomerPhone(client: PoolClient, conversationId: string): Promise<string | null> {
-  const result = await client.query<{ phone_number: string }>(
-    `SELECT c.phone_number FROM customers c
+  const result = await client.query<{ external_id: string }>(
+    `SELECT c.external_id FROM customers c
      JOIN conversations conv ON conv.customer_id = c.id
      WHERE conv.id = $1`,
     [conversationId],
   );
-  return result.rows[0]?.phone_number ?? null;
+  return result.rows[0]?.external_id ?? null;
 }
 
 /** Best-effort (mismo criterio que escalarHumano.ts): un fallo al notificar no debe revertir la acción sobre el ticket, que ya quedó confirmada. */
@@ -3291,7 +3319,7 @@ interface TicketRow {
   resolved_at: string | null;
   summary: string | null;
   customer_name: string | null;
-  phone_number: string;
+  external_id: string;
   conversation_status: string;
 }
 
@@ -3310,7 +3338,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
   const rows = await withTransaction(async (client) => {
     const result = await client.query<TicketRow>(
       `SELECT h.id, h.conversation_id, h.reason, h.status, h.created_at, h.resolved_at, h.summary,
-              a.username AS assigned_to_name, c.name AS customer_name, c.phone_number,
+              a.username AS assigned_to_name, c.name AS customer_name, c.external_id,
               conv.status AS conversation_status
        FROM handoff_queue h
        JOIN conversations conv ON conv.id = h.conversation_id
@@ -3327,7 +3355,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
 
   const tableRows = rows
     .map((row) => {
-      const who = row.customer_name ?? row.phone_number;
+      const who = row.customer_name ?? row.external_id;
       const reasonLabel = HANDOFF_REASON_LABEL[row.reason] ?? row.reason;
       const isRisky = RISKY_REASONS.has(row.reason);
       const statusLabel = HANDOFF_STATUS_LABEL[row.status] ?? row.status;
@@ -3824,6 +3852,23 @@ const PROVIDER_LABEL: Record<Provider, string> = {
   meta: "Meta Cloud API",
 };
 
+const CHANNEL_LABEL: Record<Channel, string> = {
+  whatsapp: "WhatsApp",
+  instagram: "Instagram",
+  messenger: "Messenger",
+};
+
+/**
+ * Clase de color por canal. Va como `Record<Channel, ...>` y no con un default
+ * por si acaso: si mañana se agrega un canal, esto deja de compilar y obliga a
+ * elegirle un color, en vez de dejarlo gris y que nadie lo note.
+ */
+const CHANNEL_CHIP: Record<Channel, string> = {
+  whatsapp: "chip--whatsapp",
+  instagram: "chip--instagram",
+  messenger: "chip--messenger",
+};
+
 /**
  * Path del webhook por proveedor. Twilio conserva `/webhooks/whatsapp` para
  * siempre: ese path exacto entra en su HMAC, así que cambiarlo tumbaría todo
@@ -3844,10 +3889,16 @@ function credentialFieldsHtml(connection: ConnectionSummary): string {
   if (connection.provider === "meta") {
     return `
       <div class="fieldgrid">
-        <div class="field">
+        ${
+          // Instagram no tiene Phone Number ID: su clave de ruteo es el IGID,
+          // que reporta Meta al validar y no se edita a mano.
+          connection.channel === "whatsapp"
+            ? `<div class="field">
           <label for="pnid-${id}">Phone Number ID</label>
           <input type="text" id="pnid-${id}" name="phoneNumberId" placeholder="123456789012345" autocomplete="off">
-        </div>
+        </div>`
+            : ""
+        }
         <div class="field">
           <label for="appsecret-${id}">App Secret</label>
           <input type="password" id="appsecret-${id}" name="appSecret" autocomplete="off">
@@ -3880,7 +3931,7 @@ function credentialFieldsHtml(connection: ConnectionSummary): string {
 /** Una tarjeta por conexión configurada. */
 function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): string {
   const webhookUrl = webhookUrlFor(connection.provider);
-  const titulo = `${connection.channel === "whatsapp" ? "WhatsApp" : connection.channel} · ${PROVIDER_LABEL[connection.provider]}`;
+  const titulo = `${CHANNEL_LABEL[connection.channel]} · ${PROVIDER_LABEL[connection.provider]}`;
 
   // Desactivar la última conexión activa deja al bot mudo: sin ninguna
   // conexión no hay por dónde responder, ni siquiera las notificaciones a
@@ -3958,7 +4009,7 @@ function nuevaConexionMetaHtml(): string {
             <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
           </div>
         </div>
-        <form method="POST" action="/admin/conexiones/meta">
+        <form method="POST" action="/admin/conexiones/meta/whatsapp">
           <div class="fieldgrid">
             <div class="field">
               <label for="nueva-pnid">Phone Number ID</label>
@@ -3979,6 +4030,66 @@ function nuevaConexionMetaHtml(): string {
               <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
             </div>
           </div>
+          <div class="formfoot">
+            <button type="submit" class="btn btn--primary">Probar y conectar</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  `;
+}
+
+/**
+ * Alta de Instagram Direct (Etapa C2). Comparte con la de WhatsApp la app de
+ * Meta, el App Secret, el verify token y la URL de webhook — de ahí que no se
+ * pida un Phone Number ID ni nada equivalente: la clave de ruteo es el IGID de
+ * la cuenta, y lo reporta Meta al validar.
+ */
+function nuevaConexionInstagramHtml(): string {
+  const webhookUrl = webhookUrlFor("meta");
+  return `
+    <section class="block block--narrow" aria-label="Conectar Instagram">
+      <div class="blockhead">
+        <h2>Conectar Instagram</h2>
+        <span class="hint">Instagram Direct</span>
+      </div>
+      <div class="panel connection">
+        <p class="hint">
+          Los DM de Instagram entran como conversaciones propias, separadas de
+          las de WhatsApp. Requiere una cuenta profesional vinculada a una
+          Página de Facebook.
+        </p>
+        <div class="connection__webhook">
+          <label for="webhook-url-ig-nueva">URL de webhook (la misma de Meta)</label>
+          <div class="copyrow">
+            <code id="webhook-url-ig-nueva" class="mono">${escapeHtml(webhookUrl)}</code>
+            <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
+          </div>
+        </div>
+        <form method="POST" action="/admin/conexiones/meta/instagram">
+          <div class="fieldgrid">
+            <div class="field">
+              <label for="ig-appsecret">App Secret</label>
+              <input type="password" id="ig-appsecret" name="appSecret" autocomplete="off" required>
+              <p class="hint">El mismo de tu app de Meta, si ya conectaste WhatsApp por acá.</p>
+            </div>
+            <div class="field">
+              <label for="ig-token">Access Token de la Página</label>
+              <input type="password" id="ig-token" name="accessToken" autocomplete="off" required>
+              <p class="hint">Se genera en Messenger → Configuración → Generar token, para la Página vinculada a tu Instagram.</p>
+            </div>
+            <div class="field">
+              <label for="ig-verify">Verify Token</label>
+              <input type="password" id="ig-verify" name="verifyToken" autocomplete="off" required>
+              <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá.</p>
+            </div>
+          </div>
+          <p class="hint">
+            Antes de probar: en Instagram, <strong>Configuración → Mensajes y respuestas a
+            historias → Controles de mensajes → Herramientas conectadas</strong>, activá
+            <em>permitir el acceso a los mensajes</em>. Si queda apagado no llega ningún
+            mensaje y Meta no reporta ningún error.
+          </p>
           <div class="formfoot">
             <button type="submit" class="btn btn--primary">Probar y conectar</button>
           </div>
@@ -4018,7 +4129,13 @@ export async function renderConexionesPage(
       ? `<div class="banner banner--ok">Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.</div>`
       : "";
 
-  const yaHayMeta = connections.some((c) => c.provider === "meta");
+  // Por canal y no por proveedor (Etapa C2): tener WhatsApp por Meta ya no
+  // implica tener Instagram, y con el chequeo viejo el alta de Instagram
+  // quedaba oculta justamente para quien ya había conectado WhatsApp.
+  const yaHayWhatsAppMeta = connections.some(
+    (c) => c.provider === "meta" && c.channel === "whatsapp",
+  );
+  const yaHayInstagram = connections.some((c) => c.channel === "instagram");
   const tarjetas = connections.length
     ? connections.map((c) => connectionCardHtml(c, esUnica && c.active)).join("")
     : emptyState(
@@ -4035,7 +4152,8 @@ export async function renderConexionesPage(
     </div>
     ${banner}
     ${tarjetas}
-    ${yaHayMeta ? "" : nuevaConexionMetaHtml()}
+    ${yaHayWhatsAppMeta ? "" : nuevaConexionMetaHtml()}
+    ${yaHayInstagram ? "" : nuevaConexionInstagramHtml()}
   `;
 
   return layout("Conexiones", tenant, body, "conexiones", admin);
@@ -4051,23 +4169,33 @@ export async function renderConexionesPage(
  * corregir solo el token sin volver a tipear el SID.
  */
 /**
- * Campos de credencial que acepta el panel, por proveedor. Solo estos se leen
- * del formulario: una lista blanca evita que un campo inesperado del body
- * termine guardado dentro del blob cifrado.
+ * Campos de credencial que acepta el panel. Solo estos se leen del formulario:
+ * una lista blanca evita que un campo inesperado del body termine guardado
+ * dentro del blob cifrado.
+ *
+ * Depende del canal además del proveedor (Etapa C2): una conexión de Meta para
+ * WhatsApp necesita el Phone Number ID, y una de Instagram no —su clave de
+ * ruteo es el IGID, que no lo tipea el admin sino que lo reporta Meta al
+ * validar—. Pedirlo igual sería pedir un dato que nadie tiene a mano.
  */
-const CREDENTIAL_FIELDS: Record<Provider, string[]> = {
-  twilio: ["accountSid", "authToken"],
-  meta: ["phoneNumberId", "appSecret", "accessToken", "verifyToken"],
-};
+function credentialFieldsFor(channel: Channel, provider: Provider): string[] {
+  if (provider === "meta") {
+    return channel === "whatsapp"
+      ? ["phoneNumberId", "appSecret", "accessToken", "verifyToken"]
+      : ["appSecret", "accessToken", "verifyToken"];
+  }
+  return ["accountSid", "authToken"];
+}
 
 /** Los campos vacíos conservan lo ya guardado; los que traen valor lo pisan. */
 function mergeCredentials(
+  channel: Channel,
   provider: Provider,
   actuales: ConnectionCredentials,
   input: Record<string, string | undefined>,
 ): ConnectionCredentials {
   const merged: ConnectionCredentials = { ...actuales };
-  for (const campo of CREDENTIAL_FIELDS[provider]) {
+  for (const campo of credentialFieldsFor(channel, provider)) {
     const valor = input[campo]?.trim();
     if (valor) {
       merged[campo] = valor;
@@ -4085,11 +4213,19 @@ export async function guardarCredencialesConexion(
     return { ok: false, error: "La conexión no existe." };
   }
 
-  const credentials = mergeCredentials(existente.provider, existente.credentials, input);
+  const credentials = mergeCredentials(
+    existente.channel,
+    existente.provider,
+    existente.credentials,
+    input,
+  );
 
   let verificadas;
   try {
-    verificadas = await outboundAdapterFor(existente.provider).verifyCredentials(credentials);
+    verificadas = await outboundAdapterFor(existente.provider).verifyCredentials(
+      credentials,
+      existente.channel,
+    );
   } catch (error) {
     // El mensaje del error va explícito: pino no serializa un Error puesto
     // bajo una clave propia, y sin esto el log sale como `error:{}`, inútil
@@ -4928,7 +5064,7 @@ export async function renderPedidosPage(
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
               o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier,
-              c.phone_number, c.name AS customer_name,
+              c.external_id, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
                   FILTER (WHERE oi.id IS NOT NULL),
@@ -4939,7 +5075,7 @@ export async function renderPedidosPage(
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier, c.phone_number, c.name
+       GROUP BY o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier, c.external_id, c.name
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -4957,7 +5093,7 @@ export async function renderPedidosPage(
       const search = [
         row.public_order_number,
         row.customer_name,
-        row.phone_number,
+        row.external_id,
         row.status,
         row.payment_method,
         row.delivery_method,
@@ -5000,7 +5136,7 @@ export async function renderPedidosPage(
 
       return `<tr data-search="${escapeHtml(search)}">
         <td class="mono">${escapeHtml(row.public_order_number)}</td>
-        <td>${escapeHtml(row.customer_name ?? row.phone_number)}</td>
+        <td>${escapeHtml(row.customer_name ?? row.external_id)}</td>
         <td><ul class="items">${items}</ul>${entrega}</td>
         <td>${escapeHtml(row.status)}</td>
         <td>${pago}</td>
@@ -6789,10 +6925,11 @@ export async function marcarConexionPrimary(connectionId: string): Promise<void>
  * de lo que tipeó el admin sin confirmar.
  */
 export async function crearConexionMeta(
+  channel: Channel,
   input: Record<string, string | undefined>,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const credentials: ConnectionCredentials = {};
-  for (const campo of CREDENTIAL_FIELDS.meta) {
+  for (const campo of credentialFieldsFor(channel, "meta")) {
     const valor = input[campo]?.trim();
     if (!valor) {
       return { ok: false, error: `Falta ${campo}.` };
@@ -6802,10 +6939,10 @@ export async function crearConexionMeta(
 
   let verificadas;
   try {
-    verificadas = await outboundAdapterFor("meta").verifyCredentials(credentials);
+    verificadas = await outboundAdapterFor("meta").verifyCredentials(credentials, channel);
   } catch (error) {
     logger.warn(
-      { provider: "meta", motivo: error instanceof Error ? error.message : String(error) },
+      { provider: "meta", channel, motivo: error instanceof Error ? error.message : String(error) },
       "Alta de conexión de Meta rechazada por el proveedor",
     );
     return {
@@ -6816,11 +6953,23 @@ export async function crearConexionMeta(
     };
   }
 
+  // Para Instagram la clave de ruteo (el IGID) **solo** puede venir del
+  // proveedor: no es un dato que el admin tenga a mano, y tipearlo mal daría
+  // una conexión que guarda bien pero cuyo webhook no matchea nunca. Para
+  // WhatsApp se conserva el fallback al Phone Number ID que sí tipeó.
+  const externalId = verificadas.externalId ?? credentials.phoneNumberId;
+  if (!externalId) {
+    return {
+      ok: false,
+      error: "Meta validó las credenciales pero no reportó la cuenta a la que corresponden.",
+    };
+  }
+
   await saveConnection({
-    channel: "whatsapp",
+    channel,
     provider: "meta",
-    label: "WhatsApp · Meta",
-    externalId: verificadas.externalId ?? credentials.phoneNumberId!,
+    label: `${CHANNEL_LABEL[channel]} · Meta`,
+    externalId,
     displayAddress: verificadas.displayAddress,
     credentials,
   });

@@ -16,7 +16,7 @@ interface ConversationRow {
 }
 
 interface CustomerRow {
-  phone_number: string;
+  external_id: string;
   name: string | null;
 }
 
@@ -118,7 +118,7 @@ function renderPage(
   <h1>Conversación escalada — ForMotos</h1>
   <p><strong>Motivo:</strong> ${escapeHtml(handoff.reason)}<br>
      <strong>Estado:</strong> ${escapeHtml(handoff.status)}<br>
-     <strong>Cliente:</strong> ${escapeHtml(customer.phone_number)}${customer.name ? ` (${escapeHtml(customer.name)})` : ""}</p>
+     <strong>Cliente:</strong> ${escapeHtml(customer.external_id)}${customer.name ? ` (${escapeHtml(customer.name)})` : ""}</p>
   <p><strong>Resumen:</strong> ${escapeHtml(handoff.summary ?? "")}</p>
   ${stepLabel ? `<p><strong>Paso del flujo comercial:</strong> ${escapeHtml(stepLabel)}</p>` : ""}
   <p><a class="button" href="/admin/conversaciones?estado=escaladas&c=${handoff.conversation_id}">Ver y actuar en el panel →</a></p>
@@ -165,7 +165,7 @@ export async function renderHandoffView(token: string): Promise<HandoffViewResul
     const conversation = conversationResult.rows[0]!;
 
     const customerResult = await client.query<CustomerRow>(
-      `SELECT phone_number, name FROM customers WHERE id = $1`,
+      `SELECT external_id, name FROM customers WHERE id = $1`,
       [conversation.customer_id],
     );
     const customer = customerResult.rows[0]!;

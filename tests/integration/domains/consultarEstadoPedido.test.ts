@@ -26,7 +26,7 @@ let publicOrderNumberA: string;
 
 beforeAll(async () => {
   const custA = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3050000001') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('3050000001') RETURNING id`,
   );
   customerA = custA.rows[0]!.id;
   const convA = await adminPool.query<{ id: string }>(
@@ -36,7 +36,7 @@ beforeAll(async () => {
   conversationA = convA.rows[0]!.id;
 
   const custB = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3050000002') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('3050000002') RETURNING id`,
   );
   customerB = custB.rows[0]!.id;
   const convB = await adminPool.query<{ id: string }>(

@@ -9,12 +9,19 @@ export type PaymentMethod =
   | "pago_en_linea";
 export type DeliveryMethod = "domicilio" | "recoger_en_tienda";
 
+export type MissingCustomerField = "address" | "id_document" | "full_name" | "phone";
+
 export interface CustomerData {
   address: string;
   id_document: string;
   full_name: string;
   municipality?: string;
   city?: string;
+  /**
+   * Teléfono de contacto. Solo hace falta cuando el canal no lo trae — por
+   * WhatsApp la dirección del canal ya es el teléfono (Fase 19, Etapa C1).
+   */
+  phone?: string;
   save_permanently: boolean;
 }
 
@@ -44,13 +51,14 @@ export interface CrearPedidoOutput {
   /** Solo presente cuando payment_method es 'pago_en_linea' y status 'confirmed' (ver ADR-024). */
   payment_link_url?: string;
   /** Solo presente cuando status es 'faltan_datos_cliente' (ver ADR-033). */
-  missing_fields?: Array<"address" | "id_document" | "full_name">;
+  missing_fields?: MissingCustomerField[];
   existing_data?: {
     address: string | null;
     id_document: string | null;
     full_name: string | null;
     municipality: string | null;
     city: string | null;
+    phone: string | null;
   } | null;
 }
 
@@ -135,26 +143,57 @@ export async function crearPedido(
     // que el modelo se lo confirme explícitamente al cliente antes de
     // reintentar.
     if (!input.customer_data) {
+      // La fila propia primero; si no tiene datos de entrega, se busca otra
+      // identidad de canal del mismo humano por `contact_phone` (Fase 19,
+      // Etapa C1). Es el único cruce entre canales que la decisión de producto
+      // contempla: la conversación no se mezcla, pero si el cliente ya compró
+      // por WhatsApp no se le vuelven a pedir cédula y dirección porque ahora
+      // escribió por Instagram. Igual hay que confirmárselos: `existing_data`
+      // no confirma nada por sí solo, la tool sigue devolviendo
+      // `faltan_datos_cliente`.
       const customerResult = await client.query<{
         address: string | null;
         id_document: string | null;
         full_name: string | null;
         municipality: string | null;
         city: string | null;
+        self_contact_phone: string | null;
       }>(
-        `SELECT address, id_document, full_name, municipality, city FROM customers WHERE id = $1`,
+        `SELECT c.address, c.id_document, c.full_name, c.municipality, c.city,
+                self.contact_phone AS self_contact_phone
+         FROM customers self
+         JOIN customers c
+           ON c.id = self.id
+           OR (self.address IS NULL
+               AND self.contact_phone IS NOT NULL
+               AND c.contact_phone = self.contact_phone)
+         WHERE self.id = $1
+         ORDER BY (c.address IS NOT NULL) DESC, (c.id = self.id) DESC, c.created_at DESC
+         LIMIT 1`,
         [quote.customer_id],
       );
       const customer = customerResult.rows[0] ?? null;
-      const missingFields: Array<"address" | "id_document" | "full_name"> = [];
+      const missingFields: MissingCustomerField[] = [];
       if (!customer?.address) missingFields.push("address");
       if (!customer?.id_document) missingFields.push("id_document");
       if (!customer?.full_name) missingFields.push("full_name");
+      // Por WhatsApp el teléfono es la dirección del canal y nunca falta. Por
+      // Instagram/Messenger no existe hasta que el cliente lo dé, y sin él no
+      // hay cómo coordinar la entrega ni cómo reconocerlo si vuelve por otro
+      // canal.
+      if (!customer?.self_contact_phone) missingFields.push("phone");
 
       return {
         kind: "faltan_datos_cliente" as const,
         total,
-        existingData: customer,
+        existingData: customer && {
+          address: customer.address,
+          id_document: customer.id_document,
+          full_name: customer.full_name,
+          municipality: customer.municipality,
+          city: customer.city,
+          phone: customer.self_contact_phone,
+        },
         missingFields,
       };
     }
@@ -168,9 +207,18 @@ export async function crearPedido(
       await client.query(
         `UPDATE customers
          SET address = $2, id_document = $3, full_name = $4,
-             municipality = COALESCE($5, municipality), city = COALESCE($6, city)
+             municipality = COALESCE($5, municipality), city = COALESCE($6, city),
+             contact_phone = COALESCE($7, contact_phone)
          WHERE id = $1`,
-        [quote.customer_id, cd.address, cd.id_document, cd.full_name, cd.municipality ?? null, cd.city ?? null],
+        [
+          quote.customer_id,
+          cd.address,
+          cd.id_document,
+          cd.full_name,
+          cd.municipality ?? null,
+          cd.city ?? null,
+          cd.phone ?? null,
+        ],
       );
     }
 

@@ -1,6 +1,7 @@
 export { pool } from "./pool.js";
 export { withTransaction } from "./withTransaction.js";
 export {
+  ensureSettingsRow,
   getBehaviorConfig,
   getBrandVoiceConfig,
   getEscalationConfig,
