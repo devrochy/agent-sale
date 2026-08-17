@@ -20,7 +20,7 @@ let phoneCounter = 0;
 async function seedConversationWithScore(score: number | null): Promise<string> {
   phoneCounter += 1;
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
     [`whatsapp:+57303000${String(phoneCounter).padStart(4, "0")}`],
   );
   const conversation = await adminPool.query<{ id: string }>(
@@ -49,22 +49,22 @@ afterAll(async () => {
   await adminPool.query(
     `DELETE FROM reviews WHERE conversation_id IN (
        SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
-       WHERE cu.phone_number LIKE $1
+       WHERE cu.external_id LIKE $1
      )`,
     [phonePattern],
   );
   await adminPool.query(
     `DELETE FROM review_tokens WHERE conversation_id IN (
        SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
-       WHERE cu.phone_number LIKE $1
+       WHERE cu.external_id LIKE $1
      )`,
     [phonePattern],
   );
   await adminPool.query(
-    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number LIKE $1)`,
+    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE external_id LIKE $1)`,
     [phonePattern],
   );
-  await adminPool.query(`DELETE FROM customers WHERE phone_number LIKE $1`, [phonePattern]);
+  await adminPool.query(`DELETE FROM customers WHERE external_id LIKE $1`, [phonePattern]);
   await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await app.close();
   await adminPool.end();

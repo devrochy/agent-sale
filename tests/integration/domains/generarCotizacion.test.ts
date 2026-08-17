@@ -14,7 +14,7 @@ let variantA: string;
 
 beforeAll(async () => {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('3020000001') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('3020000001') RETURNING id`,
   );
   customerA = customer.rows[0]!.id;
   const conversation = await adminPool.query<{ id: string }>(

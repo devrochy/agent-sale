@@ -34,7 +34,7 @@ async function seedConversation(
   },
 ): Promise<string> {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
     [phone],
   );
   const surveySentAt =
@@ -66,22 +66,22 @@ afterAll(async () => {
   await adminPool.query(
     `DELETE FROM review_tokens WHERE conversation_id IN (
        SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
-       WHERE cu.phone_number = ANY($1)
+       WHERE cu.external_id = ANY($1)
      )`,
     [phones],
   );
   await adminPool.query(
     `DELETE FROM messages WHERE conversation_id IN (
        SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id
-       WHERE cu.phone_number = ANY($1)
+       WHERE cu.external_id = ANY($1)
      )`,
     [phones],
   );
   await adminPool.query(
-    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = ANY($1))`,
+    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE external_id = ANY($1))`,
     [phones],
   );
-  await adminPool.query(`DELETE FROM customers WHERE phone_number = ANY($1)`, [phones]);
+  await adminPool.query(`DELETE FROM customers WHERE external_id = ANY($1)`, [phones]);
   await adminPool.end();
   await appPool.end();
 });
@@ -95,7 +95,7 @@ describe("tryCaptureSurveyReply", () => {
   it("calificación reconocible: guarda el score, marca procesado y agradece con link a la reseña propia (score alto)", async () => {
     const conversationId = await seedConversation(PHONES.conCalificacion, { surveyHoursAgo: 2 });
 
-    await tryCaptureSurveyReply(PHONES.conCalificacion, "5, todo excelente", logger);
+    await tryCaptureSurveyReply(PHONES.conCalificacion, "whatsapp", "5, todo excelente", logger);
 
     const row = await adminPool.query<{
       satisfaction_score: number;
@@ -125,7 +125,7 @@ describe("tryCaptureSurveyReply", () => {
   it("sin calificación reconocible: marca procesado pero no manda nada", async () => {
     const conversationId = await seedConversation(PHONES.sinCalificacion, { surveyHoursAgo: 2 });
 
-    await tryCaptureSurveyReply(PHONES.sinCalificacion, "Hola, tengo otra pregunta", logger);
+    await tryCaptureSurveyReply(PHONES.sinCalificacion, "whatsapp", "Hola, tengo otra pregunta", logger);
 
     const row = await adminPool.query<{
       satisfaction_score: number | null;
@@ -139,11 +139,11 @@ describe("tryCaptureSurveyReply", () => {
   });
 
   it("sin encuesta pendiente: no hace nada", async () => {
-    await adminPool.query(`INSERT INTO customers (phone_number) VALUES ($1)`, [
+    await adminPool.query(`INSERT INTO customers (external_id) VALUES ($1)`, [
       PHONES.sinEncuestaPendiente,
     ]);
 
-    await tryCaptureSurveyReply(PHONES.sinEncuestaPendiente, "5", logger);
+    await tryCaptureSurveyReply(PHONES.sinEncuestaPendiente, "whatsapp", "5", logger);
 
     expect(sendToConversation).not.toHaveBeenCalled();
   });
@@ -155,7 +155,7 @@ describe("tryCaptureSurveyReply", () => {
       existingScore: 3,
     });
 
-    await tryCaptureSurveyReply(PHONES.yaProcesada, "5", logger);
+    await tryCaptureSurveyReply(PHONES.yaProcesada, "whatsapp", "5", logger);
 
     const row = await adminPool.query<{ satisfaction_score: number }>(
       `SELECT satisfaction_score FROM conversations WHERE id = $1`,
@@ -171,7 +171,7 @@ describe("tryCaptureSurveyReply", () => {
     // de reseña, no una condición para ofrecer la reseña interna.
     const conversationId = await seedConversation(PHONES.scoreAlto, { surveyHoursAgo: 2 });
 
-    await tryCaptureSurveyReply(PHONES.scoreAlto, "5", logger);
+    await tryCaptureSurveyReply(PHONES.scoreAlto, "whatsapp", "5", logger);
 
     expect(sendToConversation).toHaveBeenCalledWith(
       conversationId,
@@ -182,7 +182,7 @@ describe("tryCaptureSurveyReply", () => {
   it("score bajo: agradece sin link", async () => {
     const conversationId = await seedConversation(PHONES.scoreBajo, { surveyHoursAgo: 2 });
 
-    await tryCaptureSurveyReply(PHONES.scoreBajo, "2", logger);
+    await tryCaptureSurveyReply(PHONES.scoreBajo, "whatsapp", "2", logger);
 
     expect(sendToConversation).toHaveBeenCalledWith(conversationId, expect.any(String));
     const [, text] = vi.mocked(sendToConversation).mock.calls[0]!;
@@ -192,7 +192,7 @@ describe("tryCaptureSurveyReply", () => {
   it("ventana de 48h vencida: no se captura", async () => {
     await seedConversation(PHONES.ventanaVencida, { surveyHoursAgo: 50 });
 
-    await tryCaptureSurveyReply(PHONES.ventanaVencida, "5", logger);
+    await tryCaptureSurveyReply(PHONES.ventanaVencida, "whatsapp", "5", logger);
 
     expect(sendToConversation).not.toHaveBeenCalled();
   });

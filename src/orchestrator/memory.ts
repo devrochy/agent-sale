@@ -21,38 +21,53 @@ export interface InboundOrigin {
 }
 
 /**
- * Encuentra o crea el customer y la conversación abierta para un
- * teléfono (ver docs/fase-4-motor-agente/memoria-conversacional.md).
+ * Encuentra o crea el customer y la conversación abierta para una **dirección
+ * de canal** (ver docs/fase-4-motor-agente/memoria-conversacional.md).
  * Expone `customerId` además de `conversationId` porque las tools del
  * dominio comercial (generar_cotizacion) necesitan asociar la cotización
  * al cliente, no solo a la conversación.
  *
- * La búsqueda de la conversación abierta sigue siendo por cliente, **no** por
- * conexión: mientras exista una sola conexión, filtrar por ella sería un
- * cambio de comportamiento sin beneficio observable y con riesgo real
- * (payloads de debounce en vuelo, conversaciones huérfanas, atribución de la
- * encuesta de satisfacción). Ese cambio va en la Etapa B, junto con la
- * decisión de producto sobre qué significa pausar un hilo cuando el mismo
- * humano escribe por dos conexiones.
+ * Identidad (Fase 19, Etapa C1): el cliente es `(channel, external_id)`, no un
+ * teléfono. El mismo humano escribiendo por WhatsApp y por Instagram son dos
+ * filas de `customers` y dos hilos, a propósito: Meta no da forma de saber que
+ * son la misma persona, y contestarle por el canal equivocado es peor que
+ * tratarlo como dos. Lo que sí se comparte, cuando el teléfono coincide, son
+ * los datos de gestión del pedido (ver `contact_phone`).
+ *
+ * Dentro de un mismo canal la búsqueda **no** filtra por conexión: si el
+ * cliente venía por el número de Twilio y ahora escribe al de Meta, sigue
+ * siendo el mismo hilo (decisión de la Etapa B).
  */
 export async function resolveConversation(
-  customerPhone: string,
+  customerExternalId: string,
   customerName?: string,
   origin?: InboundOrigin,
 ): Promise<ResolvedConversation> {
+  const channel: Channel = origin?.channel ?? "whatsapp";
   return withTransaction(async (client) => {
     // `ProfileName` de Twilio (ver webhook-contrato.md) llega en cada
     // mensaje, no solo en el primero — COALESCE conserva el nombre ya
     // guardado si un mensaje puntual llega sin él, y lo actualiza cuando
     // sí llega (ej. el cliente cambió su nombre de perfil de WhatsApp).
     const customer = await client.query<{ id: string; bot_paused: boolean }>(
-      `INSERT INTO customers (phone_number, name)
-       VALUES ($1, $2)
-       ON CONFLICT (phone_number) DO UPDATE SET
-         phone_number = EXCLUDED.phone_number,
+      // En WhatsApp la dirección del canal *es* el teléfono, así que
+      // `contact_phone` sale gratis. En Instagram/Messenger queda null hasta
+      // que el cliente lo dé al comprar. Solo se escribe al insertar: si el
+      // cliente ya dio un teléfono distinto, manda el suyo.
+      //
+      // El `LIKE 'whatsapp:+%'` no es defensivo de más: es la misma guarda que
+      // el backfill de la migración 0054, y sin ella una dirección sin el
+      // prefijo canónico se copiaría tal cual como si fuera un teléfono,
+      // creando un cruce falso con otro cliente que sí lo tenga.
+      `INSERT INTO customers (channel, external_id, name, contact_phone)
+       VALUES ($1, $2, $3,
+               CASE WHEN $1 = 'whatsapp' AND $2 LIKE 'whatsapp:+%'
+                    THEN replace($2, 'whatsapp:', '') END)
+       ON CONFLICT (channel, external_id) DO UPDATE SET
+         external_id = EXCLUDED.external_id,
          name = COALESCE(EXCLUDED.name, customers.name)
        RETURNING id, bot_paused`,
-      [customerPhone, customerName ?? null],
+      [channel, customerExternalId, customerName ?? null],
     );
     const customerId = customer.rows[0]!.id;
     const customerBotPaused = customer.rows[0]!.bot_paused;
@@ -75,10 +90,13 @@ export async function resolveConversation(
       // pedido— pero la respuesta tiene que salir por donde escribió recién.
       // Sin este UPDATE le contestaríamos desde un número que no contactó, lo
       // que abre una ventana de 24 h nueva y el proveedor la rechaza.
+      // Desde la Etapa C1 el salto solo puede ser **entre proveedores del
+      // mismo canal**: el cliente está indexado por canal, así que un mensaje
+      // de Instagram nunca cae en esta conversación de WhatsApp.
       if (origin?.connectionId && origin.connectionId !== existing.rows[0].connection_id) {
         await client.query(
-          `UPDATE conversations SET connection_id = $1, channel = COALESCE($2, channel) WHERE id = $3`,
-          [origin.connectionId, origin.channel ?? null, existing.rows[0].id],
+          `UPDATE conversations SET connection_id = $1, channel = $2 WHERE id = $3`,
+          [origin.connectionId, channel, existing.rows[0].id],
         );
       }
       return {
@@ -92,9 +110,9 @@ export async function resolveConversation(
 
     const created = await client.query<{ id: string; state: Record<string, unknown>; bot_paused: boolean }>(
       `INSERT INTO conversations (customer_id, status, state, channel, connection_id)
-       VALUES ($1, 'open', '{}'::jsonb, COALESCE($2, 'whatsapp'), $3)
+       VALUES ($1, 'open', '{}'::jsonb, $2, $3)
        RETURNING id, state, bot_paused`,
-      [customerId, origin?.channel ?? null, origin?.connectionId ?? null],
+      [customerId, channel, origin?.connectionId ?? null],
     );
     return {
       conversationId: created.rows[0]!.id,

@@ -12,7 +12,15 @@ export const INBOUND_STREAM = "whatsapp:inbound";
 
 export interface InboundMessage {
   messageSid: string;
-  customerPhone: string;
+  /**
+   * Dirección del cliente **dentro de su canal**, en el canónico del sistema
+   * (`whatsapp:+E164`). Desde la Etapa C1 no es necesariamente un teléfono: en
+   * Instagram y Messenger es un identificador opaco. El campo del stream
+   * conserva el nombre `customer_phone` por la misma razón que el stream
+   * conserva el suyo — renombrarlo dejaría sin leer las entradas en vuelo, y
+   * es además la clave que `REDACT_PATHS` censura en los logs.
+   */
+  customerExternalId: string;
   customerName?: string;
   body: string;
   receivedAt: string;
@@ -40,7 +48,7 @@ export async function enqueueInboundMessage(message: InboundMessage): Promise<st
     "message_sid",
     message.messageSid,
     "customer_phone",
-    message.customerPhone,
+    message.customerExternalId,
     "customer_name",
     message.customerName ?? "",
     "body",
@@ -64,7 +72,7 @@ export async function enqueueInboundMessage(message: InboundMessage): Promise<st
 export function parseInboundFields(fields: Record<string, string>): InboundMessage {
   return {
     messageSid: fields.message_sid ?? "",
-    customerPhone: fields.customer_phone ?? "",
+    customerExternalId: fields.customer_phone ?? "",
     customerName: fields.customer_name || undefined,
     body: fields.body ?? "",
     receivedAt: fields.received_at ?? "",

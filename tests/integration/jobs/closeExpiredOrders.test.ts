@@ -40,7 +40,7 @@ async function seedOrder(
   opts: { paymentMethod: string; paymentStatus: string; ageDays: number },
 ): Promise<Setup> {
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ($1) RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
     [PHONES[key]],
   );
   const customerId = customer.rows[0]!.id;
@@ -133,35 +133,35 @@ afterAll(async () => {
   const phones = Object.values(PHONES);
   await adminPool.query(
     `DELETE FROM order_items WHERE order_id IN (
-       SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id WHERE c.phone_number = ANY($1)
+       SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id WHERE c.external_id = ANY($1)
      )`,
     [phones],
   );
   await adminPool.query(
-    `DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = ANY($1))`,
+    `DELETE FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE external_id = ANY($1))`,
     [phones],
   );
   await adminPool.query(
     `DELETE FROM quote_items WHERE quote_id IN (
-       SELECT q.id FROM quotes q JOIN customers c ON c.id = q.customer_id WHERE c.phone_number = ANY($1)
+       SELECT q.id FROM quotes q JOIN customers c ON c.id = q.customer_id WHERE c.external_id = ANY($1)
      )`,
     [phones],
   );
   await adminPool.query(
-    `DELETE FROM quotes WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = ANY($1))`,
+    `DELETE FROM quotes WHERE customer_id IN (SELECT id FROM customers WHERE external_id = ANY($1))`,
     [phones],
   );
   await adminPool.query(
     `DELETE FROM messages WHERE conversation_id IN (
-       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id WHERE cu.phone_number = ANY($1)
+       SELECT c.id FROM conversations c JOIN customers cu ON cu.id = c.customer_id WHERE cu.external_id = ANY($1)
      )`,
     [phones],
   );
   await adminPool.query(
-    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE phone_number = ANY($1))`,
+    `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE external_id = ANY($1))`,
     [phones],
   );
-  await adminPool.query(`DELETE FROM customers WHERE phone_number = ANY($1)`, [phones]);
+  await adminPool.query(`DELETE FROM customers WHERE external_id = ANY($1)`, [phones]);
   await deleteProduct(adminPool, productId);
   await adminPool.end();
   await appPool.end();

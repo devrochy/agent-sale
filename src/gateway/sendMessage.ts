@@ -33,9 +33,9 @@ async function resolveTarget(conversationId: string): Promise<OutboundTarget> {
   const result = await pool.query<{
     connection_id: string | null;
     channel: Channel;
-    phone_number: string;
+    external_id: string;
   }>(
-    `SELECT conv.connection_id, conv.channel, c.phone_number
+    `SELECT conv.connection_id, conv.channel, c.external_id
      FROM conversations conv
      JOIN customers c ON c.id = conv.customer_id
      WHERE conv.id = $1`,
@@ -49,7 +49,7 @@ async function resolveTarget(conversationId: string): Promise<OutboundTarget> {
   if (row.connection_id) {
     const connection = await getConnection(row.connection_id);
     if (connection) {
-      return { connection, to: row.phone_number };
+      return { connection, to: row.external_id };
     }
   }
 
@@ -57,7 +57,7 @@ async function resolveTarget(conversationId: string): Promise<OutboundTarget> {
   // si viene de antes del backfill, o apuntar a una conexión ya retirada.
   // Caer a la primary del canal es preferible a dejar al cliente sin
   // respuesta.
-  return { connection: await requirePrimary(row.channel), to: row.phone_number };
+  return { connection: await requirePrimary(row.channel), to: row.external_id };
 }
 
 async function requirePrimary(channel: Channel): Promise<ResolvedConnection> {

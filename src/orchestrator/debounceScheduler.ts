@@ -15,7 +15,7 @@ const PAYLOAD_KEY_PREFIX = "debounce:payload:";
 const POLL_INTERVAL_MS = 1500;
 
 interface DebouncePayload {
-  customerPhone: string;
+  customerExternalId: string;
   messageSid: string;
   customerName?: string;
   /**
@@ -56,7 +56,7 @@ async function fireConversation(conversationId: string, payload: DebouncePayload
   const turnLogger = logger.child({ conversation_id: conversationId });
   try {
     const result = await processConversation(
-      payload.customerPhone,
+      payload.customerExternalId,
       payload.messageSid,
       payload.customerName,
       { connectionId: payload.connectionId, channel: payload.channel },
@@ -108,7 +108,7 @@ async function pollDebounceOnce(): Promise<void> {
 
 interface OrphanRow {
   conversation_id: string;
-  phone_number: string;
+  external_id: string;
   customer_name: string | null;
   connection_id: string | null;
   channel: Channel;
@@ -133,7 +133,7 @@ async function recoverOrphanedConversations(): Promise<void> {
 
   const orphans = await withTransaction((client) =>
     client.query<OrphanRow>(`
-      SELECT conv.id AS conversation_id, c.phone_number, c.name AS customer_name,
+      SELECT conv.id AS conversation_id, c.external_id, c.name AS customer_name,
              conv.connection_id, conv.channel
       FROM conversations conv
       JOIN customers c ON c.id = conv.customer_id
@@ -164,7 +164,7 @@ async function recoverOrphanedConversations(): Promise<void> {
     // original ya se usó/perdió) — solo importa para el idempotency_key
     // de crear_pedido, que tolera un valor nunca antes visto.
     await scheduleDebounce(row.conversation_id, 0, {
-      customerPhone: row.phone_number,
+      customerExternalId: row.external_id,
       messageSid: `recovery-${row.conversation_id}`,
       customerName: row.customer_name ?? undefined,
       connectionId: row.connection_id ?? undefined,

@@ -35,7 +35,7 @@ beforeAll(async () => {
   settingsId = settings.rows[0]!.id;
 
   const customer = await adminPool.query<{ id: string }>(
-    `INSERT INTO customers (phone_number) VALUES ('whatsapp:+573001112222') RETURNING id`,
+    `INSERT INTO customers (external_id) VALUES ('whatsapp:+573001112222') RETURNING id`,
   );
   customerId = customer.rows[0]!.id;
 

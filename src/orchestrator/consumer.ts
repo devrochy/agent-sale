@@ -52,10 +52,10 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
   // defaults tolerantes para las entradas escritas por un release anterior,
   // que no traen los campos de conexión (Fase 19).
   const message = parseInboundFields(fieldsToObject(fields));
-  const { customerPhone, customerName, messageSid } = message;
+  const { customerExternalId, customerName, messageSid } = message;
   const origin = { connectionId: message.connectionId, channel: message.channel };
 
-  if (!customerPhone || !messageSid) {
+  if (!customerExternalId || !messageSid) {
     // Payload inválido: no hay nada que reintentar, se descarta.
     await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
     return;
@@ -75,7 +75,12 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // pausado / inmediato / debounce con un único call-site — el mensaje
     // sigue su curso normal después, se haya capturado una calificación
     // pendiente o no.
-    await tryCaptureSurveyReply(customerPhone, message.body, entryLogger);
+    await tryCaptureSurveyReply(
+      customerExternalId,
+      origin.channel ?? "whatsapp",
+      message.body,
+      entryLogger,
+    );
 
     // Kill-switch (Fase 11.4, ver configuracion-comportamiento.md; extendido
     // en Fase 23/ADR-036 con un segundo nivel por cliente): se chequea ACÁ,
@@ -91,7 +96,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // (por conversación puntual, Fase 18) se combinan con OR — pausado en
     // cualquiera de los tres niveles alcanza para no responder.
     const [settings, { conversationId: pausedConversationId, customerBotPaused, conversationBotPaused }] =
-      await Promise.all([getSettings(), resolveConversation(customerPhone, customerName, origin)]);
+      await Promise.all([getSettings(), resolveConversation(customerExternalId, customerName, origin)]);
     if (settings?.bot_paused || customerBotPaused || conversationBotPaused) {
       await appendMessage(pausedConversationId, "inbound", "customer", message.body);
       entryLogger.info(
@@ -106,7 +111,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     // reglas que no pueden esperar (escalado ya, keyword) sin importar la
     // velocidad de respuesta configurada.
     const { conversationId, escalatedNow } = await appendInbound(
-      customerPhone,
+      customerExternalId,
       message.body,
       customerName,
       origin,
@@ -120,7 +125,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
 
     const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
     if (behaviorConfig.velocidadRespuesta === "inmediato") {
-      const result = await processConversation(customerPhone, messageSid, customerName, origin);
+      const result = await processConversation(customerExternalId, messageSid, customerName, origin);
       await sendTurnBubbles(conversationId, result, entryLogger, receivedAt);
     } else {
       // Velocidad de respuesta (Fase 11.4 extendida, ver ADR-022): difiere
@@ -128,7 +133,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
       // antes de que venza la ventana, scheduleDebounce la reinicia sola
       // (mismo `conversationId` como member del sorted set).
       await scheduleDebounce(conversationId, DEBOUNCE_DELAY_MS[behaviorConfig.velocidadRespuesta], {
-        customerPhone,
+        customerExternalId,
         messageSid,
         customerName,
         connectionId: origin.connectionId,

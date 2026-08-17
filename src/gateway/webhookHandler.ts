@@ -125,7 +125,7 @@ export async function handleInboundWebhook(
 
     await enqueueInboundMessage({
       messageSid: mensaje.externalMessageId,
-      customerPhone: mensaje.customerExternalId,
+      customerExternalId: mensaje.customerExternalId,
       customerName: mensaje.customerName,
       body: mensaje.body,
       receivedAt: mensaje.receivedAt,

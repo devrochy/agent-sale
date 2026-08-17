@@ -8,7 +8,7 @@ import { verifyDelivery } from "./verifyDelivery.js";
 interface CandidateRow {
   quote_id: string;
   conversation_id: string;
-  phone_number: string;
+  external_id: string;
   total: string;
 }
 
@@ -28,7 +28,7 @@ interface QuoteItemRow {
 async function fetchCandidates(): Promise<CandidateRow[]> {
   return withTransaction(async (client) => {
     const result = await client.query<CandidateRow>(
-      `SELECT q.id AS quote_id, q.conversation_id, cu.phone_number, q.total
+      `SELECT q.id AS quote_id, q.conversation_id, cu.external_id, q.total
        FROM quotes q
        JOIN customers cu ON cu.id = q.customer_id
        WHERE q.follow_up_sent_at IS NULL
