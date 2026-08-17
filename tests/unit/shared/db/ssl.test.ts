@@ -1,20 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-// El heurístico vive inline en pool.ts/client.ts (ver plan de la Fase 8:
-// "tres líneas similares es mejor que una abstracción prematura"), se
-// aísla acá como función pura para no acoplar el test a una conexión real.
-function isLocalHost(url: string): boolean {
-  return ["localhost", "127.0.0.1"].includes(new URL(url).hostname);
-}
+import { requiresTls } from "../../../../src/shared/tlsPolicy.js";
 
-describe("isLocalHost (heurístico de TLS para Postgres/Redis)", () => {
-  it("reconoce localhost y 127.0.0.1 como locales", () => {
-    expect(isLocalHost("postgres://user:pass@localhost:5432/db")).toBe(true);
-    expect(isLocalHost("redis://127.0.0.1:6379")).toBe(true);
+describe("requiresTls (política de TLS para Postgres/Redis)", () => {
+  it("no exige TLS en localhost ni 127.0.0.1", () => {
+    expect(requiresTls("postgres://user:pass@localhost:5432/db")).toBe(false);
+    expect(requiresTls("redis://127.0.0.1:6379")).toBe(false);
   });
 
-  it("trata cualquier otro host como remoto (requiere TLS)", () => {
-    expect(isLocalHost("postgres://user:pass@db.supabase.co:5432/db")).toBe(false);
-    expect(isLocalHost("redis://my-redis.upstash.io:6379")).toBe(false);
+  it("exige TLS en un servicio gestionado alcanzable por Internet", () => {
+    expect(requiresTls("postgres://user:pass@db.supabase.co:5432/db")).toBe(true);
+    expect(requiresTls("redis://my-redis.upstash.io:6379")).toBe(true);
+  });
+
+  it("no exige TLS a un nombre de servicio de red Docker", () => {
+    // Coolify nombra los contenedores con el uuid del recurso: sin punto, no
+    // resuelve fuera del host, y no trae TLS configurado.
+    expect(requiresTls("postgres://app:pass@pxm3ju8bet4rdmkxeifwpzlu:5432/agent_sale")).toBe(false);
+    expect(requiresTls("redis://default:pass@nnpoyxwzms5q7hmz9abseaag:6379")).toBe(false);
+  });
+
+  it("respeta sslmode=disable explícito", () => {
+    expect(requiresTls("postgres://user:pass@db.example.com:5432/db?sslmode=disable")).toBe(false);
+  });
+
+  it("sigue exigiendo TLS si sslmode pide lo contrario", () => {
+    expect(requiresTls("postgres://user:pass@db.example.com:5432/db?sslmode=require")).toBe(true);
   });
 });
