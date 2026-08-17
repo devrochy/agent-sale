@@ -27,4 +27,14 @@ COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
 
 EXPOSE 3000
-CMD ["node", "dist/src/index.js"]
+# Las migraciones corren en el arranque del propio contenedor, no como
+# comando de despliegue del orquestador. Coolify ejecuta su "pre-deployment"
+# dentro del contenedor **anterior**, que tiene la imagen vieja: sus
+# migrations/ no incluyen las de la versión que se está desplegando, así que
+# reporta "No migrations to run!" y la app nueva arranca contra un esquema
+# atrasado y muere. Pasó en los dos entornos.
+#
+# Acá el orden queda garantizado: si `migrate` falla, el proceso no llega a
+# escuchar, el healthcheck no pasa y el orquestador revierte — que es
+# justo lo que se quiere, en vez de servir tráfico con el esquema viejo.
+CMD ["sh", "-c", "npm run migrate && node dist/src/index.js"]
