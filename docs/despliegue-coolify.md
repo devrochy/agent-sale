@@ -127,10 +127,19 @@ en formato `<salt_hex>:<hash_hex>`, 16 bytes de salt y 64 de clave:
 read -rsp "Contraseña: " PW && echo
 APP=$(docker ps --format '{{.Names}}' | grep <uuid-app> | head -1)
 HASH=$(docker exec -e PW="$PW" "$APP" node -e 'const{randomBytes,scryptSync}=require("crypto");const s=randomBytes(16);console.log(s.toString("hex")+":"+scryptSync(process.env.PW,s,64).toString("hex"))')
-docker exec -i <uuid-postgres> psql -U postgres -d agent_sale \
-  -c "INSERT INTO admins (username,email,password_hash,role) VALUES ('rochy','tu@correo','$HASH','master')"
+docker exec -i <uuid-postgres> psql -U postgres -d agent_sale <<SQL
+INSERT INTO admins (username,email,password_hash,role) VALUES ('rochy','tu@correo','$HASH','master');
+INSERT INTO admin_permissions (admin_id) SELECT id FROM admins WHERE username='rochy';
+SQL
 unset PW
 ```
+
+**Las dos filas hacen falta.** `findAdminByUsernameOrEmail` consulta
+`FROM admins a JOIN admin_permissions p ON p.admin_id = a.id` — un INNER
+JOIN—, así que un admin sin su fila de permisos no existe para el login:
+la contraseña es correcta, el hash verifica, y aun así responde **401 sin
+un solo error en los logs**. `createAdmin()` inserta ambas dentro de la
+misma transacción; a mano hay que acordarse.
 
 El panel vive en **`/login`**, no en `/`: la raíz no tiene ruta y responde 404. `/admin` redirige a `/login`.
 
