@@ -1316,6 +1316,53 @@ describe("panel admin", () => {
     });
   });
 
+  describe("configuración — pestañas", () => {
+    it("agrupa las siete secciones en cinco pestañas, con una sola visible", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      for (const tab of ["agente", "voz", "modelo", "reportes", "cobros"]) {
+        expect(response.body).toContain(`data-cfg-tab="${tab}"`);
+        expect(response.body).toContain(`data-cfg-panel="${tab}"`);
+      }
+      // Solo "agente" llega visible: los otros cuatro con hidden, para que
+      // sin JS no se vean los cinco paneles apilados.
+      const ocultos = response.body.match(/data-cfg-panel="[a-z]+" role="tabpanel" aria-label="[^"]+" hidden/g);
+      expect(ocultos).toHaveLength(4);
+    });
+
+    it("cada pestaña muestra el estado real de su área", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // El estado sale de la configuración de verdad, no de un texto fijo:
+      // es lo que convierte la barra en un diagnóstico útil.
+      expect(response.body).toMatch(/cfgtab__state[^>]*>(Activo|Pausado)</);
+      expect(response.body).toMatch(/cfgtab__state[^>]*>(Conectado|Sin configurar)</);
+    });
+
+    it("los campos de Voz de marca declaran el tope de 500 caracteres", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // El tope ya se validaba al guardar; sin maxlength el usuario solo se
+      // enteraba cuando el formulario le rebotaba.
+      const vozMarca = response.body.slice(
+        response.body.indexOf('data-cfg-panel="voz"'),
+        response.body.indexOf('data-cfg-panel="modelo"'),
+      );
+      expect(vozMarca).toContain('maxlength="500"');
+      expect(vozMarca).toContain("data-counted");
+    });
+  });
+
   describe("configuración — voz de marca (Fase 20, ADR-030)", () => {
     it("guarda los campos configurados y los precarga en el formulario", async () => {
       const response = await app.inject({

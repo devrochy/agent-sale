@@ -255,6 +255,20 @@ function emptyState(icon: string, title: string, desc: string): string {
   return `<div class="emptystate"><span class="emptystate__icon">${icon}</span><p class="emptystate__title">${escapeHtml(title)}</p><p class="emptystate__desc">${escapeHtml(desc)}</p></div>`;
 }
 
+/**
+ * Pestaña de Configuración. Lleva el estado real del área debajo del nombre
+ * (ver docs/fase-11-panel-admin-dashboard/configuracion-por-pestanas.md): la
+ * barra funciona como diagnóstico, no solo como navegación — se ve qué falta
+ * configurar sin entrar a las cinco pestañas una por una.
+ */
+function cfgTab(id: string, nombre: string, estado: string, tono: "on" | "off" | "neutral"): string {
+  const activa = id === "agente";
+  return `<button type="button" class="cfgtab${activa ? " cfgtab--active" : ""}" role="tab" data-cfg-tab="${escapeHtml(id)}" aria-selected="${activa ? "true" : "false"}">
+    <span class="cfgtab__name">${escapeHtml(nombre)}</span>
+    <span class="cfgtab__state cfgtab__state--${tono}">${escapeHtml(estado)}</span>
+  </button>`;
+}
+
 /** Tarjeta seleccionable (radio + label, sin JS) para Configuración → Voz y estilo — reemplaza los <select> por el patrón táctil del panel de referencia externo, adaptado a los iconos y color de acento propios de este panel. */
 function choiceCard(name: string, value: string, current: string, icon: string, title: string, desc: string): string {
   const checked = value === current;
@@ -929,14 +943,62 @@ table.resizing { cursor: col-resize; user-select: none; }
 .copyrow code { flex: 1; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
 .connection__missing { margin: 16px 0 0; padding: 10px 14px; border-radius: 8px; background: var(--redline-soft); color: var(--redline); font-size: 12.5px; }
 .block--narrow { max-width: 640px; }
+
+/* Configuración por pestañas — ver
+   docs/fase-11-panel-admin-dashboard/configuracion-por-pestanas.md.
+   Cada pestaña lleva debajo del nombre el estado real de su área, así que la
+   barra hace de tablero: se ve qué falta configurar sin entrar a mirar. */
+.cfgtabs { display: flex; gap: 2px; margin: 0 0 26px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.cfgtabs::-webkit-scrollbar { display: none; }
+.cfgtab { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; padding: 10px 16px 11px; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; background: transparent; text-align: left; cursor: pointer; }
+.cfgtab:hover { background: var(--panel-inset); }
+.cfgtab__name { font-family: var(--font-display); font-size: 13px; font-weight: 600; letter-spacing: 0.01em; color: var(--ink-muted); }
+.cfgtab__state { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); }
+.cfgtab__state--on { color: var(--go); }
+.cfgtab__state--off { color: var(--ink-faint); }
+.cfgtab__state--neutral { color: var(--chrome); }
+.cfgtab--active { border-bottom-color: var(--ignition); }
+.cfgtab--active .cfgtab__name { color: var(--ink); }
+.cfgpanel[hidden] { display: none; }
+/* El encabezado sigue el ancho de la columna del formulario: sin esto, la
+   etiqueta de la derecha ("BYOK — Wompi") se despega hasta el borde de la
+   pantalla y deja de leerse como parte de su bloque. */
+.cfgpanel .blockhead { max-width: 640px; }
+/* El aside no compite con el formulario: sube a su lado solo cuando hay
+   ancho de sobra, y debajo en pantallas angostas. */
+.cfggrid { display: grid; grid-template-columns: minmax(0, 640px); gap: 20px; align-items: start; }
+@media (min-width: 1180px) { .cfggrid { grid-template-columns: minmax(0, 640px) minmax(240px, 300px); } }
+.cfgaside { padding: 18px 20px; border: 1px solid var(--border); border-left: 2px solid var(--chrome); border-radius: 10px; background: var(--panel-inset); }
+/* Acompaña el scroll del formulario en vez de quedarse arriba dejando un
+   hueco largo: el contexto sigue siendo útil mientras se escribe abajo. */
+@media (min-width: 1180px) { .cfgaside { position: sticky; top: 24px; } }
+.cfgaside h3 { margin: 0 0 10px; font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--ink); }
+.cfgaside p { margin: 0 0 10px; font-size: 13px; line-height: 1.55; color: var(--ink-muted); }
+.cfgaside p:last-child { margin-bottom: 0; }
+.cfgaside__note { padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--ink-faint); }
+/* Agrupación de campos: cinco campos seguidos sin jerarquía se leen como una
+   lista de trámites; en tres grupos se lee como tres preguntas. */
+.fieldset { padding-bottom: 4px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
+.fieldset:last-of-type { border-bottom: none; margin-bottom: 0; }
+.fieldset__title { margin: 0 0 14px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+.counter { float: right; font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--ink-faint); }
+.counter--limite { color: var(--redline); }
+
 .field { margin-bottom: 20px; }
 .field:last-of-type { margin-bottom: 0; }
 .field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
-.field select, .field input[type="password"], .field input[type="text"], .field input[type="email"], .field input[type="number"], .field input[type="date"] {
+/* Los textarea nunca habían tenido estilo: se veían con el aspecto por
+   defecto del navegador (fuente monoespaciada, ancho por atributo cols) en medio de
+   un panel cuidado — el único sitio donde se usan es Voz de marca, que es
+   justo la pantalla que se veía peor. */
+.field select, .field textarea, .field input[type="password"], .field input[type="text"], .field input[type="email"], .field input[type="number"], .field input[type="date"] {
   width: 100%; max-width: 440px; font: inherit; font-size: 13.5px; background: var(--panel-inset);
   border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; color: var(--ink);
   transition: border-color 140ms ease, background 140ms ease;
 }
+.field textarea { max-width: 100%; resize: vertical; min-height: 76px; line-height: 1.55; }
+.field textarea:hover { border-color: var(--border-strong); }
+.field textarea:focus-visible { border-color: var(--chrome); background: var(--panel); }
 .field select {
   appearance: none; -webkit-appearance: none; padding-right: 36px; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%23889198' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -1388,6 +1450,65 @@ const CLIENT_SCRIPT = `
       document.getElementById("chartLine").style.transition = "none";
       document.getElementById("chartLine").style.strokeDashoffset = "0";
     }
+  }
+
+  /* ---------- configuración: pestañas ----------
+     La pestaña activa se recuerda en sessionStorage porque cada formulario
+     de Configuración postea y el servidor redirige a /admin/configuracion:
+     sin esto, guardar Cobros devolvía al usuario a la primera pestaña. El
+     hash mantiene los enlaces directos compartibles. */
+  var cfgTabs = document.querySelectorAll("[data-cfg-tab]");
+  if (cfgTabs.length) {
+    var CFG_KEY = "panel-config-tab";
+    var mostrarTab = function (id) {
+      var existe = false;
+      for (var a = 0; a < cfgTabs.length; a++) {
+        var esta = cfgTabs[a].getAttribute("data-cfg-tab") === id;
+        if (esta) existe = true;
+        cfgTabs[a].classList.toggle("cfgtab--active", esta);
+        cfgTabs[a].setAttribute("aria-selected", esta ? "true" : "false");
+      }
+      if (!existe) return false;
+      var paneles = document.querySelectorAll("[data-cfg-panel]");
+      for (var b = 0; b < paneles.length; b++) {
+        paneles[b].hidden = paneles[b].getAttribute("data-cfg-panel") !== id;
+      }
+      try { sessionStorage.setItem(CFG_KEY, id); } catch (e) {}
+      return true;
+    };
+    var inicial = (location.hash || "").replace("#", "");
+    if (!inicial) {
+      try { inicial = sessionStorage.getItem(CFG_KEY) || ""; } catch (e) {}
+    }
+    if (inicial) mostrarTab(inicial);
+    for (var c = 0; c < cfgTabs.length; c++) {
+      cfgTabs[c].addEventListener("click", function (ev) {
+        var id = ev.currentTarget.getAttribute("data-cfg-tab");
+        if (mostrarTab(id)) history.replaceState(null, "", "#" + id);
+      });
+    }
+  }
+
+  /* ---------- configuración: contador de caracteres ----------
+     El tope de 500 por campo de Voz de marca existía desde el principio, pero
+     solo se descubría al guardar y ver el error. Mostrarlo mientras se
+     escribe convierte un rechazo en un aviso. */
+  var contados = document.querySelectorAll("[data-counted]");
+  for (var d = 0; d < contados.length; d++) {
+    (function (campo) {
+      var salida = document.querySelector('[data-counter-for="' + campo.id + '"]');
+      if (!salida) return;
+      var tope = parseInt(campo.getAttribute("maxlength") || "500", 10);
+      var pintar = function () {
+        var largo = campo.value.length;
+        // Con el campo vacío el contador sobra: no informa de nada y compite
+        // con el label por la atención.
+        salida.textContent = largo === 0 ? "" : largo + "/" + tope;
+        salida.classList.toggle("counter--limite", largo >= tope);
+      };
+      campo.addEventListener("input", pintar);
+      pintar();
+    })(contados[d]);
   }
 
   /* ---------- apariencia: sistema / claro / oscuro ----------
@@ -6548,14 +6669,46 @@ export async function renderConfiguracionPage(
       ? `<div class="banner banner--ok">Guardado. La configuración ya está activa para las próximas conversaciones.</div>`
       : "";
 
+  // Resumen de estado de cada pestaña. La barra de pestañas dice de un
+  // vistazo qué está configurado y qué no — sin esto habría que entrar a las
+  // cinco para descubrir que Cobros lleva vacío desde el primer día.
+  const camposVozMarca = [
+    brandVoiceConfig.nombreAsistente,
+    brandVoiceConfig.mision,
+    brandVoiceConfig.vision,
+    brandVoiceConfig.valores,
+    brandVoiceConfig.nomenclatura,
+  ];
+  const vozMarcaLlenos = camposVozMarca.filter((campo) => campo.trim() !== "").length;
+  const vozMarcaResumen =
+    vozMarcaLlenos === 0
+      ? "Sin definir"
+      : vozMarcaLlenos === camposVozMarca.length
+        ? "Completa"
+        : `${vozMarcaLlenos} de ${camposVozMarca.length}`;
+  const modeloResumen = currentEntry ? currentEntry.label : "Automático";
+  const reportesResumen = !reportRecipient
+    ? "Sin destinatario"
+    : reportFrequencyPreset === "personalizado"
+      ? `Cada ${reportFrequencyDays} días`
+      : reportFrequencyPreset.charAt(0).toUpperCase() + reportFrequencyPreset.slice(1);
+
   const body = `
     <div class="pagehead">
       <p class="eyebrow">Agente</p>
       <h1>Configuración</h1>
-      <p>Control de encendido del bot y el modelo de IA que responde por ${escapeHtml(brandName(tenant))}.</p>
+      <p>Cómo se comporta el asistente, qué sabe de ${escapeHtml(brandName(tenant))} y qué avisos manda.</p>
     </div>
     ${banner}
-    <section class="block block--narrow" aria-label="Estado del bot">
+    <div class="cfgtabs" role="tablist" aria-label="Áreas de configuración">
+      ${cfgTab("agente", "Agente", tenant.bot_paused ? "Pausado" : "Activo", tenant.bot_paused ? "off" : "on")}
+      ${cfgTab("voz", "Voz de marca", vozMarcaResumen, vozMarcaResumen === "Sin definir" ? "off" : "on")}
+      ${cfgTab("modelo", "Modelo de IA", modeloResumen, "neutral")}
+      ${cfgTab("reportes", "Reportes y reseñas", reportesResumen, reportRecipient ? "on" : "off")}
+      ${cfgTab("cobros", "Cobros", maskedWompiKey ? "Conectado" : "Sin configurar", maskedWompiKey ? "on" : "off")}
+    </div>
+    <div class="cfgpanel" data-cfg-panel="agente" role="tabpanel" aria-label="Agente">
+    <section class="block" aria-label="Estado del bot">
       <div class="blockhead"><h2>Estado del bot</h2></div>
       <div class="panel connection">
         <div class="connection__head">
@@ -6568,41 +6721,7 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Modelo de IA">
-      <div class="blockhead"><h2>Modelo de IA</h2><span class="hint">BYOK</span></div>
-      <div class="panel connection">
-        <form method="POST" action="/admin/configuracion/modelo-ia">
-          <div class="field">
-            <label for="llm-provider">Proveedor</label>
-            <select id="llm-provider" name="provider" data-provider-select>
-              <option value=""${currentProviderKey ? "" : " selected"}>Automático (recomendado)</option>
-              ${providerOptions}
-            </select>
-            <p class="hint">Sin seleccionar, usa el proveedor y modelo por defecto de la plataforma.</p>
-          </div>
-          <div class="field">
-            <label for="llm-routing-mode">Selección de modelo</label>
-            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select>
-              <option value="manual"${llmConfig.routingMode === "manual" ? " selected" : ""}>Manual — elijo el modelo yo mismo</option>
-              <option value="auto_dificultad"${llmConfig.routingMode === "auto_dificultad" ? " selected" : ""}>Automático según dificultad (Cerebro del bot)</option>
-            </select>
-            <p class="hint">"Cerebro del bot" usa el modelo más barato del proveedor para preguntas simples y el más potente para las difíciles — requiere elegir un proveedor arriba (no "Automático").</p>
-          </div>
-          <div class="field">
-            <label for="llm-model">Modelo</label>
-            <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
-          </div>
-          <div class="field">
-            <label for="llm-apikey">API key propia (opcional)</label>
-            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input autocomplete="off">
-            <p class="hint">${keyHint}</p>
-          </div>
-          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
-        </form>
-        <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
-      </div>
-    </section>
-    <section class="block block--narrow" aria-label="Voz y estilo del agente">
+    <section class="block" aria-label="Voz y estilo del agente">
       <div class="blockhead"><h2>Voz y estilo del agente</h2></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/comportamiento">
@@ -6636,37 +6755,94 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Voz de marca">
+    </div>
+    <div class="cfgpanel" data-cfg-panel="voz" role="tabpanel" aria-label="Voz de marca" hidden>
+    <section class="block" aria-label="Voz de marca">
       <div class="blockhead"><h2>Voz de marca</h2></div>
-      <div class="panel connection">
-        <form method="POST" action="/admin/configuracion/voz-marca">
-          <div class="field">
-            <label for="voz-nombre-asistente">Nombre del asistente</label>
-            <input type="text" id="voz-nombre-asistente" name="nombreAsistente" value="${escapeHtml(brandVoiceConfig.nombreAsistente)}" placeholder="Ej: Sofía">
-            <p class="hint">Con qué nombre se presenta el asistente al cliente. Dejar vacío para no darle nombre propio.</p>
-          </div>
-          <div class="field">
-            <label for="voz-mision">Misión</label>
-            <textarea id="voz-mision" name="mision" rows="2" placeholder="Qué busca lograr la empresa para sus clientes.">${escapeHtml(brandVoiceConfig.mision)}</textarea>
-          </div>
-          <div class="field">
-            <label for="voz-vision">Visión</label>
-            <textarea id="voz-vision" name="vision" rows="2" placeholder="Hacia dónde va la empresa.">${escapeHtml(brandVoiceConfig.vision)}</textarea>
-          </div>
-          <div class="field">
-            <label for="voz-valores">Valores</label>
-            <textarea id="voz-valores" name="valores" rows="2" placeholder="Ej: Cercanía, honestidad, rapidez.">${escapeHtml(brandVoiceConfig.valores)}</textarea>
-          </div>
-          <div class="field">
-            <label for="voz-nomenclatura">Nomenclatura propia</label>
-            <textarea id="voz-nomenclatura" name="nomenclatura" rows="2" placeholder="Ej: acá a los pedidos les decimos 'órdenes'.">${escapeHtml(brandVoiceConfig.nomenclatura)}</textarea>
-            <p class="hint">Términos o formas de nombrar cosas propias del negocio, si las hay.</p>
-          </div>
-          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
-        </form>
+      <div class="cfggrid">
+        <div class="panel connection">
+          <form method="POST" action="/admin/configuracion/voz-marca">
+            <div class="fieldset">
+              <p class="fieldset__title">Cómo se presenta</p>
+              <div class="field">
+                <label for="voz-nombre-asistente">Nombre del asistente</label>
+                <input type="text" id="voz-nombre-asistente" name="nombreAsistente" maxlength="500" value="${escapeHtml(brandVoiceConfig.nombreAsistente)}" placeholder="Ej: Sofía">
+                <p class="hint">Con qué nombre saluda al cliente. Vacío, se presenta sin nombre propio.</p>
+              </div>
+            </div>
+            <div class="fieldset">
+              <p class="fieldset__title">Qué representa el negocio</p>
+              <div class="field">
+                <label for="voz-mision">Misión<span class="counter" data-counter-for="voz-mision"></span></label>
+                <textarea id="voz-mision" name="mision" rows="3" maxlength="500" data-counted placeholder="Qué busca lograr la empresa para sus clientes.">${escapeHtml(brandVoiceConfig.mision)}</textarea>
+              </div>
+              <div class="field">
+                <label for="voz-vision">Visión<span class="counter" data-counter-for="voz-vision"></span></label>
+                <textarea id="voz-vision" name="vision" rows="3" maxlength="500" data-counted placeholder="Hacia dónde va la empresa.">${escapeHtml(brandVoiceConfig.vision)}</textarea>
+              </div>
+              <div class="field">
+                <label for="voz-valores">Valores<span class="counter" data-counter-for="voz-valores"></span></label>
+                <textarea id="voz-valores" name="valores" rows="3" maxlength="500" data-counted placeholder="Ej: Cercanía, honestidad, rapidez.">${escapeHtml(brandVoiceConfig.valores)}</textarea>
+              </div>
+            </div>
+            <div class="fieldset">
+              <p class="fieldset__title">Cómo se nombran las cosas acá</p>
+              <div class="field">
+                <label for="voz-nomenclatura">Nomenclatura propia<span class="counter" data-counter-for="voz-nomenclatura"></span></label>
+                <textarea id="voz-nomenclatura" name="nomenclatura" rows="3" maxlength="500" data-counted placeholder="Ej: acá a los pedidos les decimos 'órdenes'.">${escapeHtml(brandVoiceConfig.nomenclatura)}</textarea>
+                <p class="hint">Términos propios del negocio, si los hay. El agente los usa en vez de los genéricos.</p>
+              </div>
+            </div>
+            <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+          </form>
+        </div>
+        <aside class="cfgaside">
+          <h3>Dónde se nota</h3>
+          <p>Lo que escribas acá viaja en cada conversación: el agente responde con esta identidad cuando un cliente pregunta quiénes son, qué venden o por qué comprarles.</p>
+          <p>No hace falta llenarlo todo. Un campo vacío simplemente no se le cuenta al agente — es mejor eso que rellenarlo con frases genéricas que suenan a folleto.</p>
+          <p class="cfgaside__note">Cada campo admite hasta 500 caracteres. El contador aparece al escribir.</p>
+        </aside>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Reporte del asistente">
+    </div>
+    <div class="cfgpanel" data-cfg-panel="modelo" role="tabpanel" aria-label="Modelo de IA" hidden>
+    <section class="block" aria-label="Modelo de IA">
+      <div class="blockhead"><h2>Modelo de IA</h2><span class="hint">BYOK</span></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/configuracion/modelo-ia">
+          <div class="field">
+            <label for="llm-provider">Proveedor</label>
+            <select id="llm-provider" name="provider" data-provider-select>
+              <option value=""${currentProviderKey ? "" : " selected"}>Automático (recomendado)</option>
+              ${providerOptions}
+            </select>
+            <p class="hint">Sin seleccionar, usa el proveedor y modelo por defecto de la plataforma.</p>
+          </div>
+          <div class="field">
+            <label for="llm-routing-mode">Selección de modelo</label>
+            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select>
+              <option value="manual"${llmConfig.routingMode === "manual" ? " selected" : ""}>Manual — elijo el modelo yo mismo</option>
+              <option value="auto_dificultad"${llmConfig.routingMode === "auto_dificultad" ? " selected" : ""}>Automático según dificultad (Cerebro del bot)</option>
+            </select>
+            <p class="hint">"Cerebro del bot" usa el modelo más barato del proveedor para preguntas simples y el más potente para las difíciles — requiere elegir un proveedor arriba (no "Automático").</p>
+          </div>
+          <div class="field">
+            <label for="llm-model">Modelo</label>
+            <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
+          </div>
+          <div class="field">
+            <label for="llm-apikey">API key propia (opcional)</label>
+            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input autocomplete="off">
+            <p class="hint">${keyHint}</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
+        </form>
+        <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
+      </div>
+    </section>
+    </div>
+    <div class="cfgpanel" data-cfg-panel="reportes" role="tabpanel" aria-label="Reportes y reseñas" hidden>
+    <section class="block" aria-label="Reporte del asistente">
       <div class="blockhead"><h2>Reporte del asistente</h2></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/reporte-diario">
@@ -6692,7 +6868,7 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Encuestas y reseñas">
+    <section class="block" aria-label="Encuestas y reseñas">
       <div class="blockhead"><h2>Encuestas y reseñas</h2></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/resenas">
@@ -6705,7 +6881,9 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Cobros en línea">
+    </div>
+    <div class="cfgpanel" data-cfg-panel="cobros" role="tabpanel" aria-label="Cobros" hidden>
+    <section class="block" aria-label="Cobros en línea">
       <div class="blockhead"><h2>Cobros en línea</h2><span class="hint">BYOK — Wompi</span></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/cobros">
@@ -6731,6 +6909,7 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
+    </div>
   `;
 
   return layout("Configuración", tenant, body, "configuracion", admin);

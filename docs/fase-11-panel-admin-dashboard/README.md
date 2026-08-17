@@ -26,6 +26,7 @@ Esta fase **no depende de la Fase 10** (Preparación para Escala y Lanzamiento M
 Cambios sobre el panel ya construido, que no pertenecen a ninguna sub-fase de la 11 pero viven en su mismo código (`layout()`, `STYLE_BLOCK`, `CLIENT_SCRIPT` de `src/admin/adminPanel.ts`):
 
 - [apariencia-tema.md](./apariencia-tema.md) — selector de apariencia **Sistema / Claro / Oscuro** en el menú de cuenta. La paleta oscura ya existía bajo `prefers-color-scheme`; lo que agrega es poder elegirla a mano, con la preferencia guardada por dispositivo.
+- [configuracion-por-pestanas.md](./configuracion-por-pestanas.md) — las siete secciones de Configuración pasan a **cinco pestañas**, cada una con el estado real de su área (`Activo`, `Sin definir`, `Conectado`…). Incluye el rediseño de Voz de marca, donde los `textarea` no tenían ningún estilo y el tope de 500 caracteres era invisible hasta que el formulario rebotaba.
 
 ## Orden de las sub-fases
 
