@@ -467,6 +467,14 @@ async function navRail(
   const railProfile = `<div class="railprofile-wrap">
     <button type="button" class="railprofile navitem${perfilActive ? " navitem--active" : ""}" data-profile-menu-toggle aria-haspopup="menu" aria-expanded="false" title="Cuenta">${avatar}<span class="navitem__label">${escapeHtml(admin.username)}</span></button>
     <div class="railprofile-menu" data-profile-menu role="menu">
+      <div class="themepick" role="group" aria-label="Apariencia del panel">
+        <span class="themepick__label">Apariencia</span>
+        <div class="themepick__opts">
+          <button type="button" class="themepick__opt" data-theme-option="system" aria-pressed="false">Sistema</button>
+          <button type="button" class="themepick__opt" data-theme-option="light" aria-pressed="false">Claro</button>
+          <button type="button" class="themepick__opt" data-theme-option="dark" aria-pressed="false">Oscuro</button>
+        </div>
+      </div>
       <a class="railprofile-menu__item" href="/admin/perfil" role="menuitem">${ICON_EDIT}Editar perfil</a>
       <form method="POST" action="/logout" role="none">
         <button type="submit" class="railprofile-menu__item railprofile-menu__item--danger" role="menuitem">${ICON_LOGOUT}Cerrar sesión</button>
@@ -553,6 +561,7 @@ async function layout(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="${FONT_LINK_HREF}" rel="stylesheet">
+  <script>${THEME_BOOT_SCRIPT}</script>
   <style>
 ${STYLE_BLOCK}
   </style>
@@ -576,6 +585,32 @@ ${STYLE_BLOCK}
 </body>
 </html>`;
 }
+
+/**
+ * Paleta del tema oscuro. Vive aparte porque se usa dos veces en
+ * STYLE_BLOCK: bajo `prefers-color-scheme` (el sistema manda mientras el
+ * usuario no elija) y bajo `[data-theme="dark"]` (elección explícita).
+ */
+const DARK_PALETTE = `    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; --panel-inset: #21262E;
+    --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
+    --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
+    --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
+    --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
+    --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
+    --ig: #F06AA0; --ig-soft: rgba(225,48,108,0.18);
+    --fb: #5AA9FF; --fb-soft: rgba(0,132,255,0.18);
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);`;
+
+/**
+ * Va inline en el <head>, antes del CSS: si esperara a CLIENT_SCRIPT (final
+ * del body) el panel pintaría claro y saltaría a oscuro a la vista del
+ * usuario en cada carga. Es la única razón por la que este script no vive
+ * con el resto.
+ *
+ * Sin preferencia guardada no toca nada y manda `prefers-color-scheme`, que
+ * es el comportamiento que el panel ya tenía.
+ */
+const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem("panel-theme");if(t==="dark"||t==="light"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
 
 const STYLE_BLOCK = `
 :root {
@@ -614,18 +649,18 @@ const STYLE_BLOCK = `
   --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
 }
+/* Los mismos valores se aplican por dos caminos —la preferencia del sistema
+   y la elección explícita del usuario (data-theme)—, así que viven en una
+   sola constante: duplicar la paleta a mano es garantía de que un día se
+   toque un color en un sitio y no en el otro. El :not([data-theme="light"])
+   es lo que deja que "Claro" gane sobre un sistema operativo en oscuro. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; --panel-inset: #21262E;
-    --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
-    --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
-    --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
-    --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
-    --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
-    --ig: #F06AA0; --ig-soft: rgba(225,48,108,0.18);
-    --fb: #5AA9FF; --fb-soft: rgba(0,132,255,0.18);
-    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);
+  :root:not([data-theme="light"]) {
+${DARK_PALETTE}
   }
+}
+:root[data-theme="dark"] {
+${DARK_PALETTE}
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
@@ -705,6 +740,17 @@ body.rail-collapsed .rail__toggle svg { transform: rotate(180deg); }
 .railprofile-menu__item svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--ink-faint); }
 .railprofile-menu__item--danger { color: var(--redline); }
 .railprofile-menu__item--danger svg { color: var(--redline); }
+/* Selector de apariencia (Sistema / Claro / Oscuro) — ver
+   docs/fase-11-panel-admin-dashboard/apariencia-tema.md. Segmentado y no
+   toggle: "Sistema" tiene que seguir siendo alcanzable después de haber
+   elegido a mano, o el usuario pierde el seguimiento automático para
+   siempre. */
+.themepick { padding: 4px 10px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.themepick__label { display: block; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px; }
+.themepick__opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-inset); }
+.themepick__opt { padding: 5px 4px; border: none; border-radius: 5px; background: transparent; color: var(--ink-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.themepick__opt:hover { color: var(--ink); }
+.themepick__opt[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
 body.rail-collapsed .navitem__label,
 body.rail-collapsed .brand__role,
 body.rail-collapsed .navgroup__label { display: none; }
@@ -1341,6 +1387,43 @@ const CLIENT_SCRIPT = `
     } else {
       document.getElementById("chartLine").style.transition = "none";
       document.getElementById("chartLine").style.strokeDashoffset = "0";
+    }
+  }
+
+  /* ---------- apariencia: sistema / claro / oscuro ----------
+     La preferencia vive en localStorage y no en el perfil del admin: es una
+     elección del dispositivo, no de la cuenta (el mismo admin puede querer
+     claro en el escritorio y oscuro en el celular). El valor lo aplica
+     THEME_BOOT_SCRIPT en el <head>; acá solo se refleja el estado en los
+     botones y se maneja el cambio. */
+  var themeOptions = document.querySelectorAll("[data-theme-option]");
+  if (themeOptions.length) {
+    var THEME_KEY = "panel-theme";
+    var applyTheme = function (value) {
+      if (value === "dark" || value === "light") {
+        document.documentElement.setAttribute("data-theme", value);
+        try { localStorage.setItem(THEME_KEY, value); } catch (e) {}
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+        try { localStorage.removeItem(THEME_KEY); } catch (e) {}
+      }
+      for (var j = 0; j < themeOptions.length; j++) {
+        var opt = themeOptions[j];
+        var esActiva = opt.getAttribute("data-theme-option") === (value || "system");
+        opt.setAttribute("aria-pressed", esActiva ? "true" : "false");
+      }
+    };
+    var guardado = null;
+    try { guardado = localStorage.getItem(THEME_KEY); } catch (e) {}
+    applyTheme(guardado === "dark" || guardado === "light" ? guardado : null);
+    for (var i = 0; i < themeOptions.length; i++) {
+      themeOptions[i].addEventListener("click", function (ev) {
+        // El menú de cuenta se cierra al hacer clic fuera; acá interesa que
+        // siga abierto para poder comparar las tres opciones de un vistazo.
+        ev.stopPropagation();
+        var elegido = ev.currentTarget.getAttribute("data-theme-option");
+        applyTheme(elegido === "system" ? null : elegido);
+      });
     }
   }
 

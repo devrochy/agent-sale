@@ -21,6 +21,12 @@ Esta fase **no depende de la Fase 10** (Preparación para Escala y Lanzamiento M
 - [configuracion-comportamiento.md](./configuracion-comportamiento.md) — **11.4**: alcance reducido a un kill-switch (`tenants.bot_paused`) — tono/estilo editable en vivo queda fuera porque rompe el prompt caching (`docs/fase-4-motor-agente/prompt-caching.md`).
 - [analitica-costos.md](./analitica-costos.md) — **11.5**: tabla `llm_usage`, queries de costo/tokens, cruce con el funnel de [`metricas-cierre-ventas.md`](../fase-8-observabilidad-seguridad/metricas-cierre-ventas.md) (reusado, no duplicado).
 
+## Mejoras posteriores al cierre de la fase
+
+Cambios sobre el panel ya construido, que no pertenecen a ninguna sub-fase de la 11 pero viven en su mismo código (`layout()`, `STYLE_BLOCK`, `CLIENT_SCRIPT` de `src/admin/adminPanel.ts`):
+
+- [apariencia-tema.md](./apariencia-tema.md) — selector de apariencia **Sistema / Claro / Oscuro** en el menú de cuenta. La paleta oscura ya existía bajo `prefers-color-scheme`; lo que agrega es poder elegirla a mano, con la preferencia guardada por dispositivo.
+
 ## Orden de las sub-fases
 
 11.1 → 11.2 → 11.3 → 11.4 → 11.5, por dependencias de layout (11.1 primero) y para dejar la tabla de escritura recurrente de 11.5 para el final, cuando el resto del panel ya esté estable. El detalle de por qué cada una va en ese orden está en el propio documento de cada sub-fase.

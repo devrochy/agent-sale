@@ -314,6 +314,46 @@ afterAll(async () => {
 });
 
 describe("panel admin", () => {
+  describe("apariencia (tema claro/oscuro)", () => {
+    it("el menú de cuenta ofrece las tres opciones de apariencia", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-theme-option="system"');
+      expect(response.body).toContain('data-theme-option="light"');
+      expect(response.body).toContain('data-theme-option="dark"');
+    });
+
+    it("aplica el tema guardado antes de pintar, para que no haya parpadeo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      const head = response.body.slice(0, response.body.indexOf("</head>"));
+      // El script tiene que ir en el <head> y antes del <style>: si esperara
+      // al final del body, el panel pintaría claro y saltaría a oscuro.
+      expect(head).toContain('localStorage.getItem("panel-theme")');
+      expect(head.indexOf('localStorage.getItem("panel-theme")')).toBeLessThan(head.indexOf("<style>"));
+    });
+
+    it("la paleta oscura responde tanto al sistema como a la elección explícita", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      // Las dos vías tienen que existir: sin la primera se pierde el
+      // comportamiento automático que el panel ya tenía; sin la segunda el
+      // selector no haría nada.
+      expect(response.body).toContain(':root:not([data-theme="light"])');
+      expect(response.body).toContain(':root[data-theme="dark"]');
+    });
+  });
+
   it("redirige a /login sin sesión", async () => {
     const response = await app.inject({ method: "GET", url: "/admin" });
     expect(response.statusCode).toBe(303);
