@@ -199,6 +199,12 @@ está caído (`cloudflared` no corriendo).
   creen ahí no los sirve nadie. Verificar con
   `curl -H "Authorization: Bearer $TOKEN" ".../zones?name=formotos.com"`
   que `status` sea `active` antes de tocar DNS.
+- **`NODE_ENV` tiene que estar marcada "Not available during build".** Coolify
+  inyecta las variables de la aplicación también en el build, y con
+  `NODE_ENV=production` npm se salta las devDependencies: `npm run build`
+  muere con `tsc: not found`. El Dockerfile ya instala con `--include=dev`
+  para no depender de esa casilla, pero conviene dejarla bien en cada
+  entorno nuevo.
 - **`docker-compose` v1 está roto en esta máquina** — usar `docker compose`.
 - **`docker-compose.yml` del repo es solo para desarrollo local.** Coolify
   no lo usa: cada entorno tiene sus recursos gestionados.
