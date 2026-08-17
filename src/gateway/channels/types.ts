@@ -1,4 +1,5 @@
 import type {
+  Channel,
   ConnectionCredentials,
   Provider,
   ResolvedConnection,
@@ -111,8 +112,18 @@ interface OutboundAdapterBase {
     text: string,
     mediaUrl?: string,
   ): Promise<string>;
-  /** Valida credenciales contra el proveedor sin enviarle un mensaje a nadie. */
-  verifyCredentials(credentials: ConnectionCredentials): Promise<VerifiedCredentials>;
+  /**
+   * Valida credenciales contra el proveedor sin enviarle un mensaje a nadie.
+   *
+   * Recibe el canal porque un mismo proveedor puede servir varios con APIs
+   * distintas (Meta: WhatsApp Cloud API vs Instagram Messaging), y porque para
+   * algunos la clave de ruteo no está en lo que tipea el admin sino que la
+   * tiene que reportar el proveedor.
+   */
+  verifyCredentials(
+    credentials: ConnectionCredentials,
+    channel: Channel,
+  ): Promise<VerifiedCredentials>;
 }
 
 /**

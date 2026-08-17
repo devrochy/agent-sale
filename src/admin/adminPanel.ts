@@ -3889,10 +3889,16 @@ function credentialFieldsHtml(connection: ConnectionSummary): string {
   if (connection.provider === "meta") {
     return `
       <div class="fieldgrid">
-        <div class="field">
+        ${
+          // Instagram no tiene Phone Number ID: su clave de ruteo es el IGID,
+          // que reporta Meta al validar y no se edita a mano.
+          connection.channel === "whatsapp"
+            ? `<div class="field">
           <label for="pnid-${id}">Phone Number ID</label>
           <input type="text" id="pnid-${id}" name="phoneNumberId" placeholder="123456789012345" autocomplete="off">
-        </div>
+        </div>`
+            : ""
+        }
         <div class="field">
           <label for="appsecret-${id}">App Secret</label>
           <input type="password" id="appsecret-${id}" name="appSecret" autocomplete="off">
@@ -4003,7 +4009,7 @@ function nuevaConexionMetaHtml(): string {
             <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
           </div>
         </div>
-        <form method="POST" action="/admin/conexiones/meta">
+        <form method="POST" action="/admin/conexiones/meta/whatsapp">
           <div class="fieldgrid">
             <div class="field">
               <label for="nueva-pnid">Phone Number ID</label>
@@ -4024,6 +4030,66 @@ function nuevaConexionMetaHtml(): string {
               <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
             </div>
           </div>
+          <div class="formfoot">
+            <button type="submit" class="btn btn--primary">Probar y conectar</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  `;
+}
+
+/**
+ * Alta de Instagram Direct (Etapa C2). Comparte con la de WhatsApp la app de
+ * Meta, el App Secret, el verify token y la URL de webhook — de ahí que no se
+ * pida un Phone Number ID ni nada equivalente: la clave de ruteo es el IGID de
+ * la cuenta, y lo reporta Meta al validar.
+ */
+function nuevaConexionInstagramHtml(): string {
+  const webhookUrl = webhookUrlFor("meta");
+  return `
+    <section class="block block--narrow" aria-label="Conectar Instagram">
+      <div class="blockhead">
+        <h2>Conectar Instagram</h2>
+        <span class="hint">Instagram Direct</span>
+      </div>
+      <div class="panel connection">
+        <p class="hint">
+          Los DM de Instagram entran como conversaciones propias, separadas de
+          las de WhatsApp. Requiere una cuenta profesional vinculada a una
+          Página de Facebook.
+        </p>
+        <div class="connection__webhook">
+          <label for="webhook-url-ig-nueva">URL de webhook (la misma de Meta)</label>
+          <div class="copyrow">
+            <code id="webhook-url-ig-nueva" class="mono">${escapeHtml(webhookUrl)}</code>
+            <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
+          </div>
+        </div>
+        <form method="POST" action="/admin/conexiones/meta/instagram">
+          <div class="fieldgrid">
+            <div class="field">
+              <label for="ig-appsecret">App Secret</label>
+              <input type="password" id="ig-appsecret" name="appSecret" autocomplete="off" required>
+              <p class="hint">El mismo de tu app de Meta, si ya conectaste WhatsApp por acá.</p>
+            </div>
+            <div class="field">
+              <label for="ig-token">Access Token de la Página</label>
+              <input type="password" id="ig-token" name="accessToken" autocomplete="off" required>
+              <p class="hint">Se genera en Messenger → Configuración → Generar token, para la Página vinculada a tu Instagram.</p>
+            </div>
+            <div class="field">
+              <label for="ig-verify">Verify Token</label>
+              <input type="password" id="ig-verify" name="verifyToken" autocomplete="off" required>
+              <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá.</p>
+            </div>
+          </div>
+          <p class="hint">
+            Antes de probar: en Instagram, <strong>Configuración → Mensajes y respuestas a
+            historias → Controles de mensajes → Herramientas conectadas</strong>, activá
+            <em>permitir el acceso a los mensajes</em>. Si queda apagado no llega ningún
+            mensaje y Meta no reporta ningún error.
+          </p>
           <div class="formfoot">
             <button type="submit" class="btn btn--primary">Probar y conectar</button>
           </div>
@@ -4063,7 +4129,13 @@ export async function renderConexionesPage(
       ? `<div class="banner banner--ok">Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.</div>`
       : "";
 
-  const yaHayMeta = connections.some((c) => c.provider === "meta");
+  // Por canal y no por proveedor (Etapa C2): tener WhatsApp por Meta ya no
+  // implica tener Instagram, y con el chequeo viejo el alta de Instagram
+  // quedaba oculta justamente para quien ya había conectado WhatsApp.
+  const yaHayWhatsAppMeta = connections.some(
+    (c) => c.provider === "meta" && c.channel === "whatsapp",
+  );
+  const yaHayInstagram = connections.some((c) => c.channel === "instagram");
   const tarjetas = connections.length
     ? connections.map((c) => connectionCardHtml(c, esUnica && c.active)).join("")
     : emptyState(
@@ -4080,7 +4152,8 @@ export async function renderConexionesPage(
     </div>
     ${banner}
     ${tarjetas}
-    ${yaHayMeta ? "" : nuevaConexionMetaHtml()}
+    ${yaHayWhatsAppMeta ? "" : nuevaConexionMetaHtml()}
+    ${yaHayInstagram ? "" : nuevaConexionInstagramHtml()}
   `;
 
   return layout("Conexiones", tenant, body, "conexiones", admin);
@@ -4096,23 +4169,33 @@ export async function renderConexionesPage(
  * corregir solo el token sin volver a tipear el SID.
  */
 /**
- * Campos de credencial que acepta el panel, por proveedor. Solo estos se leen
- * del formulario: una lista blanca evita que un campo inesperado del body
- * termine guardado dentro del blob cifrado.
+ * Campos de credencial que acepta el panel. Solo estos se leen del formulario:
+ * una lista blanca evita que un campo inesperado del body termine guardado
+ * dentro del blob cifrado.
+ *
+ * Depende del canal además del proveedor (Etapa C2): una conexión de Meta para
+ * WhatsApp necesita el Phone Number ID, y una de Instagram no —su clave de
+ * ruteo es el IGID, que no lo tipea el admin sino que lo reporta Meta al
+ * validar—. Pedirlo igual sería pedir un dato que nadie tiene a mano.
  */
-const CREDENTIAL_FIELDS: Record<Provider, string[]> = {
-  twilio: ["accountSid", "authToken"],
-  meta: ["phoneNumberId", "appSecret", "accessToken", "verifyToken"],
-};
+function credentialFieldsFor(channel: Channel, provider: Provider): string[] {
+  if (provider === "meta") {
+    return channel === "whatsapp"
+      ? ["phoneNumberId", "appSecret", "accessToken", "verifyToken"]
+      : ["appSecret", "accessToken", "verifyToken"];
+  }
+  return ["accountSid", "authToken"];
+}
 
 /** Los campos vacíos conservan lo ya guardado; los que traen valor lo pisan. */
 function mergeCredentials(
+  channel: Channel,
   provider: Provider,
   actuales: ConnectionCredentials,
   input: Record<string, string | undefined>,
 ): ConnectionCredentials {
   const merged: ConnectionCredentials = { ...actuales };
-  for (const campo of CREDENTIAL_FIELDS[provider]) {
+  for (const campo of credentialFieldsFor(channel, provider)) {
     const valor = input[campo]?.trim();
     if (valor) {
       merged[campo] = valor;
@@ -4130,11 +4213,19 @@ export async function guardarCredencialesConexion(
     return { ok: false, error: "La conexión no existe." };
   }
 
-  const credentials = mergeCredentials(existente.provider, existente.credentials, input);
+  const credentials = mergeCredentials(
+    existente.channel,
+    existente.provider,
+    existente.credentials,
+    input,
+  );
 
   let verificadas;
   try {
-    verificadas = await outboundAdapterFor(existente.provider).verifyCredentials(credentials);
+    verificadas = await outboundAdapterFor(existente.provider).verifyCredentials(
+      credentials,
+      existente.channel,
+    );
   } catch (error) {
     // El mensaje del error va explícito: pino no serializa un Error puesto
     // bajo una clave propia, y sin esto el log sale como `error:{}`, inútil
@@ -6834,10 +6925,11 @@ export async function marcarConexionPrimary(connectionId: string): Promise<void>
  * de lo que tipeó el admin sin confirmar.
  */
 export async function crearConexionMeta(
+  channel: Channel,
   input: Record<string, string | undefined>,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const credentials: ConnectionCredentials = {};
-  for (const campo of CREDENTIAL_FIELDS.meta) {
+  for (const campo of credentialFieldsFor(channel, "meta")) {
     const valor = input[campo]?.trim();
     if (!valor) {
       return { ok: false, error: `Falta ${campo}.` };
@@ -6847,10 +6939,10 @@ export async function crearConexionMeta(
 
   let verificadas;
   try {
-    verificadas = await outboundAdapterFor("meta").verifyCredentials(credentials);
+    verificadas = await outboundAdapterFor("meta").verifyCredentials(credentials, channel);
   } catch (error) {
     logger.warn(
-      { provider: "meta", motivo: error instanceof Error ? error.message : String(error) },
+      { provider: "meta", channel, motivo: error instanceof Error ? error.message : String(error) },
       "Alta de conexión de Meta rechazada por el proveedor",
     );
     return {
@@ -6861,11 +6953,23 @@ export async function crearConexionMeta(
     };
   }
 
+  // Para Instagram la clave de ruteo (el IGID) **solo** puede venir del
+  // proveedor: no es un dato que el admin tenga a mano, y tipearlo mal daría
+  // una conexión que guarda bien pero cuyo webhook no matchea nunca. Para
+  // WhatsApp se conserva el fallback al Phone Number ID que sí tipeó.
+  const externalId = verificadas.externalId ?? credentials.phoneNumberId;
+  if (!externalId) {
+    return {
+      ok: false,
+      error: "Meta validó las credenciales pero no reportó la cuenta a la que corresponden.",
+    };
+  }
+
   await saveConnection({
-    channel: "whatsapp",
+    channel,
     provider: "meta",
-    label: "WhatsApp · Meta",
-    externalId: verificadas.externalId ?? credentials.phoneNumberId!,
+    label: `${CHANNEL_LABEL[channel]} · Meta`,
+    externalId,
     displayAddress: verificadas.displayAddress,
     credentials,
   });

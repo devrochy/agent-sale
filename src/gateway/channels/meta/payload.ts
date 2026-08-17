@@ -50,6 +50,12 @@ export interface MetaValue {
 }
 
 export interface MetaWebhookPayload {
+  /**
+   * Discriminador del canal (Etapa C2): `whatsapp_business_account` para lo de
+   * acá, `instagram` para Instagram Direct. Los dos llegan por el mismo
+   * webhook, así que este campo es lo único que dice cómo parsear el resto.
+   */
+  object?: string;
   entry?: Array<{ changes?: Array<{ value?: MetaValue }> }>;
 }
 

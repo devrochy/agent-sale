@@ -286,3 +286,147 @@ describe("metaInboundAdapter.parseDeliveryStatuses", () => {
     expect(metaInboundAdapter.parseDeliveryStatuses!(request(mensajeEntrante()))).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Instagram Direct (Fase 19, Etapa C2). Llega por el MISMO endpoint y con la
+// misma firma; lo único que lo distingue es `object`.
+// ---------------------------------------------------------------------------
+
+const IGID = "17841400000000001";
+const IGSID = "6789012345678901";
+
+function dmDeInstagram(mensaje: Record<string, unknown> = {}) {
+  return {
+    object: "instagram",
+    entry: [
+      {
+        id: IGID,
+        time: 1786300000000,
+        messaging: [
+          {
+            sender: { id: IGSID },
+            recipient: { id: IGID },
+            timestamp: 1786300000000,
+            message: { mid: "mid.INSTAGRAM1", text: "Hola, tienen cascos?", ...mensaje },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("metaInboundAdapter — Instagram (Etapa C2)", () => {
+  it("rutea por entry[].id, que es el IGID de la cuenta del negocio", () => {
+    expect(metaInboundAdapter.identifyConnection(request(dmDeInstagram()))).toBe(IGID);
+  });
+
+  it("rechaza el lote que mezcla dos IGID en vez de atribuirlo al primero", () => {
+    const payload = {
+      object: "instagram",
+      entry: [
+        { id: IGID, messaging: [] },
+        { id: "17841400000000999", messaging: [] },
+      ],
+    };
+    expect(metaInboundAdapter.identifyConnection(request(payload))).toBeNull();
+  });
+
+  it("normaliza un DM: el IGSID va verbatim, sin prefijo de canal", () => {
+    const [mensaje] = metaInboundAdapter.parseInbound(request(dmDeInstagram()));
+    expect(mensaje).toEqual({
+      externalMessageId: "mid.INSTAGRAM1",
+      customerExternalId: IGSID,
+      body: "Hola, tienen cascos?",
+      receivedAt: new Date(1786300000000).toISOString(),
+    });
+  });
+
+  it("el timestamp se lee como milisegundos, no como segundos", () => {
+    // Tratarlo como segundos no falla ruidosamente: deja la fecha en 1970 y el
+    // mensaje se procesa igual, así que el error aparece recién en la bandeja.
+    const [mensaje] = metaInboundAdapter.parseInbound(request(dmDeInstagram()));
+    expect(new Date(mensaje!.receivedAt).getUTCFullYear()).toBeGreaterThan(2020);
+  });
+
+  it("IGNORA un eco: es un mensaje que mandamos nosotros", () => {
+    // Sin este filtro el bot lee su propia respuesta como si fuera del
+    // cliente, contesta, se vuelve a leer, y queda en un bucle infinito
+    // contra una cuenta real.
+    const eco = dmDeInstagram({ is_echo: true });
+    expect(metaInboundAdapter.parseInbound(request(eco))).toEqual([]);
+  });
+
+  it("ignora un evento sin `message` (lecturas, reacciones)", () => {
+    const lectura = {
+      object: "instagram",
+      entry: [
+        {
+          id: IGID,
+          messaging: [{ sender: { id: IGSID }, recipient: { id: IGID }, read: { mid: "mid.X" } }],
+        },
+      ],
+    };
+    expect(metaInboundAdapter.parseInbound(request(lectura))).toEqual([]);
+  });
+
+  it("ignora un mensaje sin texto (sticker, reel compartido)", () => {
+    const adjunto = {
+      object: "instagram",
+      entry: [
+        {
+          id: IGID,
+          messaging: [
+            {
+              sender: { id: IGSID },
+              recipient: { id: IGID },
+              timestamp: 1786300000000,
+              message: { mid: "mid.ADJUNTO", attachments: [{ type: "image" }] },
+            },
+          ],
+        },
+      ],
+    };
+    expect(metaInboundAdapter.parseInbound(request(adjunto))).toEqual([]);
+  });
+
+  it("devuelve todos los mensajes de un lote de la misma cuenta", () => {
+    const lote = {
+      object: "instagram",
+      entry: [
+        {
+          id: IGID,
+          messaging: [
+            {
+              sender: { id: IGSID },
+              recipient: { id: IGID },
+              timestamp: 1786300000000,
+              message: { mid: "mid.1", text: "Hola" },
+            },
+            {
+              sender: { id: IGSID },
+              recipient: { id: IGID },
+              timestamp: 1786300001000,
+              message: { mid: "mid.2", text: "Están?" },
+            },
+          ],
+        },
+      ],
+    };
+    expect(metaInboundAdapter.parseInbound(request(lote))).toHaveLength(2);
+  });
+
+  it("no reporta estados de entrega: Instagram no manda statuses[]", () => {
+    expect(metaInboundAdapter.parseDeliveryStatuses!(request(dmDeInstagram()))).toEqual([]);
+  });
+
+  it("la firma se verifica igual que en WhatsApp: es la de la app, no la del canal", () => {
+    const req = request(dmDeInstagram());
+    expect(metaInboundAdapter.verifyRequest({ appSecret: APP_SECRET }, req)).toBe(true);
+    expect(metaInboundAdapter.verifyRequest({ appSecret: "otro" }, req)).toBe(false);
+  });
+
+  it("un payload de WhatsApp sigue funcionando igual (no-regresión del despacho)", () => {
+    expect(metaInboundAdapter.identifyConnection(request(mensajeEntrante()))).toBe(PHONE_NUMBER_ID);
+    expect(metaInboundAdapter.parseInbound(request(mensajeEntrante()))).toHaveLength(1);
+  });
+});
