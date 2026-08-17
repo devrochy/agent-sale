@@ -143,6 +143,40 @@ misma transacción; a mano hay que acordarse.
 
 El panel vive en **`/login`**, no en `/`: la raíz no tiene ruta y responde 404. `/admin` redirige a `/login`.
 
+## Datos de prueba
+
+El catálogo de prueba (100 productos, 22 categorías con jerarquía real,
+variantes con y sin stock) se siembra con `scripts/seed-catalogo-prueba.ts`.
+Ese script **no está en la imagen** —el Dockerfile no copia `scripts/` y
+`tsx` es dependencia de desarrollo—, así que se corre desde un contenedor
+conectado a la red de Coolify, con el repositorio montado:
+
+```bash
+docker run --rm --network coolify \
+  -v /home/devrochy/Proyectos/agent-sale:/app -w /app \
+  --env-file ~/agent-sale-deploy/test.env \
+  node:22 npx tsx scripts/seed-catalogo-prueba.ts
+```
+
+Detalles que importan:
+
+- Usa **`MIGRATIONS_DATABASE_URL`** del `--env-file`. El `.env` del
+  repositorio montado no lo pisa: el script hace `import "dotenv/config"` y
+  dotenv nunca sobrescribe variables que ya existen en el entorno.
+- **Con `production.env` siembra producción.** Antes de correrlo conviene
+  confirmar contra qué base apunta:
+
+  ```bash
+  docker run --rm --network coolify --env-file <entorno>.env node:22 \
+    node -e 'import("dotenv/config").then(()=>{const u=new URL(process.env.MIGRATIONS_DATABASE_URL);console.log(u.hostname, u.pathname)})'
+  ```
+
+- Usar `node:22` y no `node:22-alpine`: el `node_modules` montado viene del
+  host (glibc) y en Alpine (musl) los binarios de esbuild/tsx no cargan.
+- **No siembra promociones ni aliados** más allá del genérico "Catálogo
+  propio" de la migración `0039`. Esos se crean desde el panel
+  (`/admin/promociones`, `/admin/aliados`), que es donde vive su CRUD.
+
 ## Migraciones
 
 Las migraciones corren **en el arranque del contenedor**, no como comando
