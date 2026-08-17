@@ -229,6 +229,15 @@ cliente resueltos por conexión, y `/admin/conexiones` configurable.
 - **Etapa C3 — Messenger.** Pendiente, y a un despacho de distancia: comparte
   la Página, la app, el token y la API de envío con Instagram. Para llegar al
   público general hace falta App Review de Meta (`pages_messaging` /
-  `instagram_manage_messages`, Advanced Access); en modo desarrollo se puede
-  conversar con admins, developers y testers de la app, que alcanza para
-  implementar y validar.
+  `instagram_manage_messages`, Advanced Access).
+
+  ⚠️ **Corrección:** esta ADR afirmaba que "en modo desarrollo se puede
+  conversar con admins, developers y testers, que alcanza para implementar y
+  validar". Para **Instagram eso es falso**: la documentación de Meta exige que
+  la app esté en modo **Activo** para recibir webhooks
+  ([Webhooks — Instagram Platform](https://developers.facebook.com/docs/instagram-platform/webhooks)).
+  En modo desarrollo el webhook no dispara nunca, y no hay error que lo
+  explique. Pasar a Activo **no** es App Review —es un interruptor, y con
+  acceso estándar la app sigue limitada a las cuentas con rol—, pero exige
+  tener cargadas una URL de política de privacidad válida y una categoría de
+  app. Ver el bloqueo abierto en el README de la fase.

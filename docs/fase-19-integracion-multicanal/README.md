@@ -1,6 +1,37 @@
 # Fase 19 — Integración Multicanal (Instagram, Facebook/Meta)
 
-Estado: **Etapas A, B, C1 y C2 completas** (v2) — gateway multicanal, panel de conexiones, WhatsApp por Meta Cloud API, identidad de cliente por canal e Instagram Direct. Falta C3 (Messenger); ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
+Estado: **Etapas A, B y C1 completas; C2 con el código completo y la validación end-to-end pendiente** (v2) — gateway multicanal, panel de conexiones, WhatsApp por Meta Cloud API, identidad de cliente por canal e Instagram Direct. Falta C3 (Messenger); ver "Estado de implementación" en [ADR-029](./adrs/ADR-029-arquitectura-gateway-multicanal.md).
+
+## Bloqueo abierto — validación end-to-end de Instagram (Etapa C2)
+
+El código de la Etapa C2 está completo y cubierto por tests (unitarios de
+entrada y salida, e integración del webhook y del panel). Lo que **no** está
+hecho es la prueba con tráfico real, y no es por el código.
+
+Estado al 2026-08-11:
+
+- [x] Cuenta de Instagram profesional, vinculada a una Página de Facebook.
+- [ ] **App de Meta en modo Activo.** Instagram no entrega webhooks con la app
+      en desarrollo (ver la corrección en ADR-029). No requiere App Review,
+      pero sí una URL de política de privacidad válida y una categoría de app.
+- [ ] **URL de política de privacidad.** `formotos.com` está en mantenimiento y
+      devuelve `HTTP 503` en todas sus rutas, así que Meta la rechaza. Hay un
+      borrador verificado contra el código en
+      [politica-de-privacidad.md](../politica-de-privacidad.md) y una página
+      lista para publicar; falta la razón social, el NIT, el domicilio, el
+      correo de habeas data, el teléfono y el plazo de conservación.
+- [ ] Producto Instagram agregado a la app y token de Página generado.
+- [ ] Webhook registrado (**después** de guardar la conexión en el panel: el
+      handshake valida el verify token contra las conexiones ya guardadas).
+- [ ] Cuenta tester agregada **y con la invitación aceptada** desde Instagram.
+- [ ] Interruptor *Herramientas conectadas → permitir el acceso a los mensajes*
+      activado en la cuenta de Instagram. Apagado, no llega ningún DM y Meta no
+      reporta ningún error.
+
+Cuando esto se destrabe, la prueba que cierra la etapa está en el plan: DM
+entrante → respuesta por Instagram → conversación separada de la de WhatsApp →
+pedido que pide el teléfono y reusa cédula y dirección si ya existen en la
+identidad de WhatsApp.
 
 Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-19--integración-multicanal-instagram-facebookmeta) · [PROPUESTA_V2.md §3.11](../../PROPUESTA_V2.md) · [Fase 3 — Integración WhatsApp](../fase-3-whatsapp-gateway/README.md) · [plan-escalado-multi-cliente.md](../plan-escalado-multi-cliente.md)
 

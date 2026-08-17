@@ -99,6 +99,13 @@ se guardaría bien y simplemente no llegaría nunca un mensaje.
   lanza.
 - **Límite operativo:** 200 mensajes automatizados por hora por cuenta. Sobra
   para el piloto; hay que tenerlo en cuenta antes de abrir al público.
+- **La app tiene que estar en modo Activo**, no en desarrollo, para que Meta
+  entregue los webhooks de Instagram. Es distinto de WhatsApp Cloud API, que sí
+  funciona en desarrollo con destinatarios de prueba, y distinto de App Review:
+  el modo Activo es un interruptor inmediato y con acceso estándar la app sigue
+  limitada a las cuentas con rol. Exige, eso sí, una URL de política de
+  privacidad válida y una categoría de app cargadas. Ver el bloqueo abierto en
+  el README de la fase.
 
 ## Alternativas descartadas
 
