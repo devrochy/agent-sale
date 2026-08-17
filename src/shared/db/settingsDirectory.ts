@@ -1,5 +1,6 @@
 import { decryptSecret, encryptSecret } from "../crypto/secretBox.js";
 import type { LlmRoutingMode } from "../../orchestrator/llm/catalog.js";
+import { logger } from "../observability/logger.js";
 import { pool } from "./pool.js";
 
 /**
@@ -33,6 +34,35 @@ export async function getSettings(): Promise<SettingsSummary | null> {
     `SELECT ${SETTINGS_SUMMARY_COLUMNS} FROM settings LIMIT 1`,
   );
   return result.rows[0] ?? null;
+}
+
+/**
+ * Siembra la fila singleton de `settings` si la base todavía no la tiene,
+ * al arrancar (mismo criterio que `ensureConnectionsFromEnv`, y por eso se
+ * llama junto a ella en `index.ts`).
+ *
+ * Hace falta porque la fila no nace de ninguna migración:
+ * `0036_drop_multitenancy.cjs` la deriva del tenant que existiera, y una
+ * instalación nueva no tiene ninguno. Sin fila, `renderLoginPage` devuelve
+ * `null` y `/login` responde **404** — un despliegue recién hecho parece
+ * roto sin que nada en los logs lo explique.
+ *
+ * El nombre es un marcador de posición a propósito: es lo primero que se
+ * cambia en Configuración, y adivinarlo desde una variable de entorno solo
+ * agregaría una variable más que mantener sincronizada con el panel.
+ */
+export async function ensureSettingsRow(): Promise<void> {
+  const result = await pool.query(
+    `INSERT INTO settings (name)
+     SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM settings)`,
+    ["Mi negocio"],
+  );
+  if (result.rowCount) {
+    logger.info(
+      { event: "settings.semilla_inicial" },
+      "Base sin fila de settings: se sembró la configuración inicial, editable en /admin/configuracion",
+    );
+  }
 }
 
 /**
@@ -94,7 +124,12 @@ export async function saveLlmConfig(config: {
 }): Promise<void> {
   await pool.query(
     "UPDATE settings SET llm_provider = $1, llm_model = $2, llm_api_key_encrypted = $3, llm_routing_mode = $4",
-    [config.provider, config.model, config.apiKey ? encryptSecret(config.apiKey) : null, config.routingMode],
+    [
+      config.provider,
+      config.model,
+      config.apiKey ? encryptSecret(config.apiKey) : null,
+      config.routingMode,
+    ],
   );
 }
 
@@ -132,7 +167,9 @@ export async function getWompiConfig(): Promise<WompiConfig> {
   }>("SELECT wompi_private_key_encrypted, wompi_events_secret_encrypted FROM settings");
   const row = result.rows[0];
   return {
-    privateKey: row?.wompi_private_key_encrypted ? decryptSecret(row.wompi_private_key_encrypted) : null,
+    privateKey: row?.wompi_private_key_encrypted
+      ? decryptSecret(row.wompi_private_key_encrypted)
+      : null,
     eventsSecret: row?.wompi_events_secret_encrypted
       ? decryptSecret(row.wompi_events_secret_encrypted)
       : null,
@@ -148,10 +185,10 @@ export async function saveWompiConfig(config: {
   privateKey: string;
   eventsSecret: string;
 }): Promise<void> {
-  await pool.query("UPDATE settings SET wompi_private_key_encrypted = $1, wompi_events_secret_encrypted = $2", [
-    encryptSecret(config.privateKey),
-    encryptSecret(config.eventsSecret),
-  ]);
+  await pool.query(
+    "UPDATE settings SET wompi_private_key_encrypted = $1, wompi_events_secret_encrypted = $2",
+    [encryptSecret(config.privateKey), encryptSecret(config.eventsSecret)],
+  );
 }
 
 /**
@@ -264,7 +301,9 @@ export async function markReportSent(): Promise<void> {
  * encuesta sin pedir reseña, nunca un link inventado.
  */
 export async function getReviewLink(): Promise<string | null> {
-  const result = await pool.query<{ review_link: string | null }>("SELECT review_link FROM settings");
+  const result = await pool.query<{ review_link: string | null }>(
+    "SELECT review_link FROM settings",
+  );
   return result.rows[0]?.review_link ?? null;
 }
 
