@@ -8,7 +8,7 @@ Este plan es el resultado de la discusión previa sobre riesgos, cambios de arqu
 
 - **No construir el gateway de WhatsApp desde cero** — integrar un BSP existente (Gupshup, 360dialog, Twilio) sobre la API oficial de Meta.
 - **Monolito modular** al inicio (no microservicios/Kubernetes desde el día 1).
-- **Multi-tenancy con Row Level Security en Postgres desde la primera tabla**, no como añadido posterior.
+- **Un solo negocio** (ForMotos) — no multi-tenant. La plataforma se diseñó originalmente multi-tenant con Row Level Security (ver [ADR-004](docs/fase-1-arquitectura/adrs/ADR-004-multi-tenancy-rls.md)); esa decisión fue revertida en [ADR-032](docs/fase-1-arquitectura/adrs/ADR-032-retiro-multi-tenancy.md) al no haber ningún segundo cliente real ni comprometido.
 - **Tool calling con validación estricta**: el LLM propone, las tools deciden contra datos reales (sin alucinaciones de precio/stock).
 - **pgvector dentro de Postgres** para recomendaciones, en vez de una vector DB separada.
 - **Cola simple** (Redis Streams/SQS) en vez de Kafka, hasta que el volumen lo justifique.
@@ -76,7 +76,7 @@ Este documento **no incluye código ni pasos de implementación** — es la plan
 
 **Estimación:** 2 semanas.
 
-**Definición de terminado:** Un tenant de prueba no puede ver datos de otro tenant (verificado con test de aislamiento); el pipeline despliega a staging automáticamente en cada merge a main.
+**Definición de terminado:** Un tenant de prueba no puede ver datos de otro tenant (verificado con test de aislamiento); el pipeline despliega a staging automáticamente en cada merge a main. *(Histórico — [ADR-032](docs/fase-1-arquitectura/adrs/ADR-032-retiro-multi-tenancy.md) retiró RLS/multi-tenancy; el test de aislamiento que validaba esto ya no existe.)*
 
 ---
 
@@ -225,11 +225,13 @@ Este documento **no incluye código ni pasos de implementación** — es la plan
 
 ## Fase 10 — Preparación para Escala y Lanzamiento Multi-tenant
 
+*(Histórico, nunca ejecutada — [ADR-032](docs/fase-1-arquitectura/adrs/ADR-032-retiro-multi-tenancy.md) retiró multi-tenancy: la parte de "incorporación repetible de nuevos tenants" queda sin objeto, no se va a ejecutar. La parte de prueba de carga a escala sigue siendo una preocupación válida a futuro para un solo negocio de alto volumen, si llegara a hacer falta — se replantearía como su propia fase si ese momento llega, no reusando este objetivo mixto.)*
+
 **Objetivo:** Confirmar que la plataforma soporta miles de conversaciones simultáneas y habilitar la incorporación repetible de nuevos tenants.
 
 **Entregables:**
 - Prueba de carga simulando miles de conversaciones simultáneas.
-- Runbook de onboarding de nuevo tenant.
+- Runbook de onboarding de nuevo tenant — el complemento funcional (qué debe ser configuración de datos, no código) ya está mapeado en `docs/plan-escalado-multi-cliente.md`, escrito durante el diseño de las Fases 11-12.
 - Plan de escalado de infraestructura (criterios para pasar de monolito modular a servicios separados).
 - Documentación operativa completa.
 
@@ -243,8 +245,53 @@ Este documento **no incluye código ni pasos de implementación** — es la plan
 
 ---
 
+## Fase 11 — Panel de Administración y Analítica
+
+**Objetivo:** Evolucionar el panel admin actual (solo tenants/catálogo/pedidos, de solo lectura) a una herramienta operativa real para gestionar el asistente de ventas — inbox de conversaciones, leads, tickets de escalamiento, flujo del agente, conexiones de canal, kill-switch y analítica de costos — con la marca del panel parametrizada por tenant para poder escalarlo a distintos clientes (ver `docs/fase-11-panel-admin-dashboard/README.md`).
+
+**Entregables:**
+- Nuevo home por tenant con KPI cards, actividad reciente y marca configurable (`tenants.display_name`).
+- Inbox de conversaciones, tabla de leads y listado agregado de tickets de escalamiento.
+- Vista de flujo del agente con contadores reales por tool, y tarjeta de conexión del canal WhatsApp/Twilio.
+- Kill-switch de pausa del bot por tenant (`tenants.bot_paused`).
+- Tabla `llm_usage` en Postgres con costo/tokens/latencia por llamada al LLM, y panel de Costos/Estadísticas nativo.
+- 4 ADRs nuevas (ADR-014 a ADR-017): arquitectura frontend del panel, alcance de autenticación, parametrización de marca, persistencia de uso de LLM.
+
+**Dependencias:** Fase 9 (necesita conversaciones/pedidos reales de un piloto para que el panel tenga datos que mostrar). **Sin dependencia de la Fase 10** — son preocupaciones distintas (herramienta operativa vs. infraestructura de escala) y pueden ejecutarse en paralelo, o esta fase incluso antes.
+
+**Riesgos:** Expectativa del usuario/negocio por encima del alcance real entregado (el panel de referencia usado como inspiración de UX sugiere más de lo que esta fase construye — Conocimiento/RAG, tono editable en vivo e Insights por IA quedan explícitamente fuera, ver `mapeo-funcionalidades.md`); costo recurrente de escritura por llamada al LLM si el volumen de conversaciones crece antes de la Fase 10; divergencia entre `llm_usage` (Postgres) y los logs de Loki si el insert best-effort falla silenciosamente.
+
+**Estimación:** 4-5 semanas (5 sub-fases secuenciales, 11.1 a 11.5, detalladas en `docs/fase-11-panel-admin-dashboard/`).
+
+**Definición de terminado:** Las 5 sub-fases completas con datos reales de ForMotos (ver checklist detallado en `docs/fase-11-panel-admin-dashboard/README.md#definición-de-terminado`); en particular, el kill-switch verificado end-to-end y el panel de Costos mostrando al menos una semana de datos reales de `llm_usage`.
+
+---
+
+## Fase 12 — Capacidades Proactivas del Agente
+
+**Objetivo:** Incorporar comportamiento proactivo del agente más allá de responder mensajes entrantes — seguimiento de ventas frías, reportes automáticos, guardrails más estrictos, encuestas y reseñas — evaluado a partir de un análisis de 12 capacidades candidatas ("superpoderes"), sin adoptar ningún modelo de gating tipo PRO/FREE (ver `docs/fase-12-capacidades-proactivas-agente/README.md`).
+
+**Entregables:**
+- Infraestructura de jobs programados en proceso (`node-cron`, ADR-018), sin dependencia externa nueva.
+- Guardrail de invención extendido de precio a stock.
+- Instrucción de multi-idioma en el system prompt (sin romper prompt caching).
+- Reporte diario, seguimiento de cotizaciones frías ("cazador de ventas"), encuestas de satisfacción y solicitud de reseñas — todos operando dentro de la ventana de 24h de mensajería de WhatsApp (ADR-019).
+- Reactivación de leads fríos (fuera de la ventana de 24h) documentada como bloqueada hasta obtener aprobación de plantillas de Meta — no implementada hasta entonces.
+- Cobros por WhatsApp con Wompi (12.4): link de pago único (tarjeta/PSE/Nequi/Bancolombia Transfer) con confirmación automática vía webhook — decisión explícita del usuario de priorizarlo dentro de esta fase, ver ADR-024.
+- Análisis de factibilidad (sin implementación comprometida) de multimodalidad (voz/imágenes entrantes), marcada como candidata a fase propia futura.
+
+**Dependencias:** Fase 7 (handoff/notificación WhatsApp ya construida, reutilizada aquí), Fase 11 (panel donde se muestran los resultados de varias de estas capacidades). Sin dependencia de la Fase 10.
+
+**Riesgos:** Tiempo de aprobación de plantillas de Meta no controlable (bloquea 12.3, mismo riesgo que ya vivió la Fase 3 con la verificación de cuenta BSP); subestimar el esfuerzo de multimodalidad si se intenta meter en esta fase en vez de tratarla como candidata a fase propia; cuenta comercial de Wompi en producción (12.4) es un prerrequisito de negocio pendiente, no técnico.
+
+**Estimación:** 3-4 semanas para 12.1, 12.2 y 12.4; 12.3 sin estimar hasta iniciar el trámite de plantillas con Meta.
+
+**Definición de terminado:** Ver checklist detallado en `docs/fase-12-capacidades-proactivas-agente/README.md#definición-de-terminado`.
+
+---
+
 ## Resumen de duración estimada
 
-Fase 0-10 en secuencia: **~24-28 semanas** (algunas fases pueden solaparse parcialmente, ej. Fase 8 con Fase 6-7, reduciendo el calendario real).
+Fase 0-10 en secuencia: **~24-28 semanas** (algunas fases pueden solaparse parcialmente, ej. Fase 8 con Fase 6-7, reduciendo el calendario real). Fase 11 agrega **4-5 semanas** adicionales, sin bloquear ni ser bloqueada por la Fase 10 (puede ejecutarse en paralelo). Fase 12 agrega **3-4 semanas** más (12.1-12.2; 12.3 sin estimar por depender de aprobación externa de Meta), tampoco bloqueada por la Fase 10.
 
 Este plan cubre únicamente la planificación por fases solicitada. No incluye código ni pasos de implementación técnica detallados — esos se definirán al iniciar cada fase.

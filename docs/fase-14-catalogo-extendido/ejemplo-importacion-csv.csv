@@ -1,0 +1,70 @@
+sku,name,price,stock,talla,color,description,imageUrl
+MRA-001-S-NEG,Casco Abierto Urbano Andina,185000,6,S,negro,"Casco abierto liviano para uso urbano con visera corta y forro interior desmontable.",https://picsum.photos/seed/mra-001/480/360
+MRA-001-M-NEG,Casco Abierto Urbano Andina,185000,9,M,negro,"Casco abierto liviano para uso urbano con visera corta y forro interior desmontable.",https://picsum.photos/seed/mra-001/480/360
+MRA-001-L-NEG,Casco Abierto Urbano Andina,185000,4,L,negro,"Casco abierto liviano para uso urbano con visera corta y forro interior desmontable.",https://picsum.photos/seed/mra-001/480/360
+MRA-001-M-BLA,Casco Abierto Urbano Andina,185000,5,M,blanco,"Casco abierto liviano para uso urbano con visera corta y forro interior desmontable.",https://picsum.photos/seed/mra-001/480/360
+MRA-002-S-ROJ,Casco Integral Cordillera,410000,3,S,rojo,"Casco integral homologado con doble visera y ventilación regulable para ruta y trocha.",https://picsum.photos/seed/mra-002/480/360
+MRA-002-M-ROJ,Casco Integral Cordillera,410000,7,M,rojo,"Casco integral homologado con doble visera y ventilación regulable para ruta y trocha.",https://picsum.photos/seed/mra-002/480/360
+MRA-002-L-ROJ,Casco Integral Cordillera,410000,2,L,rojo,"Casco integral homologado con doble visera y ventilación regulable para ruta y trocha.",https://picsum.photos/seed/mra-002/480/360
+MRA-003-S,Chaqueta Impermeable Rally,220000,4,S,azul,"Chaqueta impermeable con protecciones CE en hombros y codos, forro térmico removible.",https://picsum.photos/seed/mra-003/480/360
+MRA-003-M,Chaqueta Impermeable Rally,220000,8,M,azul,"Chaqueta impermeable con protecciones CE en hombros y codos, forro térmico removible.",https://picsum.photos/seed/mra-003/480/360
+MRA-003-L,Chaqueta Impermeable Rally,220000,6,L,azul,"Chaqueta impermeable con protecciones CE en hombros y codos, forro térmico removible.",https://picsum.photos/seed/mra-003/480/360
+MRA-003-XL,Chaqueta Impermeable Rally,220000,3,XL,azul,"Chaqueta impermeable con protecciones CE en hombros y codos, forro térmico removible.",https://picsum.photos/seed/mra-003/480/360
+MRA-004-S,Guantes de Cuero Trail,65000,10,S,negro,"Guantes de cuero reforzado con nudillera rígida y palma antideslizante.",https://picsum.photos/seed/mra-004/480/360
+MRA-004-M,Guantes de Cuero Trail,65000,14,M,negro,"Guantes de cuero reforzado con nudillera rígida y palma antideslizante.",https://picsum.photos/seed/mra-004/480/360
+MRA-004-L,Guantes de Cuero Trail,65000,7,L,negro,"Guantes de cuero reforzado con nudillera rígida y palma antideslizante.",https://picsum.photos/seed/mra-004/480/360
+MRA-005-39,Botas Enduro Andina,320000,3,39,negro,"Botas de caña alta con puntera y talonera reforzadas, suela antideslizante.",https://picsum.photos/seed/mra-005/480/360
+MRA-005-40,Botas Enduro Andina,320000,5,40,negro,"Botas de caña alta con puntera y talonera reforzadas, suela antideslizante.",https://picsum.photos/seed/mra-005/480/360
+MRA-005-41,Botas Enduro Andina,320000,6,41,negro,"Botas de caña alta con puntera y talonera reforzadas, suela antideslizante.",https://picsum.photos/seed/mra-005/480/360
+MRA-005-42,Botas Enduro Andina,320000,4,42,negro,"Botas de caña alta con puntera y talonera reforzadas, suela antideslizante.",https://picsum.photos/seed/mra-005/480/360
+MRA-005-43,Botas Enduro Andina,320000,2,43,negro,"Botas de caña alta con puntera y talonera reforzadas, suela antideslizante.",https://picsum.photos/seed/mra-005/480/360
+MRA-006-S,Manoplas de Neopreno,45000,12,S,gris,"Manoplas de neopreno para manubrio, protegen del frío y la lluvia sin perder el tacto de los mandos.",https://picsum.photos/seed/mra-006/480/360
+MRA-006-M,Manoplas de Neopreno,45000,10,M,gris,"Manoplas de neopreno para manubrio, protegen del frío y la lluvia sin perder el tacto de los mandos.",https://picsum.photos/seed/mra-006/480/360
+MRA-007-S,Protector de Rodillas Trail,48000,9,S,negro,"Rodilleras articuladas de uso rudo, ajuste con velcro doble.",https://picsum.photos/seed/mra-007/480/360
+MRA-007-M,Protector de Rodillas Trail,48000,12,M,negro,"Rodilleras articuladas de uso rudo, ajuste con velcro doble.",https://picsum.photos/seed/mra-007/480/360
+MRA-007-L,Protector de Rodillas Trail,48000,7,L,negro,"Rodilleras articuladas de uso rudo, ajuste con velcro doble.",https://picsum.photos/seed/mra-007/480/360
+MRA-008-S,Camiseta Térmica Interior,38000,15,S,gris,"Camiseta térmica de secado rápido para usar bajo la chaqueta en climas fríos.",https://picsum.photos/seed/mra-008/480/360
+MRA-008-M,Camiseta Térmica Interior,38000,18,M,gris,"Camiseta térmica de secado rápido para usar bajo la chaqueta en climas fríos.",https://picsum.photos/seed/mra-008/480/360
+MRA-008-L,Camiseta Térmica Interior,38000,10,L,gris,"Camiseta térmica de secado rápido para usar bajo la chaqueta en climas fríos.",https://picsum.photos/seed/mra-008/480/360
+MRA-009-S,Pantalón Impermeable Rally,198000,5,S,negro,"Pantalón impermeable con refuerzos en rodilla y cadera, cierre ajustable en tobillo.",https://picsum.photos/seed/mra-009/480/360
+MRA-009-M,Pantalón Impermeable Rally,198000,9,M,negro,"Pantalón impermeable con refuerzos en rodilla y cadera, cierre ajustable en tobillo.",https://picsum.photos/seed/mra-009/480/360
+MRA-009-L,Pantalón Impermeable Rally,198000,6,L,negro,"Pantalón impermeable con refuerzos en rodilla y cadera, cierre ajustable en tobillo.",https://picsum.photos/seed/mra-009/480/360
+MRA-009-XL,Pantalón Impermeable Rally,198000,3,XL,negro,"Pantalón impermeable con refuerzos en rodilla y cadera, cierre ajustable en tobillo.",https://picsum.photos/seed/mra-009/480/360
+MRA-010-S,Rodilleras Enduro Pro,56000,8,S,negro,"Rodilleras de competición con placa exterior rígida y ventilación interior.",https://picsum.photos/seed/mra-010/480/360
+MRA-010-M,Rodilleras Enduro Pro,56000,11,M,negro,"Rodilleras de competición con placa exterior rígida y ventilación interior.",https://picsum.photos/seed/mra-010/480/360
+MRA-011-S,Coderas de Protección,42000,9,S,negro,"Coderas livianas con espuma de alta densidad, ideales para uso urbano y trocha.",https://picsum.photos/seed/mra-011/480/360
+MRA-011-M,Coderas de Protección,42000,10,M,negro,"Coderas livianas con espuma de alta densidad, ideales para uso urbano y trocha.",https://picsum.photos/seed/mra-011/480/360
+MRA-012-CLA,Gafas de Motocross,39000,14,,claro,"Gafas de motocross con lente antiempañante y espuma triple capa.",https://picsum.photos/seed/mra-012/480/360
+MRA-012-AHU,Gafas de Motocross,39000,11,,ahumado,"Gafas de motocross con lente antiempañante y espuma triple capa.",https://picsum.photos/seed/mra-012/480/360
+MRA-013-S,Cubre Bota Impermeable,36000,8,S,negro,"Cubre botas impermeable de instalación rápida, protege del agua y el barro en trayecto.",https://picsum.photos/seed/mra-013/480/360
+MRA-013-M,Cubre Bota Impermeable,36000,10,M,negro,"Cubre botas impermeable de instalación rápida, protege del agua y el barro en trayecto.",https://picsum.photos/seed/mra-013/480/360
+MRA-013-L,Cubre Bota Impermeable,36000,6,L,negro,"Cubre botas impermeable de instalación rápida, protege del agua y el barro en trayecto.",https://picsum.photos/seed/mra-013/480/360
+MRA-014-S,Casco Modular Nevado,395000,3,S,gris,"Casco modular con mentonera abatible, permite usarlo integral o abierto sin quitárselo.",https://picsum.photos/seed/mra-014/480/360
+MRA-014-M,Casco Modular Nevado,395000,6,M,gris,"Casco modular con mentonera abatible, permite usarlo integral o abierto sin quitárselo.",https://picsum.photos/seed/mra-014/480/360
+MRA-014-L,Casco Modular Nevado,395000,4,L,gris,"Casco modular con mentonera abatible, permite usarlo integral o abierto sin quitárselo.",https://picsum.photos/seed/mra-014/480/360
+MRA-015,Filtro de Aire Andina Trail,28000,20,,,"Filtro de aire de repuesto, empaque directo sin modificaciones.",https://picsum.photos/seed/mra-015/480/360
+MRA-016,Filtro de Aceite Andina Trail,18000,25,,,"Filtro de aceite de repuesto, compatible con motores de 125 a 250cc.",https://picsum.photos/seed/mra-016/480/360
+MRA-017,Batería 12V 9Ah Andina,135000,9,,,"Batería sellada libre de mantenimiento, lista para instalar.",https://picsum.photos/seed/mra-017/480/360
+MRA-018,Batería 12V 12Ah Andina,168000,5,,,"Batería sellada de mayor capacidad para motos de cilindraje alto.",https://picsum.photos/seed/mra-018/480/360
+MRA-019,Cadena de Transmisión 428H,95000,11,,,"Cadena de transmisión reforzada paso 428, incluye eslabón de cierre.",https://picsum.photos/seed/mra-019/480/360
+MRA-020,Kit de Arrastre Completo,210000,4,,,"Kit de arrastre completo: cadena, piñón y catalina, listo para instalar.",https://picsum.photos/seed/mra-020/480/360
+MRA-021,Pastillas de Freno Delanteras,38000,15,,,"Pastillas de freno delanteras de cerámica, alto poder de frenado en frío y caliente.",https://picsum.photos/seed/mra-021/480/360
+MRA-022,Pastillas de Freno Traseras,35000,13,,,"Pastillas de freno traseras de cerámica, baja generación de polvillo.",https://picsum.photos/seed/mra-022/480/360
+MRA-023,Amortiguador Trasero Ajustable,275000,3,,,"Amortiguador trasero con precarga ajustable en 5 posiciones.",https://picsum.photos/seed/mra-023/480/360
+MRA-024,Espejo Retrovisor Izquierdo,22000,18,,,"Espejo retrovisor izquierdo universal, rosca estándar 10mm.",https://picsum.photos/seed/mra-024/480/360
+MRA-025,Espejo Retrovisor Derecho,22000,18,,,"Espejo retrovisor derecho universal, rosca estándar 10mm.",https://picsum.photos/seed/mra-025/480/360
+MRA-026,Baúl Trasero Andina 30L,195000,5,,,"Baúl trasero de 30 litros con respaldo acolchado y luz de freno integrada.",https://picsum.photos/seed/mra-026/480/360
+MRA-027,Baúl Trasero Andina 45L,235000,3,,,"Baúl trasero de 45 litros, entra un casco integral completo.",https://picsum.photos/seed/mra-027/480/360
+MRA-028,Cubierta Impermeable para Moto XL,52000,10,,,"Cubierta impermeable talla XL con costuras selladas y ojales para asegurar.",https://picsum.photos/seed/mra-028/480/360
+MRA-029,Llanta Trasera Cordillera 90/90,145000,8,,,"Llanta trasera 90/90-18, banda de rodamiento mixta ciudad/trocha.",https://picsum.photos/seed/mra-029/480/360
+MRA-030,Llanta Trasera Cordillera 100/90,158000,6,,,"Llanta trasera 100/90-18, mayor agarre para carga y parrillero.",https://picsum.photos/seed/mra-030/480/360
+MRA-031,Cable de Acelerador Universal,15000,20,,,"Cable de acelerador universal, requiere corte a medida.",https://picsum.photos/seed/mra-031/480/360
+MRA-032,Cable de Embrague Universal,16000,18,,,"Cable de embrague universal, requiere corte a medida.",https://picsum.photos/seed/mra-032/480/360
+MRA-033,Bujía de Alto Rendimiento,12000,30,,,"Bujía de electrodo de iridio, mejor encendido y menor consumo.",https://picsum.photos/seed/mra-033/480/360
+MRA-034,Kit de Empaques de Motor,85000,7,,,"Kit completo de empaques y retenedores para reparación de motor.",https://picsum.photos/seed/mra-034/480/360
+MRA-035,Soporte Central de Parqueo,65000,9,,,"Soporte central de parqueo reforzado, incluye resorte de retorno.",https://picsum.photos/seed/mra-035/480/360
+MRA-036,Portaequipaje Trasero Andina,75000,10,,,"Portaequipaje trasero de acero con capacidad de carga de 5kg.",https://picsum.photos/seed/mra-036/480/360
+MRA-037,Alarma con Sensor de Movimiento,130000,12,,,"Alarma con sensor de movimiento y control remoto de largo alcance.",https://picsum.photos/seed/mra-037/480/360
+MRA-038,Candado de Disco Antirrobo,90000,14,,,"Candado de disco con alarma sonora de 110dB, incluye funda recordatoria.",https://picsum.photos/seed/mra-038/480/360
+MRA-039,Funda Cubre Tanque,32000,16,,,"Funda cubre tanque de neopreno, protege la pintura de rayones.",https://picsum.photos/seed/mra-039/480/360
+MRA-040,Bomba de Freno Trasero,68000,8,,,"Bomba de freno trasero de repuesto, kit de reparación incluido.",https://picsum.photos/seed/mra-040/480/360

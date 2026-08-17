@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+# Permisos mínimos del GITHUB_TOKEN (ver
+# docs/fase-8-observabilidad-seguridad/revision-seguridad.md): ningún job
+# necesita escribir en el repo — el deploy usa FLY_API_TOKEN, no este token.
+permissions:
+  contents: read
+
+jobs:
+  lint-test-build:
+    name: Lint, tests, build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: agent_sale
+          POSTGRES_PASSWORD: agent_sale
+          POSTGRES_DB: agent_sale
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_sale"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MIGRATIONS_DATABASE_URL: postgres://agent_sale:agent_sale@localhost:5432/agent_sale
+      DATABASE_URL: postgres://agent_sale_app:agent_sale_app@localhost:5432/agent_sale
+      REDIS_URL: redis://localhost:6379
+      # Sin cuenta real de Twilio ni de Anthropic todavía (checklists
+      # pendientes) — la firma se verifica igual con un token de prueba
+      # (ver docs/fase-3-whatsapp-gateway/webhook-contrato.md); el resto
+      # de estas variables solo necesitan existir para que la app arranque,
+      # no se ejercita ninguna llamada real a Twilio ni a Claude en CI.
+      TWILIO_AUTH_TOKEN: ci-test-fake-token
+      PUBLIC_WEBHOOK_URL: http://localhost:3000/webhooks/whatsapp
+      TWILIO_ACCOUNT_SID: ci-test-fake-sid
+      TWILIO_WHATSAPP_NUMBER: "whatsapp:+10000000000"
+      ANTHROPIC_API_KEY: ci-test-fake-key
+      # BYOK (Fase 11.4, ver ADR-020/secretBox.ts) — requerida por env.ts
+      # desde que se agregó; secretBox.ts valida que decodifique a
+      # exactamente 32 bytes en base64. Valor de prueba, no la clave real
+      # (esa vive en Fly Secrets, ver ADR-007) — CI nunca cifra/descifra
+      # datos reales, solo necesita que la app arranque y los tests de
+      # round-trip de secretBox.test.ts tengan algo válido para usar.
+      TENANT_SECRETS_ENCRYPTION_KEY: "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Migraciones (esquema + RLS + rol de aplicación)
+        run: npm run migrate
+
+      - name: Tests unitarios
+        run: npm test
+
+      - name: Tests de integración + aislamiento RLS (bloqueante)
+        run: npm run test:integration
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build imagen Docker
+        run: docker build -t agent-sale:${{ github.sha }} .
+
+  deploy-staging:
+    name: Deploy a Staging (Fly.io)
+    needs: lint-test-build
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # El contexto `secrets` no se puede usar directamente en un `if:` de
+    # step ("Unrecognized named-value: 'secrets'") — se expone primero
+    # como variable de entorno del job y se evalúa `env.FLY_API_TOKEN` en
+    # los `if:`. Sin secrets de Fly.io/Supabase todavía (cuentas pendientes
+    # de crear por el usuario, igual que el checklist de BSP de la Fase 3).
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy a Fly.io (staging)
+        if: ${{ env.FLY_API_TOKEN != '' }}
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: flyctl deploy
+        if: ${{ env.FLY_API_TOKEN != '' }}
+        run: flyctl deploy --config fly.toml --remote-only
+      - name: Deploy pendiente
+        if: ${{ env.FLY_API_TOKEN == '' }}
+        run: echo "FLY_API_TOKEN no configurado todavía — ver ADR-005. El pipeline queda listo, el deploy real se activa al crear la cuenta de Fly.io."
+
+  deploy-production:
+    name: Deploy a Producción (Fly.io, aprobación manual)
+    needs: lint-test-build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # "environment: production" habilita la regla de protección de GitHub
+    # (aprobación manual) una vez configurada en Settings > Environments —
+    # eso es un paso manual de GitHub, no de este workflow (pipeline-ci-cd.md).
+    environment:
+      name: production
+    # Ver nota en deploy-staging sobre por qué `secrets` pasa primero por `env:`.
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy a Fly.io (producción)
+        if: ${{ env.FLY_API_TOKEN != '' }}
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: flyctl deploy
+        if: ${{ env.FLY_API_TOKEN != '' }}
+        run: flyctl deploy --config fly.toml --remote-only
+      - name: Deploy pendiente
+        if: ${{ env.FLY_API_TOKEN == '' }}
+        run: echo "FLY_API_TOKEN no configurado todavía — ver ADR-005. El pipeline queda listo, el deploy real se activa al crear la cuenta de Fly.io."

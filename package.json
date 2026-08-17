@@ -1,0 +1,49 @@
+{
+  "name": "agent-sale",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma de ventas asistida por IA sobre WhatsApp (Claude + Tool Calling)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src tests scripts",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
+    "migrate": "node-pg-migrate -d MIGRATIONS_DATABASE_URL --migrations-dir migrations up",
+    "migrate:down": "node-pg-migrate -d MIGRATIONS_DATABASE_URL --migrations-dir migrations down",
+    "test": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:all": "vitest run",
+    "manual:seed-test-message": "tsx scripts/seed-manual-test.ts",
+    "seed:catalogo-prueba": "tsx scripts/seed-catalogo-prueba.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.4",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/formbody": "^8.0.2",
+    "@fastify/rate-limit": "^11.1.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^5.10.0",
+    "ioredis": "^5.11.1",
+    "node-cron": "^4.6.0",
+    "node-pg-migrate": "^7.9.1",
+    "pg": "^8.13.1",
+    "pino": "^10.3.1",
+    "twilio": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@typescript-eslint/eslint-plugin": "^8.18.1",
+    "@typescript-eslint/parser": "^8.18.1",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
