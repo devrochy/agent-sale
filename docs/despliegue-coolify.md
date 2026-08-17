@@ -145,29 +145,27 @@ El panel vive en **`/login`**, no en `/`: la raíz no tiene ruta y responde 404.
 
 ## Migraciones
 
-`npm run migrate` está configurado como comando **pre-deployment**. Tiene
-que correr antes y no después porque la app consulta `channel_connections`
-al arrancar (`ensureConnectionsFromEnv`): con el esquema sin migrar, el
-proceso muere antes de escuchar en el puerto.
+Las migraciones corren **en el arranque del contenedor**, no como comando
+de despliegue de Coolify: el `CMD` del Dockerfile es
+`npm run migrate && node dist/src/index.js`.
+
+Tiene que ser así porque **Coolify ejecuta su comando pre-deployment dentro
+del contenedor anterior**, que corre la imagen vieja. Sus `migrations/` no
+incluyen las de la versión que se está desplegando, así que informa
+`No migrations to run!` y la app nueva arranca contra un esquema atrasado
+y muere. Pasó en los dos entornos, y en producción con la `0054`.
+
+Con el `CMD` el orden queda garantizado: si `migrate` falla, el proceso no
+llega a escuchar, el healthcheck no pasa y Coolify revierte — mejor eso que
+servir tráfico con el esquema viejo.
 
 `node-pg-migrate` es dependencia de producción por esto mismo: la etapa
 runtime del Dockerfile instala con `--omit=dev`, y del lado equivocado el
 binario no existe en la imagen.
 
-> **Coolify ejecuta el pre-deployment en el contenedor ANTERIOR, no en el
-> nuevo.** De ahí salen dos fallos que ya ocurrieron:
->
-> - En el primer despliegue de un entorno no hay contenedor previo: lo
->   salta con "No running containers found. Skipping" y la base se queda
->   sin esquema.
-> - Si el contenedor viejo se construyó **antes** de que `node-pg-migrate`
->   fuera dependencia de producción, el comando falla con
->   `node-pg-migrate: not found`, y **Coolify marca el despliegue como
->   Success igualmente**. La app nueva arranca contra un esquema viejo,
->   muere, y el panel no da ninguna pista.
->
-> Por eso, tras cualquier despliegue que traiga migraciones nuevas, hay que
-> verificar el conteo:
+> **Verificar el conteo de migraciones sigue siendo buena idea** después de
+> un despliegue con migraciones nuevas, sobre todo en entornos que todavía
+> tengan configurado el viejo comando pre-deployment:
 >
 > ```bash
 > docker exec <uuid-postgres> psql -U postgres -d agent_sale -tAc "SELECT count(*) FROM pgmigrations;"
