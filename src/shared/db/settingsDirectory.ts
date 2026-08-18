@@ -242,6 +242,36 @@ export async function saveBrandVoiceConfig(config: Record<string, unknown>): Pro
 }
 
 /**
+ * Cuentas a las que el cliente puede transferir (migración 0056). Lista
+ * vacía —no `null`— cuando no hay ninguna cargada: el caller siempre
+ * itera, y "sin cuentas configuradas" es un caso normal, no un error. Sin
+ * ninguna, el bot no puede dar datos de transferencia y lo dice.
+ */
+export interface TransferAccount {
+  /** "Nequi", "Bancolombia", "Daviplata"… texto libre: la lista de medios de pago en Colombia cambia más rápido que un enum. */
+  entity: string;
+  /** "Ahorros", "Corriente", "Celular"… vacío para los que no tienen tipo (Nequi). */
+  accountType: string;
+  accountNumber: string;
+  holderName: string;
+  /** Cédula/NIT del titular: varios bancos lo piden para confirmar la transferencia. */
+  holderDocument: string;
+  active: boolean;
+}
+
+export async function getTransferAccounts(): Promise<TransferAccount[]> {
+  const result = await pool.query<{ transfer_accounts: TransferAccount[] | null }>(
+    "SELECT transfer_accounts FROM settings",
+  );
+  return result.rows[0]?.transfer_accounts ?? [];
+}
+
+/** Reemplaza la lista completa, sin merge — mismo criterio que `saveBrandVoiceConfig`: el formulario manda todas las filas que hay. */
+export async function saveTransferAccounts(accounts: TransferAccount[]): Promise<void> {
+  await pool.query("UPDATE settings SET transfer_accounts = $1", [JSON.stringify(accounts)]);
+}
+
+/**
  * Número de WhatsApp que recibe el Reporte diario (Fase 12.2, ver
  * migrations/0024_tenants_report_recipient.cjs) — `null` si no se
  * configuró, en cuyo caso `src/jobs/dailyReport.ts` no manda reporte (no

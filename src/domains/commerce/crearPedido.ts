@@ -1,6 +1,12 @@
-import { createWompiPaymentLink, getWompiConfig, withTransaction } from "../../shared/db/index.js";
+import {
+  createWompiPaymentLink,
+  getWompiConfig,
+  guardarPaymentLinkUrl,
+  withTransaction,
+} from "../../shared/db/index.js";
 import { createPaymentLink, MIN_AMOUNT_COP } from "../../payments/wompiClient.js";
 import { buildIdempotencyKey } from "./idempotency.js";
+import { enviarDatosTransferencia } from "./datosTransferencia.js";
 
 export type PaymentMethod =
   | "transferencia"
@@ -50,6 +56,14 @@ export interface CrearPedidoOutput {
   public_order_number?: string;
   /** Solo presente cuando payment_method es 'pago_en_linea' y status 'confirmed' (ver ADR-024). */
   payment_link_url?: string;
+  /**
+   * `true` cuando ya se le mandaron al cliente los datos de transferencia
+   * en un mensaje aparte (ver datosTransferencia.ts). El LLM NO recibe las
+   * cuentas: solo este booleano, para que confirme que ya los mandamos en
+   * vez de dictarlos de memoria. `false` si el pago es por transferencia y
+   * todavía no hay ninguna cuenta cargada en Configuración.
+   */
+  transfer_details_sent?: boolean;
   /** Solo presente cuando status es 'faltan_datos_cliente' (ver ADR-033). */
   missing_fields?: MissingCustomerField[];
   existing_data?: {
@@ -385,7 +399,24 @@ export async function crearPedido(
   // fila todavía no sería visible desde otra conexión hasta el COMMIT.
   if (paymentLink && created.status === "confirmed") {
     await createWompiPaymentLink(created.order_id, paymentLink.paymentLinkId);
+    // La URL se le manda al cliente por WhatsApp y hasta ahora moría ahí:
+    // solo se guardaba el id del link. Sin ella el panel no puede
+    // reabrirla ni reenviarla, que es justo lo que hace falta cuando el
+    // cliente dice "no me llegó" (ver migración 0056).
+    await guardarPaymentLinkUrl(created.order_id, paymentLink.url);
     return { ...created, payment_link_url: paymentLink.url };
+  }
+
+  // Los datos de transferencia van en un mensaje aparte, fuera del turno
+  // del LLM y con los valores tal como están guardados — ver el docblock de
+  // datosTransferencia.ts para por qué no pueden pasar por el modelo.
+  if (input.payment_method === "transferencia" && created.status === "confirmed") {
+    const enviados = await enviarDatosTransferencia(
+      quote.conversation_id,
+      created.public_order_number ?? "",
+      created.total,
+    );
+    return { ...created, transfer_details_sent: enviados };
   }
 
   return created;

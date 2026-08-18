@@ -280,9 +280,13 @@ beforeAll(async () => {
      VALUES ($1, $2, 250000, 250000) RETURNING id`,
     [conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
+  // Con datos de entrega: un pedido a domicilio real los tiene, y sin
+  // ellos la columna Entrega no puede ofrecer "Ver dirección".
   await adminPool.query(
-    `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total)
-     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'admin-test-order-1', 250000)`,
+    `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total,
+                         delivery_address, delivery_full_name, delivery_id_document, delivery_city)
+     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'admin-test-order-1', 250000,
+             'Calle 10 # 20-30', 'Cliente De Prueba', '1020304050', 'Manizales')`,
     [quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
 
@@ -1614,6 +1618,129 @@ describe("panel admin", () => {
         `SELECT brand_voice_config FROM settings`,
       );
       expect(row.rows[0]!.brand_voice_config).toBeNull();
+    });
+  });
+
+  describe("pedidos — estados, filtros y entrega", () => {
+    it("la tabla trae filtros por estado, pago y entrega", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-filter-key="estado"');
+      expect(response.body).toContain('data-filter-key="pago"');
+      expect(response.body).toContain('data-filter-key="entrega"');
+      // Los filtros no sirven si las filas no traen contra qué comparar.
+      expect(response.body).toMatch(/data-filter-estado="[a-z_]+"/);
+      expect(response.body).toMatch(/data-filter-pago="[a-z_]+"/);
+    });
+
+    it("el estado sale del par status + payment_status, no de una columna cruda", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // El pedido del fixture es 'abierto' + 'pagado' -> "Pagado".
+      expect(response.body).toContain("Pagado");
+      // Y nunca se muestra el valor crudo de la columna.
+      expect(response.body).not.toContain(">abierto<");
+    });
+
+    it("la dirección vive en su propio diálogo y no dentro de los items", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("Ver dirección");
+      expect(response.body).toContain("<dl class=\"datalist\">");
+      // Antes la dirección se imprimía apretada en la celda de Items.
+      expect(response.body).not.toContain("Entrega a:");
+    });
+
+    it("los métodos de pago se muestran con su nombre, no con la clave de la tool", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("Transferencia");
+      // `efectivo_contraentrega` se lee como una variable en una tabla.
+      expect(response.body).not.toContain(">efectivo_contraentrega<");
+    });
+  });
+
+  describe("cuentas para transferencia", () => {
+    it("guarda las cuentas y descarta las filas vacías", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transferencias",
+        payload: new URLSearchParams([
+          ["entity", "Nequi"],
+          ["accountType", ""],
+          ["accountNumber", "3001234567"],
+          ["holderName", "ForMotos SAS"],
+          ["holderDocument", "900123456-7"],
+          ["active", "1"],
+          // Fila agregada y dejada en blanco: no debería guardarse.
+          ["entity", ""],
+          ["accountType", ""],
+          ["accountNumber", ""],
+          ["holderName", ""],
+          ["holderDocument", ""],
+          ["active", "1"],
+        ]).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{ transfer_accounts: unknown[] }>(
+        `SELECT transfer_accounts FROM settings WHERE id = $1`,
+        [settingsId],
+      );
+      expect(fila.rows[0]!.transfer_accounts).toHaveLength(1);
+      expect(fila.rows[0]!.transfer_accounts[0]).toMatchObject({
+        entity: "Nequi",
+        accountNumber: "3001234567",
+        active: true,
+      });
+    });
+
+    it("una cuenta a medio llenar no se guarda en silencio", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transferencias",
+        payload: new URLSearchParams([
+          ["entity", "Bancolombia"],
+          ["accountType", "Ahorros"],
+          ["accountNumber", ""],
+          ["holderName", "ForMotos"],
+          ["holderDocument", ""],
+          ["active", "1"],
+        ]).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      // Guardar media cuenta deja al asistente mandando datos incompletos,
+      // que es peor que rechazar el formulario.
+      expect(decodeURIComponent(response.headers.location as string)).toContain(
+        "entidad y número",
+      );
+    });
+
+    it("el estado viaja en un select, no en un checkbox", async () => {
+      // Un checkbox desmarcado no se envía: `active` llegaría más corto que
+      // el resto de los arrays y las filas se desfasarían entre sí.
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('name="active"');
+      expect(response.body).not.toContain('type="checkbox" name="active"');
     });
   });
 

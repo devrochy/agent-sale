@@ -20,6 +20,11 @@ import {
   createPasswordResetToken,
   resolvePasswordResetToken,
 } from "./auth/passwordReset.js";
+import {
+  derivarEstado,
+  ESTADOS_VISIBLES,
+  cambiarEstadoPedido,
+} from "../domains/commerce/estadoPedido.js";
 import { env } from "../config/env.js";
 import { outboundAdapterFor } from "../gateway/channels/registry.js";
 import { sendToConversation, sendWhatsAppMessage } from "../gateway/sendMessage.js";
@@ -38,6 +43,11 @@ import {
 import { appendMessage } from "../orchestrator/memory.js";
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { logger } from "../shared/observability/logger.js";
+import {
+  getTransferAccounts,
+  saveTransferAccounts,
+  type TransferAccount,
+} from "../shared/db/settingsDirectory.js";
 import {
   createAlly,
   listAllies,
@@ -205,9 +215,31 @@ interface PedidoRow {
   customer_name: string | null;
   delivery_address: string | null;
   delivery_id_document: string | null;
+  delivery_full_name: string | null;
+  delivery_municipality: string | null;
+  delivery_city: string | null;
   tracking_number: string | null;
   carrier: string | null;
+  wompi_payment_link_url: string | null;
+  status_reason: string | null;
   items: OrderItemJson[];
+}
+
+/**
+ * Los métodos de pago se guardan con el valor que usa la tool
+ * (`efectivo_contraentrega`), que en una tabla se lee como una variable.
+ * Acá viven sus nombres y su orden para el filtro — un solo lugar, para que
+ * la etiqueta de la celda y la opción del `<select>` no se separen.
+ */
+const METODOS_PAGO: { key: string; label: string }[] = [
+  { key: "transferencia", label: "Transferencia" },
+  { key: "pago_en_linea", label: "Pago en línea" },
+  { key: "efectivo_contraentrega", label: "Efectivo contra entrega" },
+  { key: "tarjeta", label: "Tarjeta al recibir" },
+];
+
+function etiquetaMetodoPago(key: string): string {
+  return METODOS_PAGO.find((m) => m.key === key)?.label ?? key;
 }
 
 function formatCOP(value: string | number): string {
@@ -270,6 +302,56 @@ function emptyState(icon: string, title: string, desc: string): string {
  * barra funciona como diagnóstico, no solo como navegación — se ve qué falta
  * configurar sin entrar a las cinco pestañas una por una.
  */
+/**
+ * Una cuenta para transferencia dentro del formulario de Cobros. Los campos
+ * viajan como arrays (`entity[]`, `accountNumber[]`…) y se recomponen por
+ * posición al guardar: es la forma más simple de un formulario de N filas
+ * sin estado en el servidor ni un endpoint por fila, y la lista se reescribe
+ * entera igual (ver saveTransferAccounts).
+ *
+ * `index` solo alimenta los `id`/`for`; la plantilla que clona el navegador
+ * pasa -1 y el script le asigna el índice real al insertarla.
+ *
+ * El estado va en un `<select>` y no en un checkbox por la alineación: un
+ * checkbox desmarcado no se envía, así que `active[]` llegaría más corto
+ * que el resto y las filas se desfasarían. Un select siempre manda valor.
+ */
+function transferAccountFieldsHtml(account: TransferAccount, index: number): string {
+  const uid = index >= 0 ? String(index) : "__i__";
+  return `<div class="transferrow" data-transfer-row>
+    <div class="transferrow__grid">
+      <div class="field">
+        <label for="tr-${uid}-entity">Entidad</label>
+        <input type="text" id="tr-${uid}-entity" name="entity" required placeholder="Nequi, Bancolombia, Daviplata…" value="${escapeHtml(account.entity)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-type">Tipo de cuenta</label>
+        <input type="text" id="tr-${uid}-type" name="accountType" placeholder="Ahorros, Corriente… (opcional)" value="${escapeHtml(account.accountType)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-number">Número</label>
+        <input type="text" id="tr-${uid}-number" name="accountNumber" required inputmode="numeric" value="${escapeHtml(account.accountNumber)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-holder">Titular</label>
+        <input type="text" id="tr-${uid}-holder" name="holderName" required value="${escapeHtml(account.holderName)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-doc">Documento del titular</label>
+        <input type="text" id="tr-${uid}-doc" name="holderDocument" placeholder="Cédula o NIT" value="${escapeHtml(account.holderDocument)}">
+      </div>
+    </div>
+    <div class="transferrow__foot">
+      <label class="sr-only" for="tr-${uid}-active">Estado de la cuenta</label>
+      <select id="tr-${uid}-active" class="tablefilter" name="active">
+        <option value="1" ${account.active ? "selected" : ""}>Activa — se le manda al cliente</option>
+        <option value="0" ${account.active ? "" : "selected"}>Inactiva</option>
+      </select>
+      <button type="button" class="btn btn--ghost btn--sm" data-transfer-remove>Quitar</button>
+    </div>
+  </div>`;
+}
+
 function cfgTab(id: string, nombre: string, estado: string, tono: "on" | "off" | "neutral"): string {
   const activa = id === "agente";
   return `<button type="button" class="cfgtab${activa ? " cfgtab--active" : ""}" role="tab" data-cfg-tab="${escapeHtml(id)}" aria-selected="${activa ? "true" : "false"}">
@@ -1001,6 +1083,23 @@ table.resizing { cursor: col-resize; user-select: none; }
 .flowfoot { margin-top: 14px; font-size: 12px; color: var(--ink-faint); font-family: var(--font-mono); }
 .connection { padding: 22px 24px; max-width: 640px; }
 .connection + .connection { margin-top: 22px; }
+/* Ficha de datos de entrega — pares etiqueta/valor dentro del dialog de
+   Pedidos. Grid de dos columnas y no un <table> porque no son filas
+   comparables entre si, son campos de un mismo registro. */
+/* Fila de cuenta para transferencia (Configuracion -> Cobros). Grid propio
+   y no .cfggrid porque son cinco campos cortos que se leen juntos, no una
+   columna de formulario. */
+.transferrow { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; background: var(--surface-2); }
+.transferrow__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 16px; }
+.transferrow__grid .field { margin: 0; }
+.transferrow__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.datalist { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; margin: 4px 0 0; font-size: 13px; }
+.datalist dt { color: var(--ink-faint); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; align-self: center; }
+.datalist dd { margin: 0; color: var(--ink); }
+/* Enlace de pago en la celda: bloque propio bajo el metodo, para que no
+   compita con el a la misma altura y se pueda tocar comodo. */
+.paylink { display: inline-block; margin-top: 4px; font-size: 12px; font-family: var(--font-mono); color: var(--ignition); text-decoration: none; border-bottom: 1px solid currentColor; }
+.paylink:hover { opacity: 0.75; }
 /* Enlace de pie de las paginas de credenciales (login, recuperar): no es una
    accion del formulario, asi que no va en .formfoot ni compite con el boton. */
 .authlink { margin: 18px 0 0; text-align: center; font-size: 13px; }
@@ -1431,6 +1530,37 @@ const CLIENT_SCRIPT = `
 (function () {
   "use strict";
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- cuentas para transferencia (Configuracion > Cobros) ---------- */
+  (function () {
+    var contenedor = document.querySelector("[data-transfer-rows]");
+    var plantilla = document.querySelector("[data-transfer-template]");
+    if (!contenedor || !plantilla) return;
+
+    var añadir = document.querySelector("[data-transfer-add]");
+    if (añadir) {
+      añadir.addEventListener("click", function () {
+        /* __i__ es el marcador de la plantilla del servidor: sin
+           reemplazarlo, todas las filas nuevas compartirian el mismo id y
+           los <label for> apuntarian al primer campo de la lista. */
+        var indice = contenedor.querySelectorAll("[data-transfer-row]").length;
+        var html = plantilla.innerHTML.split("__i__").join("nueva" + indice);
+        contenedor.insertAdjacentHTML("beforeend", html);
+        var ultima = contenedor.lastElementChild;
+        var primerCampo = ultima ? ultima.querySelector("input") : null;
+        if (primerCampo) primerCampo.focus();
+      });
+    }
+
+    contenedor.addEventListener("click", function (event) {
+      var btn = event.target.closest("[data-transfer-remove]");
+      if (!btn) return;
+      /* Quitar no borra nada por si solo: la lista se reescribe entera al
+         guardar, asi que una fila quitada desaparece cuando se guarda. */
+      var fila = btn.closest("[data-transfer-row]");
+      if (fila) fila.remove();
+    });
+  })();
 
   /* ---------- notificaciones flotantes ---------- */
   (function () {
@@ -5692,7 +5822,8 @@ export async function renderPedidosPage(
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
-              o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier,
+              o.delivery_address, o.delivery_id_document, o.delivery_full_name, o.delivery_municipality, o.delivery_city,
+              o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason,
               c.external_id, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
@@ -5704,7 +5835,7 @@ export async function renderPedidosPage(
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier, c.external_id, c.name
+       GROUP BY o.id, c.external_id, c.name
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -5712,68 +5843,150 @@ export async function renderPedidosPage(
 
   const tableRows = rows
     .map((row) => {
-      const items = row.items
-        .map((item) => `<li>${item.quantity}× ${escapeHtml(item.name)} (${formatCOP(item.unit_price)})</li>`)
-        .join("");
-      const entrega =
-        row.delivery_address || row.delivery_id_document
-          ? `<p class="hint">Entrega a: ${escapeHtml(row.delivery_address ?? "-")} · Cédula ${escapeHtml(row.delivery_id_document ?? "-")}</p>`
-          : "";
+      const estado = derivarEstado(row.status, row.payment_status);
+      const itemsId = `items-${row.id}`;
+      const direccionDialogId = `direccion-${row.id}`;
+      const guiaDialogId = `guia-${row.id}`;
+
       const search = [
         row.public_order_number,
         row.customer_name,
         row.external_id,
-        row.status,
+        estado.label,
         row.payment_method,
         row.delivery_method,
+        row.tracking_number,
         ...row.items.map((item) => item.name),
       ]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
-      const pago =
-        row.payment_method === "pago_en_linea"
-          ? `${escapeHtml(row.payment_method)} (${escapeHtml(row.payment_status)})`
-          : escapeHtml(row.payment_method);
 
-      const guiaDialogId = `guia-${row.id}`;
-      let guia: string;
-      if (row.tracking_number) {
-        guia = `<p>${escapeHtml(row.tracking_number)}</p><p class="hint">${escapeHtml(row.carrier ?? "-")}</p>`;
-      } else if (row.delivery_method === "domicilio") {
-        guia = `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost">Registrar guía</button>
-        <dialog id="${guiaDialogId}" class="modal">
-          <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
-          <form method="POST" action="/admin/pedidos/${row.id}/guia">
-            <div class="field">
-              <label for="${guiaDialogId}-tracking">Número de guía</label>
-              <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
-            </div>
-            <div class="field">
-              <label for="${guiaDialogId}-carrier">Transportadora</label>
-              <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
-            </div>
-            <div class="formfoot">
-              <button type="submit" class="btn btn--primary">Registrar guía</button>
-              <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
-            </div>
-          </form>
-        </dialog>`;
-      } else {
-        guia = `<p class="hint">-</p>`;
+      const items = row.items
+        .map(
+          (item) =>
+            `<div class="variantchip">
+               <span class="variantchip__attrs">${item.quantity}× ${escapeHtml(item.name)}</span>
+               <span class="variantchip__price">${formatCOP(item.unit_price)}</span>
+             </div>`,
+        )
+        .join("");
+
+      // Los items dejan de ser una columna gorda de texto envuelto y pasan
+      // a la fila expandible que Productos ya usa para sus variantes: en una
+      // tabla de pedidos lo que se recorre es estado y plata, y el detalle
+      // se abre solo cuando se busca un pedido concreto. El disparador va
+      // pegado al número de pedido —expandir ES abrir ese pedido— y no en
+      // una columna propia: diez columnas no entraban sin scroll horizontal.
+      const numeroCell = `<button type="button" class="expandtoggle" data-expand-toggle="${itemsId}" aria-expanded="false" aria-label="Ver los ${row.items.length} items">${ICON_CHEVRON}</button><span class="mono">${escapeHtml(row.public_order_number)}</span>`;
+
+      // La dirección sale de la celda de Items —donde estaba apretada— y
+      // pasa a la columna de Entrega, detrás de un botón: son cinco campos
+      // que no entran en una celda y que solo hacen falta al despachar.
+      const tieneDireccion = Boolean(
+        row.delivery_address || row.delivery_full_name || row.delivery_id_document,
+      );
+      const entregaCell =
+        row.delivery_method === "domicilio"
+          ? `<span class="chip chip--chrome">Domicilio</span>${
+              tieneDireccion
+                ? `<button type="button" data-open-dialog="${direccionDialogId}" class="btn btn--ghost btn--sm">Ver dirección</button>`
+                : `<p class="hint">Sin dirección cargada</p>`
+            }`
+          : `<span class="chip chip--muted">Recoge en tienda</span>`;
+
+      const direccionDialog = tieneDireccion
+        ? `<dialog id="${direccionDialogId}" class="modal">
+             <div class="blockhead"><h2>Entrega — ${escapeHtml(row.public_order_number)}</h2></div>
+             <dl class="datalist">
+               <dt>Recibe</dt><dd>${escapeHtml(row.delivery_full_name ?? "—")}</dd>
+               <dt>Documento</dt><dd class="mono">${escapeHtml(row.delivery_id_document ?? "—")}</dd>
+               <dt>Dirección</dt><dd>${escapeHtml(row.delivery_address ?? "—")}</dd>
+               <dt>Ciudad</dt><dd>${escapeHtml(row.delivery_city ?? "—")}</dd>
+               <dt>Municipio</dt><dd>${escapeHtml(row.delivery_municipality ?? "—")}</dd>
+             </dl>
+             <div class="formfoot"><button type="button" data-close-dialog="${direccionDialogId}" class="btn btn--ghost">Cerrar</button></div>
+           </dialog>`
+        : "";
+
+      // El enlace de pago vive acá y no en un dialog porque el caso de uso
+      // es de un solo gesto: el cliente dice "no me llegó" y hay que
+      // copiárselo. Solo aparece mientras sirve de algo — un pedido pagado
+      // o rechazado no se paga de nuevo con ese link.
+      const linkPago =
+        row.wompi_payment_link_url && row.payment_status === "pendiente"
+          ? `<a class="paylink" href="${escapeHtml(row.wompi_payment_link_url)}" target="_blank" rel="noopener noreferrer">Enlace de pago</a>`
+          : "";
+      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}`;
+
+      // La guía es un dato de la entrega, no una columna aparte: junta con
+      // el método y la dirección se lee como "cómo le llega esto al
+      // cliente", que es la pregunta real.
+      const guiaCell = row.tracking_number
+        ? `<p class="hint mono">${escapeHtml(row.tracking_number)} · ${escapeHtml(row.carrier ?? "—")}</p>`
+        : row.delivery_method === "domicilio" && row.status === "abierto"
+          ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm">Registrar guía</button>`
+          : "";
+
+      const guiaDialog =
+        !row.tracking_number && row.delivery_method === "domicilio" && row.status === "abierto"
+          ? `<dialog id="${guiaDialogId}" class="modal">
+               <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
+               <p class="hint">Registrar la guía marca el pedido como despachado.</p>
+               <form method="POST" action="/admin/pedidos/${row.id}/guia">
+                 <div class="field">
+                   <label for="${guiaDialogId}-tracking">Número de guía</label>
+                   <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
+                 </div>
+                 <div class="field">
+                   <label for="${guiaDialogId}-carrier">Transportadora</label>
+                   <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
+                 </div>
+                 <div class="formfoot">
+                   <button type="submit" class="btn btn--primary">Registrar guía</button>
+                   <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
+                 </div>
+               </form>
+             </dialog>`
+          : "";
+
+      // Las dos transiciones que ningún sistema puede detectar solo: que el
+      // paquete llegó y que el pedido se cae. El resto las mueve el webhook
+      // (pago) o el registro de guía (despacho).
+      // Las dos en `ghost` y no en rojo: la advertencia vive en el
+      // `data-confirm`, que es donde alguien la lee antes de decidir. Una
+      // columna de botones rojos repetidos en cada fila grita en una tabla
+      // que se recorre de arriba abajo, y deja de significar "cuidado".
+      const acciones: string[] = [];
+      if (row.status === "despachado") {
+        acciones.push(
+          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--sm">Entregado</button></form>`,
+        );
       }
+      if (row.status === "abierto" || row.status === "despachado") {
+        acciones.push(
+          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--sm">Cancelar</button></form>`,
+        );
+      }
+      const accionesCell = acciones.length > 0 ? acciones.join("") : `<p class="hint">—</p>`;
 
-      return `<tr data-search="${escapeHtml(search)}">
-        <td class="mono">${escapeHtml(row.public_order_number)}</td>
+      const motivo = row.status_reason
+        ? `<p class="hint">${escapeHtml(row.status_reason)}</p>`
+        : "";
+
+      return `<tr data-search="${escapeHtml(search)}" data-filter-estado="${estado.key}" data-filter-pago="${escapeHtml(row.payment_method)}" data-filter-entrega="${escapeHtml(row.delivery_method)}" data-expand-target="${itemsId}" data-sort-numero="${escapeHtml(row.public_order_number)}" data-sort-cliente="${escapeHtml((row.customer_name ?? row.external_id).toLowerCase())}" data-sort-estado="${escapeHtml(estado.label)}" data-sort-total="${row.total}" data-sort-fecha="${new Date(row.created_at).getTime()}">
+        <td>${numeroCell}</td>
         <td>${escapeHtml(row.customer_name ?? row.external_id)}</td>
-        <td><ul class="items">${items}</ul>${entrega}</td>
-        <td>${escapeHtml(row.status)}</td>
-        <td>${pago}</td>
-        <td>${escapeHtml(row.delivery_method)}</td>
+        <td><span class="chip chip--${estado.tone}">${escapeHtml(estado.label)}</span>${motivo}</td>
+        <td>${pagoCell}</td>
+        <td>${entregaCell}${guiaCell}</td>
         <td class="mono">${formatCOP(row.total)}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
-        <td>${guia}</td>
-      </tr>`;
+        <td><div class="rowactions">${accionesCell}</div></td>
+      </tr>
+      <tr class="expandrow" id="${itemsId}"><td colspan="8"><div class="variantgrid">${items}</div></td></tr>
+      ${direccionDialog}
+      ${guiaDialog}`;
     })
     .join("\n");
 
@@ -5781,31 +5994,54 @@ export async function renderPedidosPage(
     <div class="pagehead">
       <p class="eyebrow">Catálogo</p>
       <h1>Pedidos</h1>
-      <p>${rows.length} pedidos confirmados de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${rows.length} ${rows.length === 1 ? "pedido" : "pedidos"} de ${escapeHtml(brandName(tenant))}.</p>
     </div>
     ${banner}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
-        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto, estado…" aria-label="Buscar pedidos">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto o guía…" aria-label="Buscar pedidos">
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          ${ESTADOS_VISIBLES.map((e) => `<option value="${e.key}">${escapeHtml(e.label)}</option>`).join("")}
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="pago" aria-label="Filtrar por método de pago">
+          <option value="">Todos los pagos</option>
+          ${METODOS_PAGO.map((m) => `<option value="${m.key}">${escapeHtml(m.label)}</option>`).join("")}
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="entrega" aria-label="Filtrar por entrega">
+          <option value="">Toda entrega</option>
+          <option value="domicilio">Domicilio</option>
+          <option value="recoger_en_tienda">Recoge en tienda</option>
+        </select>
       </div>
       <table data-resizable-table="pedidos">
         <colgroup>
-          <col style="width:8%"><col style="width:18%"><col style="width:20%"><col style="width:9%">
-          <col style="width:12%"><col style="width:11%"><col style="width:8%"><col style="width:8%"><col style="width:6%">
+          <col style="width:11%"><col style="width:16%"><col style="width:14%"><col style="width:14%">
+          <col style="width:19%"><col style="width:9%"><col style="width:9%"><col style="width:8%">
         </colgroup>
-        <thead><tr><th>N° pedido</th><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th><th>Guía</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
+        <thead><tr>
+          <th class="sortable" data-sort-key="numero">N° pedido</th>
+          <th class="sortable" data-sort-key="cliente">Cliente</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Pago</th>
+          <th>Entrega</th>
+          <th class="sortable" data-sort-key="total">Total</th>
+          <th class="sortable" data-sort-key="fecha">Fecha</th>
+          <th>Acciones</th>
+        </tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="8">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
         <div class="pager__controls" data-table-pager>
-        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
-        <span class="tabular" data-table-pagelabel>1 / 1</span>
-        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
         </div>
       </div>
     </div>
   `;
+
 
   return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", admin);
 }
@@ -5820,6 +6056,24 @@ export async function renderPedidosPage(
  * no se bloquea explícitamente: es una decisión operativa, no una regla
  * que valga la pena codificar de antemano.
  */
+/**
+ * Las dos transiciones que ningún sistema puede detectar solo: que el
+ * paquete llegó a manos del cliente y que el pedido se cae. El pago lo
+ * mueve el webhook de Wompi y el despacho el registro de guía; estas dos
+ * necesitan que alguien las afirme.
+ *
+ * Cancelar no revierte el pago ni libera stock: es un cambio de estado, no
+ * una devolución. Lo que se deshace con plata de por medio se resuelve
+ * fuera del panel, y fingir lo contrario acá sería peor que no ofrecerlo.
+ */
+export async function marcarPedidoEntregado(orderId: string): Promise<void> {
+  await cambiarEstadoPedido(orderId, "entregado");
+}
+
+export async function cancelarPedido(orderId: string, admin: AdminRecord): Promise<void> {
+  await cambiarEstadoPedido(orderId, "cancelado", `Cancelado desde el panel por ${admin.username}.`);
+}
+
 export async function renderAliadosPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string },
@@ -7304,6 +7558,7 @@ export async function renderConfiguracionPage(
   const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
   const reportRecipient = await getReportRecipient();
   const reportFrequencyDays = await getReportFrequencyDays();
+  const transferAccounts = await getTransferAccounts();
   const reportFrequencyPreset =
     reportFrequencyDays === 1
       ? "diario"
@@ -7576,10 +7831,92 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
+    <section class="block" aria-label="Cuentas para transferencia">
+      <div class="blockhead">
+        <h2>Cuentas para transferencia</h2>
+        <span class="hint">${transferAccounts.filter((a) => a.active).length} activa(s)</span>
+      </div>
+      <div class="panel connection">
+        <p class="hint">Cuando un cliente elige pagar por transferencia, el asistente le manda estos datos automáticamente. ${
+          transferAccounts.some((a) => a.active)
+            ? "Se mandan todas las cuentas activas, en este orden."
+            : "<strong>Sin ninguna cuenta activa el asistente no puede dar datos de pago</strong> y escala la conversación a un asesor."
+        }</p>
+        <form method="POST" action="/admin/configuracion/transferencias">
+          <div data-transfer-rows>
+            ${transferAccounts.map((account, i) => transferAccountFieldsHtml(account, i)).join("")}
+          </div>
+          <div class="formfoot">
+            <button type="button" class="btn btn--add" data-transfer-add><span class="btn--add__plus">+</span> Agregar cuenta</button>
+            <button type="submit" class="btn btn--primary">Guardar cuentas</button>
+          </div>
+        </form>
+      </div>
+    </section>
     </div>
+    <template data-transfer-template>${transferAccountFieldsHtml(
+      { entity: "", accountType: "", accountNumber: "", holderName: "", holderDocument: "", active: true },
+      -1,
+    )}</template>
   `;
 
   return layout("Configuración", tenant, body, "configuracion", admin);
+}
+
+/**
+ * Guarda las cuentas para transferencia. El formulario manda un array por
+ * campo y se recomponen por posición — `entity[0]` va con `accountNumber[0]`.
+ * Fastify entrega un string cuando hay una sola fila y un array cuando hay
+ * varias, de ahí el `normalizar`.
+ *
+ * Se descartan las filas sin entidad ni número: una fila recién agregada y
+ * dejada vacía no debería guardarse, y borrarla es exactamente eso — vaciar
+ * los campos o quitarla, que dan el mismo resultado.
+ */
+export async function guardarCuentasTransferencia(input: {
+  entity?: string | string[];
+  accountType?: string | string[];
+  accountNumber?: string | string[];
+  holderName?: string | string[];
+  holderDocument?: string | string[];
+  active?: string | string[];
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const normalizar = (value: string | string[] | undefined): string[] =>
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+  const entities = normalizar(input.entity);
+  const types = normalizar(input.accountType);
+  const numbers = normalizar(input.accountNumber);
+  const holders = normalizar(input.holderName);
+  const documents = normalizar(input.holderDocument);
+  const actives = normalizar(input.active);
+
+  const cuentas: TransferAccount[] = [];
+  for (let i = 0; i < entities.length; i++) {
+    const entity = (entities[i] ?? "").trim();
+    const accountNumber = (numbers[i] ?? "").trim();
+    if (entity === "" && accountNumber === "") {
+      continue;
+    }
+    if (entity === "" || accountNumber === "") {
+      return { ok: false, error: "Cada cuenta necesita al menos entidad y número." };
+    }
+    const holderName = (holders[i] ?? "").trim();
+    if (holderName === "") {
+      return { ok: false, error: `Falta el titular de la cuenta de ${entity}.` };
+    }
+    cuentas.push({
+      entity,
+      accountType: (types[i] ?? "").trim(),
+      accountNumber,
+      holderName,
+      holderDocument: (documents[i] ?? "").trim(),
+      active: actives[i] === "1",
+    });
+  }
+
+  await saveTransferAccounts(cuentas);
+  return { ok: true };
 }
 
 export async function pausarBot(): Promise<void> {
