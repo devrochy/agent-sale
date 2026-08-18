@@ -405,6 +405,15 @@ const ICON_EDIT =
 const ICON_SAVE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4"/></svg>';
 
+/* Iconos de las notificaciones flotantes. Dentro de un círculo, para que se
+   lean como un estado y no como un botón — el resto de los iconos del panel
+   son acciones que se pueden tocar. */
+const ICON_TOAST_OK =
+  '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="7.2"/><path d="M5.8 9.2 8 11.4l4.2-4.6"/></svg>';
+
+const ICON_TOAST_ERROR =
+  '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="7.2"/><path d="M9 5.4v4.2"/><path d="M9 12.3v.3"/></svg>';
+
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
 
@@ -560,6 +569,62 @@ async function navRail(
     </div>
     ${railProfile}
   </aside>`;
+}
+
+/**
+ * Notificaciones flotantes (ver
+ * docs/fase-11-panel-admin-dashboard/notificaciones.md).
+ *
+ * Reemplazan al `.banner` para **el resultado de una acción**: guardar,
+ * crear, fallar una validación. `.banner` sigue existiendo para lo que
+ * describe un estado permanente de la pantalla —el aviso de que una cuenta
+ * no tiene teléfono, el candado de Configuración—, que no puede irse solo a
+ * los cinco segundos ni esconderse detrás de un botón de cerrar.
+ *
+ * El stack va al final del `body` de cada página. Su posición en el DOM no
+ * importa (es `position: fixed`), pero sí que haya **uno solo**: dos stacks
+ * se superpondrían en la misma esquina.
+ */
+function toastStackHtml(items: { kind: "ok" | "error"; text: string }[]): string {
+  const visibles = items.filter((item) => item.text !== "");
+  if (visibles.length === 0) {
+    return "";
+  }
+  const toasts = visibles
+    .map((item) => {
+      // role="alert" para los errores y role="status" para el resto: los dos
+      // se anuncian al cargar la página (que es cuando existen, porque el
+      // servidor los pinta tras el redirect), pero el error interrumpe lo
+      // que el lector de pantalla esté leyendo y la confirmación espera.
+      const role = item.kind === "error" ? "alert" : "status";
+      const icon = item.kind === "error" ? ICON_TOAST_ERROR : ICON_TOAST_OK;
+      return `<div class="toast toast--${item.kind}" role="${role}" data-toast data-toast-kind="${item.kind}">
+        <span class="toast__icon" aria-hidden="true">${icon}</span>
+        <span class="toast__text">${item.text}</span>
+        <button type="button" class="toast__close" data-toast-close aria-label="Cerrar notificación">×</button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="toaststack" data-toaststack>${toasts}</div>`;
+}
+
+/**
+ * El caso que se repetía en las diez páginas del panel: `?error=…` pinta el
+ * mensaje que mandó el servidor, `?guardado=1` pinta una confirmación fija.
+ * Estaba copiado en cada `render*Page` con la única variación del texto de
+ * éxito, así que ese texto es el parámetro.
+ */
+function queryToastsHtml(
+  query: { error?: string; guardado?: string },
+  mensajeOk = "Cambios guardados.",
+): string {
+  if (query.error) {
+    return toastStackHtml([{ kind: "error", text: escapeHtml(query.error) }]);
+  }
+  if (query.guardado) {
+    return toastStackHtml([{ kind: "ok", text: mensajeOk }]);
+  }
+  return "";
 }
 
 async function layout(
@@ -1234,6 +1299,38 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
    "Oscuro" forzado sobre un sistema claro lo dejaba con el fondo claro. */
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .banner--warn { background: rgba(232, 163, 61, 0.16); } }
 :root[data-theme="dark"] .banner--warn { background: rgba(232, 163, 61, 0.16); }
+
+/* Notificaciones flotantes (ver notificaciones.md). Reemplazan al .banner
+   para el RESULTADO de una accion; .banner sigue vivo para lo que describe
+   un estado permanente de la pantalla, que no puede irse solo.
+
+   El stack no recibe clicks (pointer-events: none) para no tapar lo que
+   haya debajo en la esquina; cada toast si los recibe, para poder cerrarlo. */
+.toaststack { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; pointer-events: none; width: min(400px, calc(100vw - 40px)); }
+.toast { pointer-events: auto; width: 100%; display: flex; align-items: flex-start; gap: 11px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 10px 28px rgba(16, 20, 26, 0.16), 0 2px 6px rgba(16, 20, 26, 0.08); font-size: 13px; line-height: 1.45; }
+.toast__icon { flex: none; width: 18px; height: 18px; margin-top: 1px; }
+.toast__icon svg { width: 100%; height: 100%; display: block; }
+.toast__text { flex: 1; color: var(--ink); }
+/* El borde de color es la unica senal cromatica: el fondo se queda neutro
+   para que el texto de un error largo siga siendo comodo de leer. */
+.toast--ok { border-left: 3px solid var(--go); }
+.toast--ok .toast__icon { color: var(--go); }
+.toast--error { border-left: 3px solid var(--redline); }
+.toast--error .toast__icon { color: var(--redline); }
+.toast__close { flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; border-radius: 6px; color: var(--ink-faint); cursor: pointer; font-size: 15px; line-height: 1; }
+.toast__close:hover { background: var(--surface-2); color: var(--ink); }
+.toast { animation: toast-in 260ms cubic-bezier(.2,.8,.2,1) both; }
+.toast--leaving { animation: toast-out 180ms ease-in both; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(16px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(16px); } }
+@media (prefers-reduced-motion: reduce) {
+  .toast, .toast--leaving { animation: none; }
+}
+@media (max-width: 640px) {
+  /* En pantallas angostas la esquina no alcanza: ocupa el ancho y se apoya
+     abajo, donde esta el pulgar. */
+  .toaststack { left: 12px; right: 12px; bottom: 12px; width: auto; }
+}
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
@@ -1334,6 +1431,57 @@ const CLIENT_SCRIPT = `
 (function () {
   "use strict";
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- notificaciones flotantes ---------- */
+  (function () {
+    var stack = document.querySelector("[data-toaststack]");
+    if (!stack) return;
+
+    function cerrar(toast) {
+      if (!toast || toast.dataset.cerrando) return;
+      toast.dataset.cerrando = "1";
+      if (reduced) { toast.remove(); return; }
+      toast.classList.add("toast--leaving");
+      function quitar() { toast.remove(); }
+      toast.addEventListener("animationend", quitar, { once: true });
+      /* Respaldo: las animaciones CSS se pausan mientras la pestana no se
+         pinta, asi que animationend puede no llegar nunca -- con la pestana
+         en segundo plano el toast se quedaba en el DOM con la clase de
+         salida puesta. El timeout si corre igual. */
+      setTimeout(quitar, 400);
+    }
+
+    stack.addEventListener("click", function (event) {
+      var btn = event.target.closest("[data-toast-close]");
+      if (btn) cerrar(btn.closest("[data-toast]"));
+    });
+
+    Array.prototype.forEach.call(stack.querySelectorAll("[data-toast]"), function (toast) {
+      /* Solo las confirmaciones se van solas. Un error hay que poder leerlo
+         dos veces -- varios son largos ("Nombre de usuario invalido: 5 a 32
+         caracteres...") y quien lo provoco esta mirando el formulario, no la
+         esquina. Se cierra a mano. */
+      if (toast.getAttribute("data-toast-kind") !== "ok") return;
+      var timer = setTimeout(function () { cerrar(toast); }, 5000);
+      /* Con el puntero encima no corre el reloj: si alguien fue a leerlo, no
+         se le escapa a mitad de frase. */
+      toast.addEventListener("mouseenter", function () { clearTimeout(timer); });
+    });
+
+    /* La URL queda con ?guardado=1 despues del redirect, asi que recargar
+       repetia la notificacion de algo hecho hace rato. Se limpian solo las
+       claves de notificacion -- los filtros reales de la pagina (?allyId,
+       ?categoryId) y el hash de la pestana activa se conservan. */
+    if (window.history && window.history.replaceState) {
+      var url = new URL(window.location.href);
+      var claves = ["guardado", "error", "errorContrasena", "creados", "actualizados", "errores"];
+      var limpio = false;
+      claves.forEach(function (clave) {
+        if (url.searchParams.has(clave)) { url.searchParams.delete(clave); limpio = true; }
+      });
+      if (limpio) window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    }
+  })();
 
   function easeOutBack(t) {
     var c1 = 1.4, c3 = c1 + 1;
@@ -3391,7 +3539,7 @@ export async function renderLeadsPage(
   if (!tenant) {
     return null;
   }
-  const banner = query.guardado ? `<div class="banner banner--ok">Cambios guardados.</div>` : "";
+  const banner = queryToastsHtml(query);
   const [rows, allies, categories, products] = await Promise.all([
     fetchLeads(),
     listAllies(),
@@ -4595,11 +4743,7 @@ export async function renderConexionesPage(
   const activas = connections.filter((c) => c.active).length;
   const esUnica = activas === 1;
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.</div>`
-      : "";
+  const banner = queryToastsHtml(query, "Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.");
 
   // Por canal y no por proveedor (Etapa C2): tener WhatsApp por Meta ya no
   // implica tener Instagram, y con el chequeo viejo el alta de Instagram
@@ -4934,16 +5078,25 @@ export async function renderProductosPage(
   ]);
   const productDetails = await Promise.all(products.map((p) => getProductDetail(p.id)));
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : query.creados !== undefined
-        ? `<div class="banner ${query.errores && query.errores !== "0" ? "banner--error" : "banner--ok"}">
-             Carga por CSV — creados: ${escapeHtml(query.creados)} · actualizados: ${escapeHtml(query.actualizados ?? "0")} · con error: ${escapeHtml(query.errores ?? "0")}
-             ${query.errores && query.errores !== "0" ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron." : ""}
-           </div>`
-        : "";
+  // La carga por CSV no entra en `queryToastsHtml`: su resultado no es
+  // "salió bien" o "salió mal" sino un recuento, y con filas con error se
+  // trata como error aunque otras hayan entrado — es el caso en el que hay
+  // algo que revisar. Ese es además el único toast que conviene que no se
+  // cierre solo: el recuento es el registro de lo que pasó.
+  const cargaConErrores = Boolean(query.errores && query.errores !== "0");
+  const banner =
+    query.creados !== undefined
+      ? toastStackHtml([
+          {
+            kind: cargaConErrores ? "error" : "ok",
+            text:
+              `Carga por CSV — creados: ${escapeHtml(query.creados)} · actualizados: ${escapeHtml(query.actualizados ?? "0")} · con error: ${escapeHtml(query.errores ?? "0")}` +
+              (cargaConErrores
+                ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron."
+                : ""),
+          },
+        ])
+      : queryToastsHtml(query);
 
   const filterNotice =
     query.allyId || query.categoryId
@@ -5534,11 +5687,7 @@ export async function renderPedidosPage(
     return null;
   }
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Guía registrada.</div>`
-      : "";
+  const banner = queryToastsHtml(query, "Guía registrada.");
 
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
@@ -5687,11 +5836,7 @@ export async function renderAliadosPage(
     listProductsSummary(),
   ]);
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const allyDialogFields = (dialogId: string, name: string, contactInfo: string): string => `
         <div class="field">
@@ -5938,11 +6083,7 @@ export async function renderCategoriasPage(
   }
   const childrenByParent = new Set(categories.filter((c) => c.parentId !== null).map((c) => c.parentId!));
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const treeOrder = categoryTreeOrder(categories);
   const orderedCategories = treeOrder
@@ -6305,11 +6446,7 @@ export async function renderPromocionesPage(
     listAllVariantsForPicker(),
   ]);
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const rows = promotions
     .map((promo) => {
@@ -6568,11 +6705,7 @@ export async function renderColaboradoresPage(
 
   const admins = await listAdmins();
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const permisoCheckbox = (name: keyof AdminPermissions, label: string, checked: boolean): string =>
     `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""}>${escapeHtml(label)}</label>`;
@@ -6984,11 +7117,14 @@ export async function renderPerfilPage(
     return null;
   }
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  // El Perfil es la única página con dos orígenes de notificación (los datos
+  // y la contraseña, que postean a rutas distintas). Van al mismo stack: dos
+  // stacks se superpondrían en la misma esquina.
+  const banner = toastStackHtml([
+    { kind: "error", text: query.error ? escapeHtml(query.error) : "" },
+    { kind: "error", text: query.errorContrasena ? escapeHtml(query.errorContrasena) : "" },
+    { kind: "ok", text: query.guardado ? "Cambios guardados." : "" },
+  ]);
 
   const avatarValue = admin.avatarData ?? "";
 
@@ -7054,7 +7190,6 @@ export async function renderPerfilPage(
         <h2>Contraseña</h2>
         <span class="hint">se cierran todas las sesiones</span>
       </div>
-      ${query.errorContrasena ? `<div class="banner banner--error">${escapeHtml(query.errorContrasena)}</div>` : ""}
       ${
         // El enlace de recuperación se manda por WhatsApp y no hay otro
         // canal (ver contrasena.md), así que una cuenta sin teléfono no
@@ -7199,11 +7334,7 @@ export async function renderConfiguracionPage(
     ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedKey)}</span>. Dejar el campo vacío para conservarla.`
     : "Sin key propia — se prueba con la key del sistema del proveedor, si hay una disponible.";
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Guardado. La configuración ya está activa para las próximas conversaciones.</div>`
-      : "";
+  const banner = queryToastsHtml(query, "Guardado. La configuración ya está activa para las próximas conversaciones.");
 
   // Resumen de estado de cada pestaña. La barra de pestañas dice de un
   // vistazo qué está configurado y qué no — sin esto habría que entrar a las

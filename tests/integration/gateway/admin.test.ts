@@ -1617,6 +1617,61 @@ describe("panel admin", () => {
     });
   });
 
+  describe("notificaciones flotantes", () => {
+    it("una confirmación sale como toast y ya no como banner en el flujo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores?guardado=1",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('<div class="toaststack"');
+      expect(response.body).toContain('class="toast toast--ok"');
+      // El banner empujaba el contenido hacia abajo; el toast flota.
+      expect(response.body).not.toContain('class="banner banner--ok"');
+    });
+
+    it("un error sale como toast y se anuncia como alerta", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/aliados?error=Ya%20existe%20un%20aliado%20con%20ese%20nombre.",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('class="toast toast--error"');
+      // role="alert" interrumpe al lector de pantalla; la confirmación usa
+      // role="status", que espera su turno.
+      expect(response.body).toContain('class="toast toast--error" role="alert"');
+      expect(response.body).toContain("Ya existe un aliado con ese nombre.");
+      expect(response.body).not.toContain('class="banner banner--error"');
+    });
+
+    it("lo que describe un estado de la pantalla sigue siendo banner, no toast", async () => {
+      // El admin de estos tests no tiene teléfono cargado, así que el Perfil
+      // le muestra el aviso de que no va a poder recuperar la contraseña.
+      // Ese aviso NO es el resultado de una acción: describe cómo está la
+      // cuenta y no puede irse solo a los cinco segundos.
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/perfil",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('class="banner banner--warn"');
+      expect(response.body).toContain("no tiene teléfono cargado");
+      expect(response.body).not.toContain('<div class="toaststack"');
+    });
+
+    it("el Perfil junta sus dos notificaciones en un solo stack", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/perfil?errorContrasena=La%20contrase%C3%B1a%20actual%20no%20es%20correcta.",
+        headers: { cookie: sessionCookie },
+      });
+      // Dos stacks se superpondrían en la misma esquina de la pantalla.
+      expect(response.body.match(/<div class="toaststack"/g)?.length).toBe(1);
+      expect(response.body).toContain("La contraseña actual no es correcta.");
+    });
+  });
+
   describe("colaboradores", () => {
     it("un master ve la lista de colaboradores existentes", async () => {
       const response = await app.inject({
