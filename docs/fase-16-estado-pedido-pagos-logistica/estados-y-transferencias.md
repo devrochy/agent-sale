@@ -130,9 +130,27 @@ orden por columna y paginado.
   texto al lado repetía en palabras lo que el chip ya nombraba, y en una
   celda del 19% eso costaba una línea entera. El chip accionable es un
   `<button>` real con `.chip--action`, para que se alcance con teclado y se
-  anuncie como control; el subrayado punteado es lo que lo delata como
-  clicable, porque un chip idéntico al de al lado que además hace algo es una
-  trampa. Sin dirección cargada vuelve a ser un chip: no hay nada que abrir.
+  anuncie como control. Sin dirección cargada vuelve a ser un chip: no hay
+  nada que abrir.
+
+### La celda de Entrega se apila
+
+El primer intento puso el chip y el botón "Guía" en la misma línea, y quedó
+desparejo por dos razones que se sumaban:
+
+- **`.chip--action` traía `font: inherit`**, que pisaba el `font-size: 10px`
+  de `.chip`: "Domicilio" salía más grande que el chip de Estado de la misma
+  fila. Ahora solo declara lo que un `<button>` no hereda del UA.
+- **Un chip de ~18px al lado de un botón de ~30px no se alinea con ningún
+  gap.** No son la misma clase de cosa: uno nombra un estado, el otro es una
+  acción. Apilados en `.deliverycell`, el chip queda a la escala de los demás
+  chips y la acción tiene su propio renglón — que además es donde ya vivía el
+  número de guía.
+
+La affordance del chip es un **borde del mismo color**, no un subrayado: el
+subrayado le sumaba altura por un solo lado y obligaba a un radio asimétrico
+(`20px 20px 4px 4px`) que lo sacaba de la familia. Con borde mantiene el
+radio de los demás chips y sigue leyéndose como control.
 - **La guía se muda a la columna Entrega.** Junta con el método y la
   dirección se lee como "cómo le llega esto al cliente", que es la pregunta
   real.

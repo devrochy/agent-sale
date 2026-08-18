@@ -1031,10 +1031,28 @@ section.block { margin-bottom: 34px; }
 .chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
 /* Chip que abre algo (la direccion de entrega en Pedidos). Es un <button>
    real y no un span con onclick: se alcanza con teclado y se anuncia como
-   control. El subrayado punteado es lo que lo delata como clickable — un
-   chip identico al de al lado que ademas hace algo es una trampa. */
-.chip--action { border: 0; cursor: pointer; font: inherit; font-family: var(--font-mono); border-bottom: 1px dashed currentColor; border-radius: 20px 20px 4px 4px; }
+   control.
+
+   NO lleva font:inherit: eso pisaba el font-size de .chip y lo dejaba
+   mas grande que el chip de Estado en la misma fila, que era el desbalance
+   que se veia. Solo se agrega lo que un <button> no hereda del UA.
+
+   La affordance es un borde del mismo color a media opacidad, no un
+   subrayado: mantiene el radio simetrico de los demas chips y no le suma
+   altura por un solo lado. Un chip identico al de al lado que ademas hace
+   algo seria una trampa; uno con borde se lee como control sin dejar de
+   pertenecer a la familia. */
+.chip--action { cursor: pointer; font-family: inherit; line-height: inherit; border: 1px solid currentColor; padding: 1px 6px; }
 .chip--action:hover { filter: brightness(0.94); }
+.chip--action:focus-visible { outline: 2px solid var(--ignition); outline-offset: 2px; }
+
+/* Celda de Entrega: el tipo de entrega arriba y lo que se puede hacer o
+   saber de ella abajo. En una sola linea, un chip de 18px al lado de un
+   boton de 30px no se alinea con ningun gap — no son la misma clase de
+   cosa. Apilados, el chip queda a la misma escala que el de Estado y la
+   accion tiene su propio renglon. */
+.deliverycell { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.deliverycell .hint { margin: 0; }
 .chip--violet { color: var(--violet); background: var(--violet-soft); }
 .chip--whatsapp { color: var(--wa); background: var(--wa-soft); }
 .chip--instagram { color: var(--ig); background: var(--ig-soft); }
@@ -5907,12 +5925,16 @@ export async function renderPedidosPage(
       // repetía en palabras lo que el chip ya nombraba, y en una celda de
       // 19% de ancho eso costaba una línea entera. Sin dirección cargada el
       // chip vuelve a ser un chip — no hay nada que abrir.
-      const entregaCell =
+      const entregaChip =
         row.delivery_method === "domicilio"
           ? tieneDireccion
             ? `<button type="button" data-open-dialog="${direccionDialogId}" class="chip chip--chrome chip--action" title="Ver la dirección de entrega">Domicilio</button>`
-            : `<span class="chip chip--chrome">Domicilio</span><p class="hint">Sin dirección cargada</p>`
+            : `<span class="chip chip--chrome">Domicilio</span>`
           : `<span class="chip chip--muted">Recoge en tienda</span>`;
+      const entregaFalta =
+        row.delivery_method === "domicilio" && !tieneDireccion
+          ? `<p class="hint">Sin dirección cargada</p>`
+          : "";
 
       const direccionDialog = tieneDireccion
         ? `<dialog id="${direccionDialogId}" class="modal">
@@ -5999,7 +6021,7 @@ export async function renderPedidosPage(
         <td>${escapeHtml(row.customer_name ?? row.external_id)}</td>
         <td><span class="chip chip--${estado.tone}">${escapeHtml(estado.label)}</span>${motivo}</td>
         <td>${pagoCell}</td>
-        <td>${entregaCell}${guiaCell}</td>
+        <td><div class="deliverycell">${entregaChip}${entregaFalta}${guiaCell}</div></td>
         <td class="mono">${formatCOP(row.total)}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td><div class="rowactions">${accionesCell}</div></td>
