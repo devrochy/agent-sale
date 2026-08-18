@@ -81,6 +81,27 @@ llegó". Ahora se guarda en `orders.wompi_payment_link_url` y aparece en la
 celda de Pago **mientras sirve de algo** — un pedido ya pagado o rechazado no
 se paga de nuevo con ese enlace.
 
+## La URL de eventos, en el panel
+
+Configuración → Cobros pedía la llave privada y el secreto de eventos, pero
+**no decía a dónde apuntar el webhook**: había que adivinar la ruta o buscarla
+en el código. Ahora la muestra con un botón de copiar, junto con qué evento
+suscribir (`transaction.updated`) y qué pasa cuando está bien puesto.
+
+Se arma sobre el origen de `PUBLIC_WEBHOOK_URL`, igual que las URLs de
+webhook de los canales en Conexiones (`webhookUrlFor`) y que el enlace de
+recuperación de contraseña: las tres salen de la misma variable, así que no
+hay una por integración. **En cada entorno muestra la URL de ese entorno**, y
+si `PUBLIC_WEBHOOK_URL` está mal, lo que se ve en pantalla está mal —
+conviene mirarlo ahí antes que en el dashboard de Wompi.
+
+Si falta el secreto de eventos, el bloque lo dice: sin él los avisos de Wompi
+se rechazan por checksum, y el síntoma —pagos que nunca se confirman— no
+apunta a la causa.
+
+Hay un test que verifica que la ruta anunciada sea una que el servidor
+atienda de verdad: un 404 ahí se descubriría recién con el primer pago real.
+
 ## Datos de transferencia
 
 Antes no existía nada: ni configuración ni envío. Se cargan en

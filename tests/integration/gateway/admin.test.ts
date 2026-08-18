@@ -1737,6 +1737,28 @@ describe("panel admin", () => {
       );
     });
 
+    it("Cobros muestra la URL de eventos de Wompi, y es la ruta que el servidor escucha", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // Sin este dato, configurar Wompi exigía adivinar la ruta o buscarla
+      // en el código: la sección pedía llave y secreto pero no decía a
+      // dónde apuntar el webhook.
+      expect(response.body).toContain("/webhooks/wompi");
+      expect(response.body).toContain("transaction.updated");
+      // Y la ruta anunciada tiene que ser una que el servidor atienda de
+      // verdad — un 404 acá se descubriría recién con el primer pago real.
+      const webhook = await app.inject({
+        method: "POST",
+        url: "/webhooks/wompi",
+        headers: { "content-type": "application/json" },
+        payload: {},
+      });
+      expect(webhook.statusCode).not.toBe(404);
+    });
+
     it("el estado viaja en un select, no en un checkbox", async () => {
       // Un checkbox desmarcado no se envía: `active` llegaría más corto que
       // el resto de los arrays y las filas se desfasarían entre sí.

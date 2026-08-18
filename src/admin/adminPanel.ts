@@ -1149,6 +1149,10 @@ table.resizing { cursor: col-resize; user-select: none; }
 .connection__meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .connection__meta dt { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 4px; }
 .connection__meta dd { margin: 0; font-size: 13.5px; }
+/* En Cobros el bloque de la URL de eventos va DESPUES del formulario de
+   credenciales, y sin separacion se leia como un campo mas del form. La
+   linea lo separa de lo que se guarda: la URL no se guarda, se copia. */
+.connection__webhook--aparte { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
 .connection__webhook label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
 .copyrow { display: flex; align-items: center; gap: 10px; }
 .copyrow code { flex: 1; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
@@ -4668,6 +4672,16 @@ function webhookUrlFor(provider: Provider): string {
   return `${new URL(env.publicWebhookUrl).origin}${WEBHOOK_PATH[provider]}`;
 }
 
+/**
+ * URL del webhook de Wompi. Mismo origen que los de canal (ver
+ * `webhookUrlFor`): `PUBLIC_WEBHOOK_URL` ya es la URL pública real de este
+ * proceso, así que las tres se arman igual y no hay una variable de entorno
+ * por integración.
+ */
+function wompiWebhookUrl(): string {
+  return `${new URL(env.publicWebhookUrl).origin}/webhooks/wompi`;
+}
+
 /** Campos de credenciales por proveedor — cada uno pide cosas distintas. */
 function credentialFieldsHtml(connection: ConnectionSummary): string {
   const id = escapeHtml(connection.id);
@@ -7871,6 +7885,23 @@ export async function renderConfiguracionPage(
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
+        <div class="connection__webhook connection__webhook--aparte">
+          <label for="wompi-webhook-url">URL de eventos (pegala en el dashboard de Wompi)</label>
+          <div class="copyrow">
+            <code id="wompi-webhook-url" class="mono">${escapeHtml(wompiWebhookUrl())}</code>
+            <button type="button" class="btn" data-copy="${escapeHtml(wompiWebhookUrl())}">Copiar</button>
+          </div>
+          <p class="hint">
+            En Wompi: <strong>Configuración → Eventos</strong>, pegá esta URL y suscribí
+            <code>transaction.updated</code>. Con eso los pedidos pagados se confirman solos
+            y los rechazados quedan marcados sin que nadie los revise a mano.
+            ${
+              maskedEventsSecret
+                ? ""
+                : "<strong>Falta cargar el secreto de eventos arriba</strong> — sin él se rechazan los avisos que manda Wompi, porque no se puede verificar que vengan de ellos."
+            }
+          </p>
+        </div>
       </div>
     </section>
     <section class="block" aria-label="Cuentas para transferencia">
