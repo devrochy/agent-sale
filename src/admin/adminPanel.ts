@@ -407,9 +407,6 @@ const ICON_SAVE =
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
 
-const ICON_PLUS =
-  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
-
 /** Flecha hacia una bandeja — "subir archivo" (botón "Importar CSV" de Productos). */
 const ICON_IMPORT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10.2V2.5"/><path d="M4.8 5.3 8 2.2l3.2 3.1"/><path d="M2.5 11v1.7a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V11"/></svg>';
@@ -4846,6 +4843,12 @@ function toggleSwitchHtml(
   active: boolean,
   subjectLabel: string,
   redirectQuery?: string,
+  // Los mensajes por defecto hablan de catálogo ("deja de estar disponible
+  // para el asistente"), que es donde nació este control. Colaboradores lo
+  // reusa sobre personas, y ahí ese texto es directamente falso: lo que
+  // pierde un colaborador desactivado es el acceso al panel. Antes de
+  // inventar un segundo componente, se deja decir la consecuencia real.
+  confirmMessages?: { desactivar: string; activar: string },
 ): string {
   const nextAction = active ? "desactivar" : "activar";
   // El switch reemplazó un botón de texto explícito ("Desactivar") por un
@@ -4853,8 +4856,9 @@ function toggleSwitchHtml(
   // recupera esa fricción intencional antes de un cambio de estado real,
   // mostrando la modal compartida #confirm-dialog (ver layout()/
   // CLIENT_SCRIPT) en vez de un window.confirm() nativo fuera de estilo.
-  const confirmMsg =
-    nextAction === "desactivar"
+  const confirmMsg = confirmMessages
+    ? confirmMessages[nextAction]
+    : nextAction === "desactivar"
       ? `¿Desactivar ${subjectLabel}? Deja de estar disponible para el asistente.`
       : `¿Activar ${subjectLabel} de nuevo?`;
   // redirectQuery (Conversaciones): sin esto, activar/desactivar el bot
@@ -4890,9 +4894,10 @@ function statusToggleHtml(
   subjectLabel: string,
   activeLabel: string,
   inactiveLabel: string,
+  confirmMessages?: { desactivar: string; activar: string },
 ): string {
   return `<div class="statustoggle">
-    ${toggleSwitchHtml(actionUrlBase, active, subjectLabel)}
+    ${toggleSwitchHtml(actionUrlBase, active, subjectLabel, undefined, confirmMessages)}
     <span class="statustoggle__label${active ? "" : " statustoggle__label--off"}">${active ? activeLabel : inactiveLabel}</span>
   </div>`;
 }
@@ -6486,14 +6491,8 @@ export async function renderColaboradoresPage(
       ? `<div class="banner banner--ok">Cambios guardados.</div>`
       : "";
 
-  const permisoCheckbox = (
-    adminId: string,
-    name: keyof AdminPermissions,
-    label: string,
-    checked: boolean,
-    disabled: boolean,
-  ): string =>
-    `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(label)}</label>`;
+  const permisoCheckbox = (name: keyof AdminPermissions, label: string, checked: boolean): string =>
+    `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""}>${escapeHtml(label)}</label>`;
 
   const rows = admins
     .map((row) => {
@@ -6505,9 +6504,28 @@ export async function renderColaboradoresPage(
       const roleChip = isMasterRow
         ? '<span class="chip chip--amber">Master</span>'
         : '<span class="chip chip--muted">Colaborador</span>';
-      const estadoChip = row.active
-        ? '<span class="chip chip--go">Activo</span>'
-        : '<span class="chip chip--redline">Inactivo</span>';
+
+      // Buscar "master" o el teléfono tiene que encontrar a la persona, no
+      // solo su nombre de usuario — el rol viaja en el índice aunque en la
+      // fila se vea como chip.
+      //
+      // El teléfono entra dos veces: como se ve en pantalla ("+57 318 493
+      // 5933", para que sirva copiar y pegar un pedazo) y como dígitos
+      // corridos, que es como lo escribe quien lo tiene a mano. Lo que no
+      // entra es el prefijo `whatsapp:` de Twilio: nadie lo va a teclear, y
+      // dentro del índice solo genera coincidencias falsas — buscar "what"
+      // devolvería a todo el que tenga teléfono.
+      const telefonoIndexado = row.phone
+        ? `${formatWhatsappPhoneDisplay(row.phone)} ${row.phone.replace(/\D/g, "")}`
+        : "";
+      const search = [
+        row.username,
+        row.email,
+        telefonoIndexado,
+        isMasterRow ? "master" : "colaborador",
+      ]
+        .join(" ")
+        .toLowerCase();
 
       // Un master siempre tiene todos los permisos implícitos (ver
       // resolveEffectivePermissions en adminsDirectory.ts) — los checkbox
@@ -6518,36 +6536,60 @@ export async function renderColaboradoresPage(
       // juntos en la última columna (pedido explícito) sin que HTML exija
       // que el submit esté anidado dentro del <form>.
       const permisosFormId = `permisos-${row.id}`;
-      const permisosForm = `
+      // Un master las recibe todas por definición, así que sus tres
+      // checkbox salían tildados y deshabilitados: controles que parecen
+      // controles y no lo son. Se dicen con palabras y la fila queda
+      // legible — mismo criterio que la columna de Acciones, que para un
+      // master queda vacía porque efectivamente no hay ninguna.
+      const permisosForm = isMasterRow
+        ? '<span class="hint">Todas — un master las recibe siempre</span>'
+        : `
         <form id="${permisosFormId}" method="POST" action="/admin/colaboradores/${row.id}/permisos" class="permform">
-          ${permisoCheckbox(row.id, "recibeReporteDiario", "Reporte del asistente", row.permissions.recibeReporteDiario, isMasterRow)}
-          ${permisoCheckbox(row.id, "recibeTickets", "Tickets nuevos", row.permissions.recibeTickets, isMasterRow)}
-          ${permisoCheckbox(row.id, "recibeNotificacionPagos", "Pagos aprobados", row.permissions.recibeNotificacionPagos, isMasterRow)}
+          ${permisoCheckbox("recibeReporteDiario", "Reporte del asistente", row.permissions.recibeReporteDiario)}
+          ${permisoCheckbox("recibeTickets", "Tickets nuevos", row.permissions.recibeTickets)}
+          ${permisoCheckbox("recibeNotificacionPagos", "Pagos aprobados", row.permissions.recibeNotificacionPagos)}
         </form>
       `;
+      // Icono y no texto, igual que "Guardar cambios" en Aliados y
+      // Productos: es la misma acción (confirmar una edición en línea) y
+      // debe verse igual en las tres.
       const guardarPermisosBtn = isMasterRow
         ? ""
-        : `<button type="submit" form="${permisosFormId}" class="btn btn--primary btn--sm">Guardar</button>`;
+        : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
 
-      // El color del botón sigue la acción que va a EJECUTAR, no el estado
-      // actual de la fila (que ya lo dice el chip de al lado): "Desactivar"
-      // en rojo porque es la acción destructiva, "Activar" en verde porque
-      // habilita de nuevo — mismo criterio semántico que --go/--redline en
-      // el resto del tablero.
-      const estadoAction = isSelf
-        ? '<span class="hint">Vos</span>'
-        : `<form method="POST" action="/admin/colaboradores/${row.id}/${row.active ? "desactivar" : "activar"}">
-             <button type="submit" class="btn ${row.active ? "btn--danger" : "btn--go"} btn--sm">${row.active ? "Desactivar" : "Activar"}</button>
-           </form>`;
+      // El switch reemplaza al par "chip de estado + botón Desactivar", que
+      // decía lo mismo dos veces en dos columnas. Es el mismo control que
+      // Aliados, Categorías y Promociones, y trae consigo lo que acá
+      // faltaba: `data-confirm` pregunta antes de sacarle el acceso a una
+      // persona. Hasta ahora desactivar a un colaborador era un clic sin
+      // red, mientras que desactivar un aliado sí preguntaba — la asimetría
+      // estaba al revés.
+      //
+      // Nadie se desactiva a sí mismo: ahí va el estado sin control, y el
+      // "Vos" se movió al nombre, que es donde se lee como identidad y no
+      // como acción.
+      const estadoCell = isSelf
+        ? `<div class="statustoggle"><span class="statustoggle__label">Activo</span></div>`
+        : statusToggleHtml(
+            `/admin/colaboradores/${row.id}`,
+            row.active,
+            `a ${row.username}`,
+            "Activo",
+            "Inactivo",
+            {
+              desactivar: `¿Desactivar a ${row.username}? Pierde el acceso al panel y deja de recibir notificaciones. Sus tickets y mensajes quedan como están.`,
+              activar: `¿Activar a ${row.username}? Vuelve a entrar al panel con la misma contraseña.`,
+            },
+          );
 
-      return `<tr>
-        <td><div class="avatarrow">${rowAvatar}<span>${escapeHtml(row.username)}</span></div></td>
+      return `<tr data-search="${escapeHtml(search)}" data-filter-rol="${isMasterRow ? "master" : "colaborador"}" data-filter-estado="${row.active ? "activo" : "inactivo"}" data-sort-usuario="${escapeHtml(row.username.toLowerCase())}" data-sort-correo="${escapeHtml(row.email.toLowerCase())}" data-sort-rol="${isMasterRow ? "master" : "colaborador"}" data-sort-estado="${row.active ? 1 : 0}">
+        <td><div class="avatarrow">${rowAvatar}<span>${escapeHtml(row.username)}</span>${isSelf ? '<span class="tag">Vos</span>' : ""}</div></td>
         <td>${escapeHtml(row.email)}</td>
-        <td class="mono">${row.phone ? escapeHtml(row.phone) : '<span class="hint">Sin teléfono</span>'}</td>
+        <td class="mono">${row.phone ? escapeHtml(formatWhatsappPhoneDisplay(row.phone)) : '<span class="hint">Sin teléfono</span>'}</td>
         <td>${roleChip}</td>
-        <td>${estadoChip}</td>
+        <td>${estadoCell}</td>
         <td>${permisosForm}</td>
-        <td><div class="rowactions">${guardarPermisosBtn}${estadoAction}</div></td>
+        <td><div class="rowactions">${guardarPermisosBtn}</div></td>
       </tr>`;
     })
     .join("\n");
@@ -6556,17 +6598,50 @@ export async function renderColaboradoresPage(
     <div class="pagehead">
       <p class="eyebrow">Equipo</p>
       <h1>Colaboradores</h1>
-      <p>Cuentas con acceso al panel de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${admins.length} ${admins.length === 1 ? "cuenta" : "cuentas"} con acceso al panel de ${escapeHtml(brandName(tenant))}.</p>
     </div>
     ${banner}
-    <div class="panel tablewrap">
-      <div class="blockhead blockhead--end">
-        <button type="button" data-open-dialog="nuevo-colaborador-dialog" class="btn btn--primary btn--icon" aria-label="Agregar colaborador" title="Agregar colaborador">${ICON_PLUS}</button>
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por usuario, correo o teléfono…" aria-label="Buscar colaboradores">
+        <select class="tablefilter" data-table-filter data-filter-key="rol" aria-label="Filtrar por rol">
+          <option value="">Todos los roles</option>
+          <option value="master">Master</option>
+          <option value="colaborador">Colaborador</option>
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          <option value="activo">Activos</option>
+          <option value="inactivo">Inactivos</option>
+        </select>
+        <div class="tabletools__actions">
+          <button type="button" data-open-dialog="nuevo-colaborador-dialog" class="btn btn--add" aria-label="Agregar colaborador"><span class="btn--add__plus">+</span> Nuevo colaborador</button>
+        </div>
       </div>
-      <table>
-        <thead><tr><th>Usuario</th><th>Correo</th><th>Teléfono</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th>Acciones</th></tr></thead>
+      <table data-resizable-table="colaboradores">
+        <colgroup>
+          <col style="width:16%"><col style="width:18%"><col style="width:13%">
+          <col style="width:10%"><col style="width:12%"><col style="width:23%"><col style="width:8%">
+        </colgroup>
+        <thead><tr>
+          <th class="sortable" data-sort-key="usuario">Usuario</th>
+          <th class="sortable" data-sort-key="correo">Correo</th>
+          <th>Teléfono</th>
+          <th class="sortable" data-sort-key="rol">Rol</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Notificaciones</th>
+          <th>Acciones</th>
+        </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${admins.length}</span> de ${admins.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
+      </div>
     </div>
     <dialog id="nuevo-colaborador-dialog" class="modal">
       <div class="blockhead"><h2>Nuevo colaborador</h2></div>
@@ -7322,6 +7397,29 @@ function splitWhatsappPhone(phone: string | null): { prefix: string; number: str
     return { prefix: match.code, number: digits.slice(match.code.length) };
   }
   return { prefix: DEFAULT_PHONE_COUNTRY_CODE, number: digits };
+}
+
+/**
+ * `whatsapp:+573001112233` -> `+57 300 111 2233`. La columna Teléfono
+ * mostraba el identificador tal como lo guarda la base, con el prefijo
+ * `whatsapp:` que es de Twilio y no de nadie más: nadie reconoce su propio
+ * número escrito así, y encima era tan largo que se partía en dos líneas.
+ * Se agrupa de a tres desde la izquierda, salvo que el último grupo quede
+ * con uno o dos dígitos: ahí se pega al anterior. Sin esa regla, un celular
+ * colombiano de 10 dígitos terminaba en "+57 318 493 593 3", con un dígito
+ * suelto que se lee como error de tipeo. Es una regla de legibilidad y no
+ * un formato por país — el proyecto acepta números de cualquier prefijo
+ * (ver PHONE_COUNTRY_CODES) y no vale la pena arrastrar una tabla de
+ * formatos nacionales para una columna de tabla.
+ */
+function formatWhatsappPhoneDisplay(phone: string): string {
+  const { prefix, number } = splitWhatsappPhone(phone);
+  const grupos = number.match(/\d{1,3}/g) ?? [];
+  // La cola corta se concatena sin espacio al grupo anterior, en vez de
+  // reasignar por índice: mismo resultado, sin pelearle al chequeo de
+  // índices de TypeScript.
+  const cola = grupos.length > 1 && (grupos.at(-1)?.length ?? 3) < 3 ? (grupos.pop() ?? "") : "";
+  return `+${prefix} ${grupos.join(" ")}${cola}`;
 }
 
 /**

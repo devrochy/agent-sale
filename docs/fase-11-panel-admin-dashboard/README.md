@@ -27,6 +27,7 @@ Cambios sobre el panel ya construido, que no pertenecen a ninguna sub-fase de la
 
 - [apariencia-tema.md](./apariencia-tema.md) — selector de apariencia **Sistema / Claro / Oscuro** en el menú de cuenta. La paleta oscura ya existía bajo `prefers-color-scheme`; lo que agrega es poder elegirla a mano, con la preferencia guardada por dispositivo.
 - [configuracion-por-pestanas.md](./configuracion-por-pestanas.md) — las siete secciones de Configuración pasan a **cinco pestañas**, cada una con el estado real de su área (`Activo`, `Sin definir`, `Conectado`…). Incluye el rediseño de Voz de marca, donde los `textarea` no tenían ningún estilo y el tope de 500 caracteres era invisible hasta que el formulario rebotaba.
+- [colaboradores-tabla.md](./colaboradores-tabla.md) — Colaboradores era la **única tabla del panel sin `data-table`**: se le aplica la barra de búsqueda/filtros/orden/paginado del resto, el botón `+ Nuevo colaborador` de Productos y el switch de estado con confirmación. Incluye dos correcciones de contenido: el teléfono deja de mostrarse como `whatsapp:+57…` y la confirmación deja de decir que una persona "deja de estar disponible para el asistente".
 - [contrasena.md](./contrasena.md) — **cambiar la contraseña** desde el Perfil y **recuperarla** desde el login. El enlace de recuperación va por WhatsApp al teléfono del admin, porque el proyecto no tiene correo y sí tiene ese canal; el token se guarda hasheado, vence a los 30 minutos y sirve una sola vez.
 
 ## Orden de las sub-fases

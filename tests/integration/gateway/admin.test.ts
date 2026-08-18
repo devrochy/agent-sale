@@ -103,6 +103,7 @@ const adminEmails = [
   "para-desactivar@formotos-test.com",
   "con-permisos@formotos-test.com",
   "colab-conexiones@formotos.test",
+  "telefono.visible@formotos-test.com",
   RECUPERA_EMAIL,
 ];
 const app = await buildServer();
@@ -1623,6 +1624,62 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain(ADMIN_EMAIL);
       expect(response.body).toContain("Master");
+    });
+
+    it("la tabla trae la misma barra de herramientas que el resto del panel", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      // Era la única tabla del panel sin el motor de búsqueda/filtro/paginado.
+      expect(response.body).toContain("data-table-search");
+      expect(response.body).toContain('data-filter-key="rol"');
+      expect(response.body).toContain('data-filter-key="estado"');
+      // Los filtros no sirven de nada si las filas no traen contra qué comparar.
+      expect(response.body).toMatch(/data-filter-rol="(master|colaborador)"/);
+      expect(response.body).toMatch(/data-filter-estado="(activo|inactivo)"/);
+      // El botón de alta, con el mismo tratamiento que "Nuevo producto".
+      expect(response.body).toContain("Nuevo colaborador");
+      expect(response.body).toContain("btn--add");
+    });
+
+    it("desactivar a alguien pide confirmación, y el texto habla de acceso y no de catálogo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores",
+        headers: { cookie: sessionCookie },
+      });
+      // La red de seguridad que faltaba: sacarle el acceso a una persona
+      // era un clic sin confirmación mientras que desactivar un aliado sí
+      // preguntaba.
+      expect(response.body).toContain("Pierde el acceso al panel");
+      // El mensaje por defecto de toggleSwitchHtml está escrito para el
+      // catálogo y sobre una persona es directamente falso.
+      expect(response.body).not.toContain("Deja de estar disponible para el asistente");
+    });
+
+    it("el teléfono se muestra como número y no como el identificador de Twilio", async () => {
+      const conTelefono = "telefono.visible@formotos-test.com";
+      await createAdmin(
+        "telvisible",
+        conTelefono,
+        await hashPassword("clave-de-prueba-telefono"),
+        "colaborador",
+        "whatsapp:+573184935933",
+      );
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("+57 318 493 5933");
+      // Sin agrupar dejaba un dígito suelto al final ("593 3"), que se lee
+      // como error de tipeo.
+      expect(response.body).not.toContain("+57 318 493 593 3");
+      // `whatsapp:` es de Twilio, no del usuario. Sigue en la base; no en pantalla.
+      expect(response.body).not.toContain("whatsapp:+573184935933");
     });
 
     it("crea un colaborador nuevo, que puede loguearse pero no ver Colaboradores", async () => {
