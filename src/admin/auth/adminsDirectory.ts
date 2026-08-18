@@ -223,6 +223,23 @@ export async function updateAdminPassword(adminId: string, passwordHash: string)
   });
 }
 
+/**
+ * Cambia el rol desde Colaboradores. Va aparte de `updateAdminProfile`
+ * porque no es un dato de contacto sino el nivel de acceso: cambiarlo es lo
+ * único de esta pantalla que puede dejar a alguien adentro o afuera de la
+ * gestión de cuentas, y quién puede hacerlo se decide antes de llamar (ver
+ * `editarColaborador`).
+ *
+ * No toca `admin_permissions`: un master los tiene todos por definición
+ * (ver `resolveEffectivePermissions`), así que su fila queda como estaba y
+ * vuelve a tener efecto tal cual si algún día baja a colaborador.
+ */
+export async function updateAdminRole(adminId: string, role: AdminRole): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE admins SET role = $1 WHERE id = $2`, [role, adminId]);
+  });
+}
+
 export async function setAdminActive(adminId: string, active: boolean): Promise<void> {
   await withTransaction(async (client) => {
     await client.query(`UPDATE admins SET active = $1 WHERE id = $2`, [active, adminId]);

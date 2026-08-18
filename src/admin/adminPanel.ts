@@ -10,6 +10,7 @@ import {
   updateAdminPassword,
   updateAdminPermissions,
   updateAdminProfile,
+  updateAdminRole,
   type AdminPermissions,
   type AdminRecord,
 } from "./auth/adminsDirectory.js";
@@ -2394,8 +2395,15 @@ const CLIENT_SCRIPT = `
         var value = input.value.trim().toLowerCase();
         var myToken = ++checkToken;
         setState("empty", "Comprobando disponibilidad…");
+        // Dos formas de excluir: data-exclude-self en el Perfil (el propio
+        // admin logueado reafirmando su usuario) y data-exclude-admin al
+        // editar a OTRA cuenta desde Colaboradores. Sin la segunda, abrir el
+        // dialogo de alguien y salir del campo reportaba su propio usuario
+        // actual como "en uso".
         var excludeSelf = input.hasAttribute("data-exclude-self") ? "&excludeSelf=1" : "";
-        fetch("/admin/username-disponible?username=" + encodeURIComponent(value) + excludeSelf)
+        var excludeAdmin = input.getAttribute("data-exclude-admin");
+        var exclude = excludeAdmin ? "&excludeAdminId=" + encodeURIComponent(excludeAdmin) : excludeSelf;
+        fetch("/admin/username-disponible?username=" + encodeURIComponent(value) + exclude)
           .then(function (res) { return res.json(); })
           .then(function (data) {
             if (myToken !== checkToken) return;
@@ -6473,6 +6481,81 @@ export async function desactivarPromocion(promotionId: string): Promise<void> {
  * `GET /admin/colaboradores` debe rechazar a un no-master antes
  * de llamar a esta función (ver server.ts).
  */
+/**
+ * Diálogo de edición de una cuenta, uno por fila. Mismos campos que el alta
+ * menos la contraseña (ver `editarColaborador`), con el mismo tratamiento
+ * visual, porque es el mismo formulario respondiendo las mismas preguntas.
+ *
+ * `selfMaster` es el caso que no puede ofrecerse: un master editándose a sí
+ * mismo no puede bajarse de rol. En vez de dejar el control disponible y
+ * rebotar el submit con un error, el rol se muestra como dato y viaja en un
+ * hidden — un control que siempre falla es peor que no tener control.
+ */
+function colaboradorDialogHtml(dialogId: string, row: AdminRecord, selfMaster: boolean): string {
+  const { prefix, number } = splitWhatsappPhone(row.phone);
+  const rolField = selfMaster
+    ? `<div class="field">
+         <label>Rol</label>
+         <p class="hint">Sos master. Para bajar tu propio rol tiene que hacerlo otro master — si no, te quedarías sin acceso a esta pantalla en el mismo guardado.</p>
+         <input type="hidden" name="role" value="master">
+       </div>`
+    : `<div class="field">
+         <label id="${dialogId}-role-label">Rol</label>
+         <div class="choicegrid" role="radiogroup" aria-labelledby="${dialogId}-role-label">
+           <label class="choice">
+             <input type="radio" name="role" value="colaborador" ${row.role === "colaborador" ? "checked" : ""}>
+             <span class="choice__card">
+               <span class="choice__title">Colaborador</span>
+               <span class="choice__desc">Ve el panel, recibe solo las notificaciones que le marques.</span>
+             </span>
+           </label>
+           <label class="choice">
+             <input type="radio" name="role" value="master" ${row.role === "master" ? "checked" : ""}>
+             <span class="choice__card">
+               <span class="choice__title">Master</span>
+               <span class="choice__desc">Todos los permisos, puede gestionar colaboradores.</span>
+             </span>
+           </label>
+         </div>
+       </div>`;
+
+  return `<dialog id="${dialogId}" class="modal">
+    <div class="blockhead"><h2>Editar ${escapeHtml(row.username)}</h2></div>
+    <form method="POST" action="/admin/colaboradores/${row.id}">
+      <div class="field">
+        <label for="${dialogId}-username">Usuario</label>
+        <div class="fieldcheck">
+          <input type="text" id="${dialogId}-username" name="username" required pattern="[a-z0-9._-]{5,32}" value="${escapeHtml(row.username)}" data-validate="username" data-exclude-admin="${row.id}">
+          <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
+        </div>
+        <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-email">Correo</label>
+        <div class="fieldcheck">
+          <input type="email" id="${dialogId}-email" name="email" required value="${escapeHtml(row.email)}" data-validate="email">
+          <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
+        </div>
+        <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-phone-number">Teléfono (WhatsApp)</label>
+        <div class="phonerow">
+          <select id="${dialogId}-phone-prefix" name="phonePrefix" aria-label="País" autocomplete="off">${phoneCountryOptions(prefix)}</select>
+          <input type="text" id="${dialogId}-phone-number" name="phoneNumber" inputmode="numeric" placeholder="3001234567" value="${escapeHtml(number)}">
+        </div>
+        <p class="hint">${row.phone ? "Adonde le llegan las notificaciones que tenga marcadas." : "Sin teléfono, esta cuenta no puede recuperar su contraseña si la olvida."}</p>
+      </div>
+      ${rolField}
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Guardar cambios</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+    <p class="hint">La contraseña no se cambia desde acá. Si la perdió, que use "¿Olvidaste tu contraseña?" en el login — le llega un enlace por WhatsApp.</p>
+  </dialog>`;
+}
+
 export async function renderColaboradoresPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string },
@@ -6557,6 +6640,9 @@ export async function renderColaboradoresPage(
         ? ""
         : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
 
+      const editarDialogId = `editar-colaborador-${row.id}`;
+      const editarBtn = `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar a ${escapeHtml(row.username)}" title="Editar datos">${ICON_EDIT}</button>`;
+
       // El switch reemplaza al par "chip de estado + botón Desactivar", que
       // decía lo mismo dos veces en dos columnas. Es el mismo control que
       // Aliados, Categorías y Promociones, y trae consigo lo que acá
@@ -6589,8 +6675,9 @@ export async function renderColaboradoresPage(
         <td>${roleChip}</td>
         <td>${estadoCell}</td>
         <td>${permisosForm}</td>
-        <td><div class="rowactions">${guardarPermisosBtn}</div></td>
-      </tr>`;
+        <td><div class="rowactions">${guardarPermisosBtn}${editarBtn}</div></td>
+      </tr>
+      ${colaboradorDialogHtml(editarDialogId, row, isSelf && isMasterRow)}`;
     })
     .join("\n");
 
@@ -6714,6 +6801,42 @@ export async function renderColaboradoresPage(
 const USERNAME_RE = /^[a-z0-9._-]{5,32}$/;
 
 /**
+ * Usuario + correo + teléfono son los mismos tres campos, con las mismas
+ * reglas, en los tres formularios que tocan una cuenta: el alta de un
+ * colaborador, la edición de un colaborador y el Perfil propio. Vivían
+ * copiados en dos de ellos; el tercero habría hecho tres copias, y con
+ * ellas la garantía de que un día se ajustara el largo del usuario en un
+ * sitio y no en los otros.
+ *
+ * Devuelve los valores ya normalizados (usuario y correo en minúsculas,
+ * teléfono armado con su prefijo) porque normalizar también es parte de la
+ * regla: `Ana.Perez` y `ana.perez` no pueden ser dos cuentas distintas.
+ */
+function validarDatosDeCuenta(input: {
+  username: string;
+  email: string;
+  phonePrefix: string;
+  phoneNumber: string;
+}): { ok: true; username: string; email: string; phone: string | null } | { ok: false; error: string } {
+  const username = input.username.trim().toLowerCase();
+  if (!USERNAME_RE.test(username)) {
+    return {
+      ok: false,
+      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
+    };
+  }
+  const email = input.email.trim().toLowerCase();
+  if (!email) {
+    return { ok: false, error: "El correo es obligatorio." };
+  }
+  const rawNumber = input.phoneNumber.trim();
+  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
+    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
+  }
+  return { ok: true, username, email, phone: buildWhatsappPhone(input.phonePrefix, rawNumber) };
+}
+
+/**
  * Mensaje específico según qué UNIQUE violó (username/email/phone, ver
  * migrations/0036 y 0037) — genérico si no fue un unique_violation (23505)
  * o no se pudo determinar cuál constraint. `context` cambia la redacción
@@ -6721,12 +6844,21 @@ const USERNAME_RE = /^[a-z0-9._-]{5,32}$/;
  * "editando el propio perfil" (guardarPerfil, ve cualquier admin) sin
  * duplicar la lógica de mapeo de constraint → mensaje.
  */
-function uniqueViolationMessage(error: unknown, context: "colaborador" | "perfil" = "colaborador"): string {
+function uniqueViolationMessage(
+  error: unknown,
+  context: "colaborador" | "perfil" | "edicion" = "colaborador",
+): string {
   const pgError = error instanceof Error ? (error as { code?: string; constraint?: string }) : undefined;
   if (pgError?.code !== "23505") {
-    return context === "perfil" ? "No se pudo guardar el perfil." : "No se pudo crear el colaborador.";
+    if (context === "perfil") {
+      return "No se pudo guardar el perfil.";
+    }
+    return context === "edicion" ? "No se pudo guardar el colaborador." : "No se pudo crear el colaborador.";
   }
-  if (context === "perfil") {
+  // Editar comparte la redacción del Perfil ("...por otra cuenta") y no la
+  // del alta ("ya existe un colaborador con..."): en los dos casos se está
+  // corrigiendo una cuenta que ya existe y el choque es contra una tercera.
+  if (context === "perfil" || context === "edicion") {
     if (pgError.constraint === "admins_username_key") {
       return "Ese nombre de usuario ya está en uso.";
     }
@@ -6754,16 +6886,9 @@ export async function crearColaborador(
     phoneNumber: string;
   },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const username = input.username.trim().toLowerCase();
-  if (!USERNAME_RE.test(username)) {
-    return {
-      ok: false,
-      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
-    };
-  }
-  const email = input.email.trim().toLowerCase();
-  if (!email) {
-    return { ok: false, error: "El correo es obligatorio." };
+  const datos = validarDatosDeCuenta(input);
+  if (!datos.ok) {
+    return datos;
   }
   if (input.password.length < 8) {
     return { ok: false, error: "La contraseña debe tener al menos 8 caracteres." };
@@ -6771,17 +6896,75 @@ export async function crearColaborador(
   if (!isAdminRole(input.role)) {
     return { ok: false, error: "Rol no válido." };
   }
-  const rawNumber = input.phoneNumber.trim();
-  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
-    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
-  }
-  const phone = buildWhatsappPhone(input.phonePrefix, rawNumber);
 
   const passwordHash = await hashPassword(input.password);
   try {
-    await createAdmin(username, email, passwordHash, input.role, phone);
+    await createAdmin(datos.username, datos.email, passwordHash, input.role, datos.phone);
   } catch (error) {
     return { ok: false, error: uniqueViolationMessage(error) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Edición de OTRA cuenta desde Colaboradores (solo master, gateado en el
+ * preHandler de server.ts). Hasta acá el panel solo permitía crear una
+ * cuenta y prenderla o apagarla: corregir un correo mal escrito o cargarle
+ * el teléfono a alguien exigía un UPDATE contra la base.
+ *
+ * El teléfono es la razón concreta por la que esto hacía falta ya: sin él
+ * una cuenta no puede recuperar su contraseña (ver contrasena.md), y el
+ * único que podía cargarlo era su propio dueño desde el Perfil — que es
+ * exactamente lo que no puede hacer quien ya se quedó afuera.
+ *
+ * La contraseña no se toca acá a propósito: que un master pueda fijar la de
+ * otro convierte Colaboradores en una puerta trasera a cualquier cuenta.
+ * Para eso está el enlace de recuperación.
+ */
+export async function editarColaborador(
+  actor: AdminRecord,
+  adminId: string,
+  input: { username: string; email: string; role: string; phonePrefix: string; phoneNumber: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const datos = validarDatosDeCuenta(input);
+  if (!datos.ok) {
+    return datos;
+  }
+  if (!isAdminRole(input.role)) {
+    return { ok: false, error: "Rol no válido." };
+  }
+
+  const objetivo = await getAdminById(adminId);
+  if (!objetivo) {
+    return { ok: false, error: "Esa cuenta ya no existe." };
+  }
+
+  // Un master que se degrada a sí mismo pierde el acceso a Colaboradores en
+  // el mismo submit: quedaría sin forma de volver a subirse, y si es el
+  // único master, el panel se queda sin nadie que pueda gestionar cuentas.
+  // Rechazarlo acá es más barato que documentar cómo salir de ese estado.
+  if (actor.id === adminId && actor.role === "master" && input.role !== "master") {
+    return {
+      ok: false,
+      error: "No podés quitarte a vos mismo el rol master — pedíselo a otro master.",
+    };
+  }
+
+  try {
+    await updateAdminProfile(adminId, {
+      username: datos.username,
+      email: datos.email,
+      phone: datos.phone,
+      // El avatar no se edita desde acá — es algo que cada uno se pone en su
+      // Perfil— pero hay que reenviarlo: `updateAdminProfile` reemplaza los
+      // cuatro campos y omitirlo lo borraría.
+      avatarData: objetivo.avatarData,
+    });
+    if (objetivo.role !== input.role) {
+      await updateAdminRole(adminId, input.role);
+    }
+  } catch (error) {
+    return { ok: false, error: uniqueViolationMessage(error, "edicion") };
   }
   return { ok: true };
 }
@@ -6914,22 +7097,10 @@ export async function guardarPerfil(
   admin: AdminRecord,
   input: { username: string; email: string; phonePrefix: string; phoneNumber: string; avatarData: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const username = input.username.trim().toLowerCase();
-  if (!USERNAME_RE.test(username)) {
-    return {
-      ok: false,
-      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
-    };
+  const datos = validarDatosDeCuenta(input);
+  if (!datos.ok) {
+    return datos;
   }
-  const email = input.email.trim().toLowerCase();
-  if (!email) {
-    return { ok: false, error: "El correo es obligatorio." };
-  }
-  const rawNumber = input.phoneNumber.trim();
-  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
-    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
-  }
-  const phone = buildWhatsappPhone(input.phonePrefix, rawNumber);
   const avatarData = input.avatarData === "" ? null : input.avatarData;
   if (avatarData !== null) {
     if (!avatarData.startsWith("data:image/")) {
@@ -6941,7 +7112,12 @@ export async function guardarPerfil(
   }
 
   try {
-    await updateAdminProfile(admin.id, { username, email, phone, avatarData });
+    await updateAdminProfile(admin.id, {
+      username: datos.username,
+      email: datos.email,
+      phone: datos.phone,
+      avatarData,
+    });
   } catch (error) {
     return { ok: false, error: uniqueViolationMessage(error, "perfil") };
   }

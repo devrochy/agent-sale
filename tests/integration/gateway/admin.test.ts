@@ -104,6 +104,9 @@ const adminEmails = [
   "con-permisos@formotos-test.com",
   "colab-conexiones@formotos.test",
   "telefono.visible@formotos-test.com",
+  "editada@formotos-test.com",
+  "cambia.rol@formotos-test.com",
+  "con.avatar@formotos-test.com",
   RECUPERA_EMAIL,
 ];
 const app = await buildServer();
@@ -1680,6 +1683,153 @@ describe("panel admin", () => {
       expect(response.body).not.toContain("+57 318 493 593 3");
       // `whatsapp:` es de Twilio, no del usuario. Sigue en la base; no en pantalla.
       expect(response.body).not.toContain("whatsapp:+573184935933");
+    });
+
+    it("un master edita los datos de otra cuenta, incluido el teléfono que faltaba", async () => {
+      const editableEmail = "editable@formotos-test.com";
+      const adminId = await createAdmin(
+        "editable",
+        editableEmail,
+        await hashPassword("clave-de-prueba-editable"),
+        "colaborador",
+        null,
+      );
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${adminId}`,
+        payload: new URLSearchParams({
+          username: "editable",
+          email: "editada@formotos-test.com",
+          role: "colaborador",
+          phonePrefix: "57",
+          phoneNumber: "3009998877",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/colaboradores?guardado=1");
+
+      const fila = await adminPool.query<{ email: string; phone: string | null }>(
+        `SELECT email, phone FROM admins WHERE id = $1`,
+        [adminId],
+      );
+      expect(fila.rows[0]!.email).toBe("editada@formotos-test.com");
+      // Cargarle el teléfono a otro es la razón concreta por la que esto
+      // hacía falta: sin él esa cuenta no puede recuperar su contraseña, y
+      // el único que podía cargarlo era su propio dueño desde el Perfil.
+      expect(fila.rows[0]!.phone).toBe("whatsapp:+573009998877");
+    });
+
+    it("cambiar el rol de otra cuenta sí se puede; quitarse el propio master no", async () => {
+      const rolEmail = "cambia.rol@formotos-test.com";
+      const adminId = await createAdmin(
+        "cambiarol",
+        rolEmail,
+        await hashPassword("clave-de-prueba-rol"),
+        "colaborador",
+        null,
+      );
+
+      const promocion = await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${adminId}`,
+        payload: new URLSearchParams({
+          username: "cambiarol",
+          email: rolEmail,
+          role: "master",
+          phonePrefix: "57",
+          phoneNumber: "",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(promocion.headers.location).toBe("/admin/colaboradores?guardado=1");
+      const rol = await adminPool.query<{ role: string }>(`SELECT role FROM admins WHERE id = $1`, [
+        adminId,
+      ]);
+      expect(rol.rows[0]!.role).toBe("master");
+
+      // El master logueado bajándose a sí mismo perdería el acceso a esta
+      // pantalla en el mismo submit, sin forma de volver a subirse.
+      const propioId = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE email = $1`,
+        [ADMIN_EMAIL],
+      );
+      const autodegradacion = await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${propioId.rows[0]!.id}`,
+        payload: new URLSearchParams({
+          username: ADMIN_USERNAME,
+          email: ADMIN_EMAIL,
+          role: "colaborador",
+          phonePrefix: "57",
+          phoneNumber: "",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(decodeURIComponent(autodegradacion.headers.location as string)).toContain(
+        "No podés quitarte a vos mismo el rol master",
+      );
+      const propioRol = await adminPool.query<{ role: string }>(
+        `SELECT role FROM admins WHERE email = $1`,
+        [ADMIN_EMAIL],
+      );
+      expect(propioRol.rows[0]!.role).toBe("master");
+    });
+
+    it("editar no borra el avatar de la cuenta editada", async () => {
+      const avatarEmail = "con.avatar@formotos-test.com";
+      const adminId = await createAdmin(
+        "conavatar",
+        avatarEmail,
+        await hashPassword("clave-de-prueba-avatar"),
+        "colaborador",
+        null,
+      );
+      const avatar = "data:image/png;base64,iVBORw0KGgo=";
+      await adminPool.query(`UPDATE admins SET avatar_data = $1 WHERE id = $2`, [avatar, adminId]);
+
+      await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${adminId}`,
+        payload: new URLSearchParams({
+          username: "conavatar",
+          email: avatarEmail,
+          role: "colaborador",
+          phonePrefix: "57",
+          phoneNumber: "",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+
+      // El formulario de edición no tiene campo de avatar, y
+      // `updateAdminProfile` reemplaza los cuatro campos: sin reenviarlo,
+      // guardar los datos de alguien le borraba la foto.
+      const fila = await adminPool.query<{ avatar_data: string | null }>(
+        `SELECT avatar_data FROM admins WHERE id = $1`,
+        [adminId],
+      );
+      expect(fila.rows[0]!.avatar_data).toBe(avatar);
+    });
+
+    it("el chequeo de usuario en vivo no reporta como ocupado el usuario de la cuenta que se edita", async () => {
+      const propioId = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE email = $1`,
+        [ADMIN_EMAIL],
+      );
+      const sinExcluir = await app.inject({
+        method: "GET",
+        url: `/admin/username-disponible?username=${ADMIN_USERNAME}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(sinExcluir.json()).toEqual({ taken: true });
+
+      const excluyendo = await app.inject({
+        method: "GET",
+        url: `/admin/username-disponible?username=${ADMIN_USERNAME}&excludeAdminId=${propioId.rows[0]!.id}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(excluyendo.json()).toEqual({ taken: false });
     });
 
     it("crea un colaborador nuevo, que puede loguearse pero no ver Colaboradores", async () => {

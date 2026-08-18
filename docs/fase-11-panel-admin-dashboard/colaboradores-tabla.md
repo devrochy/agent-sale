@@ -90,6 +90,60 @@ Acciones queda vacía, porque efectivamente no hay ninguna.
 `permisoCheckbox` perdió los dos parámetros que eso volvió muertos
 (`adminId`, que nunca se usó, y `disabled`, que ya solo podía ser `false`).
 
+## Editar una cuenta
+
+Hasta acá el panel solo sabía **crear** una cuenta y **prenderla o
+apagarla**. Corregir un correo mal escrito, o cargarle el teléfono a
+alguien, exigía un `UPDATE` contra la base — y el Perfil solo sirve para
+uno mismo.
+
+El teléfono es la razón concreta por la que esto no podía esperar: **sin él
+una cuenta no puede recuperar su contraseña** (ver
+[contrasena.md](./contrasena.md)), y el único que podía cargarlo era su
+propio dueño desde el Perfil, que es exactamente lo que no puede hacer quien
+ya se quedó afuera.
+
+El lápiz de cada fila abre un diálogo con los mismos campos del alta —
+usuario, correo, teléfono, rol— y el mismo tratamiento visual, porque es el
+mismo formulario respondiendo las mismas preguntas.
+
+### Lo que no se puede hacer desde acá
+
+**La contraseña.** Que un master pueda fijar la de otro convierte
+Colaboradores en una puerta trasera a cualquier cuenta. El diálogo lo dice y
+señala el camino que sí existe: el enlace de recuperación.
+
+**Bajarse a uno mismo el rol master.** Se perdería el acceso a esta pantalla
+en el mismo submit, sin forma de volver a subirse — y si es el único master,
+el panel se queda sin nadie que pueda gestionar cuentas. En vez de dejar el
+control disponible y rebotar el submit, el rol se muestra como dato y viaja
+en un `hidden`: **un control que siempre falla es peor que no tener
+control.** La regla igual se valida en el servidor, porque el `hidden` es del
+lado del cliente.
+
+**El avatar.** Es algo que cada uno se pone en su Perfil. Pero hay que
+reenviarlo igual en el `UPDATE`: `updateAdminProfile` reemplaza los cuatro
+campos, y omitirlo le borraba la foto a la persona editada. Hay un test para
+esa regresión.
+
+### Tres formularios, una sola regla
+
+Usuario, correo y teléfono son los mismos tres campos con las mismas reglas
+en el alta, en la edición y en el Perfil. Vivían copiados en dos de ellos;
+el tercero habría hecho tres copias, y con ellas la garantía de que un día
+se ajustara el largo del usuario en un sitio y no en los otros. Ahora es
+`validarDatosDeCuenta`, que además **normaliza** —minúsculas, teléfono
+armado con su prefijo— porque normalizar también es parte de la regla:
+`Ana.Perez` y `ana.perez` no pueden ser dos cuentas distintas.
+
+### El chequeo de usuario en vivo aprendió un tercer caso
+
+`GET /admin/username-disponible` sabía excluir al admin logueado
+(`excludeSelf=1`, del Perfil). Editando a **otra** cuenta hacía falta
+excluir a la editada: sin eso, abrir el diálogo de alguien y salir del campo
+reportaba su propio usuario actual como "en uso". `excludeAdminId` solo se
+honra para un master, que es el único que puede abrir esa pantalla.
+
 ## Cobertura
 
 `tests/integration/gateway/admin.test.ts`, bloque "colaboradores": que la
@@ -97,3 +151,9 @@ barra de herramientas existe **y que las filas traen contra qué comparar**
 (un filtro sin `data-filter-*` en las filas se dibuja y no hace nada), que el
 texto de confirmación habla de acceso y **no** del catálogo, y que el
 teléfono sale como número — sin el dígito suelto y sin el prefijo de Twilio.
+
+De la edición: que un master puede cambiarle el correo y **cargarle el
+teléfono** a otra cuenta, que puede cambiarle el rol pero **no quitarse el
+suyo**, que guardar **no le borra el avatar** a la persona editada, y que el
+chequeo en vivo no reporta como ocupado el usuario de la cuenta que se está
+editando.

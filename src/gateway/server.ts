@@ -25,6 +25,7 @@ import {
   desactivarCategoria,
   desactivarColaborador,
   desactivarPromocion,
+  editarColaborador,
   enviarMensajeHumano,
   exportLeadsCsv,
   guardarAliado,
@@ -533,6 +534,31 @@ export async function buildServer() {
     return reply.status(303).redirect(redirectUrl);
   });
 
+  // Editar los datos de OTRA cuenta. El preHandler de arriba ya exigió
+  // master; `editarColaborador` se encarga de la única regla que depende de
+  // quién edita a quién (un master no se baja el rol a sí mismo).
+  app.post("/admin/colaboradores/:adminId", async (request, reply) => {
+    const { adminId } = request.params as { adminId: string };
+    const { username, email, role, phonePrefix, phoneNumber } = request.body as {
+      username?: string;
+      email?: string;
+      role?: string;
+      phonePrefix?: string;
+      phoneNumber?: string;
+    };
+    const result = await editarColaborador(request.admin!, adminId, {
+      username: username ?? "",
+      email: email ?? "",
+      role: role ?? "",
+      phonePrefix: phonePrefix ?? "",
+      phoneNumber: phoneNumber ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/colaboradores?guardado=1"
+      : `/admin/colaboradores?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
   app.post("/admin/colaboradores/:adminId/activar", async (request, reply) => {
     const { adminId } = request.params as { adminId: string };
     await activarColaborador(adminId);
@@ -628,19 +654,33 @@ export async function buildServer() {
   // como la edición del propio Perfil, a propósito por fuera del prefijo
   // `/admin/colaboradores` que el preHandler de arriba gatea a master.
   app.get("/admin/username-disponible", async (request, reply) => {
-    const { username, excludeSelf } = request.query as { username?: string; excludeSelf?: string };
+    const { username, excludeSelf, excludeAdminId } = request.query as {
+      username?: string;
+      excludeSelf?: string;
+      excludeAdminId?: string;
+    };
     if (!username) {
       return reply.send({ taken: false });
     }
-    // `excludeSelf=1` solo lo manda el form de Perfil (ver CLIENT_SCRIPT) —
-    // ahí sí hay que excluir al propio admin logueado, porque está
-    // reafirmando su username actual, no reservando uno nuevo. Desde el
-    // alta de un colaborador (Colaboradores) no se manda: no hay que
-    // excluir a nadie.
-    const taken = await isUsernameTaken(
-      username.trim().toLowerCase(),
-      excludeSelf === "1" ? request.admin!.id : null,
-    );
+    // Tres casos, y cada uno excluye a alguien distinto:
+    //
+    // - Alta de un colaborador: no se excluye a nadie, el usuario tiene que
+    //   estar libre contra toda la tabla.
+    // - Perfil propio (`excludeSelf=1`): se excluye al admin logueado, que
+    //   está reafirmando su usuario actual y no reservando uno nuevo.
+    // - Edición de otra cuenta desde Colaboradores (`excludeAdminId`): se
+    //   excluye a la cuenta editada, por la misma razón. Solo se honra para
+    //   un master, que es el único que puede abrir esa pantalla — si no,
+    //   cualquier admin podría pedir la respuesta "excluyendo" a un tercero.
+    //   El peor caso igual sería un booleano, pero no hay motivo para
+    //   dejarlo abierto.
+    const excludeId =
+      excludeAdminId && request.admin!.role === "master"
+        ? excludeAdminId
+        : excludeSelf === "1"
+          ? request.admin!.id
+          : null;
+    const taken = await isUsernameTaken(username.trim().toLowerCase(), excludeId);
     return reply.send({ taken });
   });
 
