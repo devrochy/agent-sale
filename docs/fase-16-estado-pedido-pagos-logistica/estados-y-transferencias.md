@@ -125,16 +125,28 @@ orden por columna y paginado.
   pegado al número de pedido —expandir *es* abrir ese pedido— y no en una
   columna propia: diez columnas no entraban sin scroll horizontal.
 - **La dirección sale de la celda de Items**, donde estaba apretada, y pasa a
-  un diálogo detrás de "Ver dirección": son cinco campos que no entran en una
-  celda y que solo hacen falta al despachar.
+  un diálogo: son cinco campos que no entran en una celda y que solo hacen
+  falta al despachar. **Lo abre el propio chip de "Domicilio"** — un botón de
+  texto al lado repetía en palabras lo que el chip ya nombraba, y en una
+  celda del 19% eso costaba una línea entera. El chip accionable es un
+  `<button>` real con `.chip--action`, para que se alcance con teclado y se
+  anuncie como control; el subrayado punteado es lo que lo delata como
+  clicable, porque un chip idéntico al de al lado que además hace algo es una
+  trampa. Sin dirección cargada vuelve a ser un chip: no hay nada que abrir.
 - **La guía se muda a la columna Entrega.** Junta con el método y la
   dirección se lee como "cómo le llega esto al cliente", que es la pregunta
   real.
 - **Los métodos de pago se muestran con su nombre.** `efectivo_contraentrega`
   es la clave que usa la tool y en una tabla se lee como una variable.
-- **Las acciones van en `ghost`, no en rojo.** La advertencia vive en el
-  `data-confirm`, que es donde alguien la lee antes de decidir; una columna de
-  botones rojos repetidos en cada fila deja de significar "cuidado".
+- **Las acciones son iconos `ghost`**, como la columna de Acciones de
+  Productos y Aliados. Sin texto es seguro porque las dos pasan por
+  `data-confirm`: la advertencia vive ahí, que es donde alguien la lee antes
+  de decidir, y no en un botón rojo repetido en cada fila —que a la tercera
+  deja de significar "cuidado"—. `ICON_ENTREGADO` es un check **en círculo**,
+  distinto del `ICON_SAVE` suelto que en el panel significa "guardar esta
+  edición".
+- **Registrar la guía lleva icono y palabra**, no solo icono: un icono suelto
+  ahí no distingue entre *ver* la guía y *crearla*.
 
 ## Dónde tocar
 

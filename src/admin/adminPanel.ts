@@ -496,6 +496,17 @@ const ICON_TOAST_OK =
 const ICON_TOAST_ERROR =
   '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="7.2"/><path d="M9 5.4v4.2"/><path d="M9 12.3v.3"/></svg>';
 
+/** Caja de envío — acompaña a la palabra "Guía" en Pedidos. Un icono solo ahí sería ambiguo: no se sabría si abre la guía o la crea. */
+const ICON_GUIA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5.2 8 2.4l5.5 2.8v5.6L8 13.6l-5.5-2.8z"/><path d="M2.5 5.2 8 8l5.5-2.8"/><path d="M8 8v5.6"/></svg>';
+
+/** Check en círculo — "marcar entregado". Distinto de ICON_SAVE (check suelto), que en el panel significa "guardar esta edición". */
+const ICON_ENTREGADO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M5.4 8.2 7.3 10l3.4-3.8"/></svg>';
+
+const ICON_CANCELAR =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6 6l4 4M10 6l-4 4"/></svg>';
+
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
 
@@ -1018,6 +1029,12 @@ section.block { margin-bottom: 34px; }
 .chip--muted { color: var(--ink-faint); background: var(--panel-inset); }
 .chip--inactive { color: var(--redline); background: var(--panel-inset); }
 .chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
+/* Chip que abre algo (la direccion de entrega en Pedidos). Es un <button>
+   real y no un span con onclick: se alcanza con teclado y se anuncia como
+   control. El subrayado punteado es lo que lo delata como clickable — un
+   chip identico al de al lado que ademas hace algo es una trampa. */
+.chip--action { border: 0; cursor: pointer; font: inherit; font-family: var(--font-mono); border-bottom: 1px dashed currentColor; border-radius: 20px 20px 4px 4px; }
+.chip--action:hover { filter: brightness(0.94); }
 .chip--violet { color: var(--violet); background: var(--violet-soft); }
 .chip--whatsapp { color: var(--wa); background: var(--wa-soft); }
 .chip--instagram { color: var(--ig); background: var(--ig-soft); }
@@ -5886,13 +5903,15 @@ export async function renderPedidosPage(
       const tieneDireccion = Boolean(
         row.delivery_address || row.delivery_full_name || row.delivery_id_document,
       );
+      // El propio chip abre la dirección: el botón "Ver dirección" al lado
+      // repetía en palabras lo que el chip ya nombraba, y en una celda de
+      // 19% de ancho eso costaba una línea entera. Sin dirección cargada el
+      // chip vuelve a ser un chip — no hay nada que abrir.
       const entregaCell =
         row.delivery_method === "domicilio"
-          ? `<span class="chip chip--chrome">Domicilio</span>${
-              tieneDireccion
-                ? `<button type="button" data-open-dialog="${direccionDialogId}" class="btn btn--ghost btn--sm">Ver dirección</button>`
-                : `<p class="hint">Sin dirección cargada</p>`
-            }`
+          ? tieneDireccion
+            ? `<button type="button" data-open-dialog="${direccionDialogId}" class="chip chip--chrome chip--action" title="Ver la dirección de entrega">Domicilio</button>`
+            : `<span class="chip chip--chrome">Domicilio</span><p class="hint">Sin dirección cargada</p>`
           : `<span class="chip chip--muted">Recoge en tienda</span>`;
 
       const direccionDialog = tieneDireccion
@@ -5925,7 +5944,7 @@ export async function renderPedidosPage(
       const guiaCell = row.tracking_number
         ? `<p class="hint mono">${escapeHtml(row.tracking_number)} · ${escapeHtml(row.carrier ?? "—")}</p>`
         : row.delivery_method === "domicilio" && row.status === "abierto"
-          ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm">Registrar guía</button>`
+          ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm" title="Registrar la guía de envío">${ICON_GUIA} Guía</button>`
           : "";
 
       const guiaDialog =
@@ -5953,19 +5972,20 @@ export async function renderPedidosPage(
       // Las dos transiciones que ningún sistema puede detectar solo: que el
       // paquete llegó y que el pedido se cae. El resto las mueve el webhook
       // (pago) o el registro de guía (despacho).
-      // Las dos en `ghost` y no en rojo: la advertencia vive en el
-      // `data-confirm`, que es donde alguien la lee antes de decidir. Una
-      // columna de botones rojos repetidos en cada fila grita en una tabla
-      // que se recorre de arriba abajo, y deja de significar "cuidado".
+      // Icon-only y en `ghost`, como la columna de Acciones de Productos y
+      // Aliados. Que sean iconos sin texto es seguro acá porque las dos
+      // pasan por `data-confirm`: la advertencia vive ahí, que es donde
+      // alguien la lee antes de decidir, y no en un botón rojo repetido en
+      // cada fila —que a la tercera deja de significar "cuidado"—.
       const acciones: string[] = [];
       if (row.status === "despachado") {
         acciones.push(
-          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--sm">Entregado</button></form>`,
+          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--icon" aria-label="Marcar ${escapeHtml(row.public_order_number)} como entregado" title="Marcar entregado">${ICON_ENTREGADO}</button></form>`,
         );
       }
       if (row.status === "abierto" || row.status === "despachado") {
         acciones.push(
-          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--sm">Cancelar</button></form>`,
+          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--icon" aria-label="Cancelar ${escapeHtml(row.public_order_number)}" title="Cancelar pedido">${ICON_CANCELAR}</button></form>`,
         );
       }
       const accionesCell = acciones.length > 0 ? acciones.join("") : `<p class="hint">—</p>`;

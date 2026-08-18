@@ -1649,15 +1649,21 @@ describe("panel admin", () => {
       expect(response.body).not.toContain(">abierto<");
     });
 
-    it("la dirección vive en su propio diálogo y no dentro de los items", async () => {
+    it("el chip de Domicilio es el que abre la dirección, sin botón aparte", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/pedidos",
         headers: { cookie: sessionCookie },
       });
-      expect(response.body).toContain("Ver dirección");
+      // Es un <button> real y no un span con onclick: se alcanza con
+      // teclado y se anuncia como control.
+      expect(response.body).toMatch(
+        /<button[^>]*data-open-dialog="direccion-[^"]*"[^>]*class="chip chip--chrome chip--action"/,
+      );
       expect(response.body).toContain("<dl class=\"datalist\">");
-      // Antes la dirección se imprimía apretada en la celda de Items.
+      // El botón de texto al lado repetía lo que el chip ya nombraba.
+      expect(response.body).not.toContain("Ver dirección");
+      // Y antes de eso, la dirección se imprimía apretada en los items.
       expect(response.body).not.toContain("Entrega a:");
     });
 
