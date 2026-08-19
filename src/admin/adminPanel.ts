@@ -507,6 +507,12 @@ const ICON_ENTREGADO =
 const ICON_CANCELAR =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6 6l4 4M10 6l-4 4"/></svg>';
 
+const ICON_SOL =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.1"/><path d="M8 1.4v1.5M8 13.1v1.5M14.6 8h-1.5M2.9 8H1.4M12.7 3.3l-1 1M4.3 11.7l-1 1M12.7 12.7l-1-1M4.3 4.3l-1-1"/></svg>';
+
+const ICON_LUNA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.4 9.8A5.6 5.6 0 0 1 6.2 2.6a5.7 5.7 0 1 0 7.2 7.2Z"/></svg>';
+
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
 
@@ -589,13 +595,13 @@ async function navRail(
   const railProfile = `<div class="railprofile-wrap">
     <button type="button" class="railprofile navitem${perfilActive ? " navitem--active" : ""}" data-profile-menu-toggle aria-haspopup="menu" aria-expanded="false" title="Cuenta">${avatar}<span class="navitem__label">${escapeHtml(admin.username)}</span></button>
     <div class="railprofile-menu" data-profile-menu role="menu">
-      <div class="themepick" role="group" aria-label="Apariencia del panel">
+      <div class="themepick">
         <span class="themepick__label">Apariencia</span>
-        <div class="themepick__opts">
-          <button type="button" class="themepick__opt" data-theme-option="system" aria-pressed="false">Sistema</button>
-          <button type="button" class="themepick__opt" data-theme-option="light" aria-pressed="false">Claro</button>
-          <button type="button" class="themepick__opt" data-theme-option="dark" aria-pressed="false">Oscuro</button>
-        </div>
+        <button type="button" class="themetoggle" data-theme-toggle role="switch" aria-checked="false" aria-label="Modo oscuro">
+          <span class="themetoggle__icon themetoggle__icon--sun" aria-hidden="true">${ICON_SOL}</span>
+          <span class="themetoggle__track"><span class="themetoggle__knob"></span></span>
+          <span class="themetoggle__icon themetoggle__icon--moon" aria-hidden="true">${ICON_LUNA}</span>
+        </button>
       </div>
       <a class="railprofile-menu__item" href="/admin/perfil" role="menuitem">${ICON_EDIT}Editar perfil</a>
       <form method="POST" action="/logout" role="none">
@@ -788,7 +794,7 @@ const DARK_PALETTE = `    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; -
  * Sin preferencia guardada no toca nada y manda `prefers-color-scheme`, que
  * es el comportamiento que el panel ya tenía.
  */
-const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem("panel-theme");if(t==="dark"||t==="light"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
+const THEME_BOOT_SCRIPT = `(function(){var t=null;try{t=localStorage.getItem("panel-theme");}catch(e){}if(t!=="dark"&&t!=="light"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);})();`;
 
 const STYLE_BLOCK = `
 :root {
@@ -925,8 +931,19 @@ body.rail-collapsed .rail__toggle svg { transform: rotate(180deg); }
    siempre. */
 .themepick { padding: 4px 10px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .themepick__label { display: block; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px; }
-.themepick__opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-inset); }
-.themepick__opt { padding: 5px 4px; border: none; border-radius: 5px; background: transparent; color: var(--ink-muted); font: inherit; font-size: 12px; cursor: pointer; }
+/* Switch de dos estados. Sol y luna a los lados en vez de las palabras
+   "Claro"/"Oscuro": el par es universal y no necesita traduccion, y el que
+   esta apagado se atenua, asi que el estado se lee sin mirar la perilla. */
+.themetoggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 4px 2px; border: 0; background: none; cursor: pointer; color: var(--ink-muted); }
+.themetoggle__icon { display: inline-flex; opacity: 0.4; transition: opacity 140ms ease; }
+.themetoggle__icon svg { width: 14px; height: 14px; display: block; }
+.themetoggle[aria-checked="false"] .themetoggle__icon--sun,
+.themetoggle[aria-checked="true"] .themetoggle__icon--moon { opacity: 1; color: var(--ignition); }
+.themetoggle__track { flex: 1; height: 18px; max-width: 38px; border-radius: 10px; position: relative; background: var(--panel-inset); border: 1px solid var(--border); transition: background 140ms ease; }
+.themetoggle__knob { position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-faint); transition: transform 160ms cubic-bezier(.2,.8,.2,1), background 140ms ease; }
+.themetoggle[aria-checked="true"] .themetoggle__knob { transform: translateX(18px); background: var(--ignition); }
+.themetoggle:focus-visible { outline: 2px solid var(--ignition); outline-offset: 2px; border-radius: 7px; }
+@media (prefers-reduced-motion: reduce) { .themetoggle__knob { transition: none; } }
 .themepick__opt:hover { color: var(--ink); }
 .themepick__opt[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
 body.rail-collapsed .navitem__label,
@@ -1551,7 +1568,12 @@ td .emptystate { padding: 34px 20px; }
 .flowtools { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--panel-inset); }
 .flowtools__label { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; margin-bottom: 9px; }
 .flowtools__label svg { width: 12px; height: 12px; }
-dialog.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
+/* color explicito y no heredado: un <dialog> vive en el top layer y el
+   navegador le asigna CanvasText, que NO hereda del body. Mientras el tema
+   salia de prefers-color-scheme coincidian por casualidad; al poder forzar
+   "Oscuro" con el sistema en claro, CanvasText seguia siendo negro y los
+   titulos del modal quedaban negros sobre el panel oscuro. */
+dialog.modal { background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 /* Avatar grande y clickeable del Perfil (a diferencia del <input type=file>
    crudo de antes): el círculo entero es el disparador, el archivo real
@@ -1844,41 +1866,45 @@ const CLIENT_SCRIPT = `
     })(contados[d]);
   }
 
-  /* ---------- apariencia: sistema / claro / oscuro ----------
+  /* ---------- apariencia: claro / oscuro ----------
      La preferencia vive en localStorage y no en el perfil del admin: es una
-     elección del dispositivo, no de la cuenta (el mismo admin puede querer
-     claro en el escritorio y oscuro en el celular). El valor lo aplica
-     THEME_BOOT_SCRIPT en el <head>; acá solo se refleja el estado en los
-     botones y se maneja el cambio. */
-  var themeOptions = document.querySelectorAll("[data-theme-option]");
-  if (themeOptions.length) {
+     eleccion del dispositivo, no de la cuenta (el mismo admin puede querer
+     claro en el escritorio y oscuro en el celular). El valor inicial lo
+     aplica THEME_BOOT_SCRIPT en el <head>; aca solo se refleja el estado y
+     se maneja el cambio.
+
+     Son dos estados y no tres: la opcion "Sistema" se retiro a pedido. La
+     consecuencia es que el panel deja de seguir al sistema operativo una
+     vez que alguien toca el switch -- en la primera visita todavia arranca
+     por prefers-color-scheme, y de ahi en mas manda lo elegido. */
+  var themeToggle = document.querySelector("[data-theme-toggle]");
+  if (themeToggle) {
     var THEME_KEY = "panel-theme";
     var applyTheme = function (value) {
-      if (value === "dark" || value === "light") {
-        document.documentElement.setAttribute("data-theme", value);
-        try { localStorage.setItem(THEME_KEY, value); } catch (e) {}
-      } else {
-        document.documentElement.removeAttribute("data-theme");
-        try { localStorage.removeItem(THEME_KEY); } catch (e) {}
-      }
-      for (var j = 0; j < themeOptions.length; j++) {
-        var opt = themeOptions[j];
-        var esActiva = opt.getAttribute("data-theme-option") === (value || "system");
-        opt.setAttribute("aria-pressed", esActiva ? "true" : "false");
-      }
+      var dark = value === "dark";
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) {}
+      themeToggle.setAttribute("aria-checked", dark ? "true" : "false");
     };
     var guardado = null;
     try { guardado = localStorage.getItem(THEME_KEY); } catch (e) {}
-    applyTheme(guardado === "dark" || guardado === "light" ? guardado : null);
-    for (var i = 0; i < themeOptions.length; i++) {
-      themeOptions[i].addEventListener("click", function (ev) {
-        // El menú de cuenta se cierra al hacer clic fuera; acá interesa que
-        // siga abierto para poder comparar las tres opciones de un vistazo.
-        ev.stopPropagation();
-        var elegido = ev.currentTarget.getAttribute("data-theme-option");
-        applyTheme(elegido === "system" ? null : elegido);
-      });
-    }
+    /* Sin nada guardado el switch tiene que mostrar el estado real, que en
+       la primera visita lo puso el sistema: si arrancara siempre en "claro"
+       mentiria sobre lo que se esta viendo. */
+    var inicial =
+      guardado === "dark" || guardado === "light"
+        ? guardado
+        : window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+    themeToggle.setAttribute("aria-checked", inicial === "dark" ? "true" : "false");
+    document.documentElement.setAttribute("data-theme", inicial);
+    themeToggle.addEventListener("click", function (ev) {
+      // El menu de cuenta se cierra al hacer clic fuera; aca interesa que
+      // siga abierto para ver el cambio aplicado sin volver a abrirlo.
+      ev.stopPropagation();
+      applyTheme(themeToggle.getAttribute("aria-checked") === "true" ? "light" : "dark");
+    });
   }
 
   /* ---------- riel: colapsar y redimensionar (persistido en localStorage) ---------- */

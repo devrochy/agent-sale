@@ -360,16 +360,30 @@ afterAll(async () => {
 
 describe("panel admin", () => {
   describe("apariencia (tema claro/oscuro)", () => {
-    it("el menú de cuenta ofrece las tres opciones de apariencia", async () => {
+    it("el menú de cuenta trae un switch de dos estados", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin",
         headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('data-theme-option="system"');
-      expect(response.body).toContain('data-theme-option="light"');
-      expect(response.body).toContain('data-theme-option="dark"');
+      // role="switch" y no tres botones: la opción "Sistema" se retiró.
+      expect(response.body).toContain("data-theme-toggle");
+      expect(response.body).toContain('role="switch"');
+      expect(response.body).not.toContain("data-theme-option");
+    });
+
+    it("el modal declara su color, que no hereda del body", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      // Un <dialog> vive en el top layer y el navegador le asigna
+      // CanvasText. Mientras el tema salía de prefers-color-scheme
+      // coincidían por casualidad; forzando "Oscuro" con el sistema en
+      // claro, los títulos del modal salían negros sobre el panel oscuro.
+      expect(response.body).toMatch(/dialog\.modal \{[^}]*color: var\(--ink\)/);
     });
 
     it("aplica el tema guardado antes de pintar, para que no haya parpadeo", async () => {
@@ -391,11 +405,24 @@ describe("panel admin", () => {
         url: "/admin",
         headers: { cookie: sessionCookie },
       });
-      // Las dos vías tienen que existir: sin la primera se pierde el
-      // comportamiento automático que el panel ya tenía; sin la segunda el
-      // selector no haría nada.
+      // La vía por `prefers-color-scheme` se mantiene aunque el script
+      // siempre fije `data-theme`: es lo único que queda si el JS no corre.
       expect(response.body).toContain(':root:not([data-theme="light"])');
       expect(response.body).toContain(':root[data-theme="dark"]');
+    });
+
+    it("sin preferencia guardada el tema arranca por el del sistema", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      const head = response.body.slice(0, response.body.indexOf("</head>"));
+      // Con dos estados el switch tiene que reflejar algo real desde la
+      // primera visita: si arrancara siempre en "claro" mentiría sobre lo
+      // que se está viendo en un equipo configurado en oscuro.
+      expect(head).toContain("prefers-color-scheme: dark");
+      expect(head).toContain('setAttribute("data-theme"');
     });
   });
 
