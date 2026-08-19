@@ -635,7 +635,11 @@ async function navRail(
         <p class="navgroup__label">Agente</p>
         <ul class="navgroup__items">
           ${item(`/admin/flujo`, "Flujo", "flujo", ICON_FLUJO)}
-          ${item(`/admin/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)}
+          ${
+            isMaster
+              ? item(`/admin/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)
+              : ""
+          }
           ${item(`/admin/configuracion`, "Configuración", "configuracion", ICON_CONFIGURACION)}
         </ul>
       </div>
@@ -1011,6 +1015,31 @@ main { padding: 34px 40px 60px; width: 100%; min-width: 0; }
 .kpi__arc-bg { fill: none; stroke: var(--border); stroke-width: 5; }
 .kpi__arc-fill { fill: none; stroke: var(--go); stroke-width: 5; stroke-linecap: round; stroke-dasharray: 132; stroke-dashoffset: 132; transition: stroke-dashoffset 1100ms cubic-bezier(.2,.8,.2,1) 200ms; }
 .kpi__arc-fill.below-target { stroke: var(--redline); }
+
+/* Resumen: 4 KPIs compactos en una sola fila. */
+.kpirow--four { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 900px) { .kpirow--four { grid-template-columns: repeat(2, 1fr); } }
+.kpirow--four .kpi { padding: 12px 16px 14px; }
+.kpirow--four .kpi__number { font-size: 26px; }
+.kpirow--four .kpi__figure { margin-top: 6px; }
+.kpirow--four .kpi__foot { margin-top: 8px; font-size: 11px; }
+.kpirow--four .kpi__arc-wrap { width: 40px; height: 40px; }
+
+/* Resumen: conversaciones recientes + tops en dos mitades. */
+.resumen-split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+@media (max-width: 1100px) { .resumen-split { grid-template-columns: 1fr; } }
+.resumen-tops { display: flex; flex-direction: column; gap: 24px; }
+
+.toplist { list-style: none; margin: 0; padding: 4px 0; }
+.toprow { display: grid; grid-template-columns: 26px 1fr auto; gap: 4px 10px; align-items: baseline; padding: 9px 18px; border-bottom: 1px solid var(--border); }
+.toprow:last-child { border-bottom: none; }
+.toprow__rank { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); }
+.toprow__nombre { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toprow__valor { font-family: var(--font-mono); font-weight: 700; font-size: 12.5px; color: var(--ignition); white-space: nowrap; }
+.toprow__detalle { grid-column: 2 / -1; font-size: 11.5px; color: var(--ink-muted); }
+.toprow--extra { display: none; }
+.toplist__toggle { display: block; margin: 10px auto 8px; padding: 6px 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--panel-inset); color: var(--ink); font-size: 12px; font-weight: 600; cursor: pointer; }
+.toplist__toggle:hover { border-color: var(--border-strong); }
 section.block { margin-bottom: 34px; }
 .blockhead { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; gap: 12px; }
 .blockhead--end { justify-content: flex-end; }
@@ -1220,6 +1249,10 @@ table.resizing { cursor: col-resize; user-select: none; }
 .field { margin-bottom: 20px; }
 .field:last-of-type { margin-bottom: 0; }
 .field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
+/* Prefijo de país + número local en la misma fila (Configuración → Reportes y reseñas): el select mantiene su alto fijo y el input flexea para ocupar el resto. */
+.field .inputrow { display: flex; gap: 10px; max-width: 440px; }
+.field .inputrow select { width: 210px; flex-shrink: 0; }
+.field .inputrow input { flex: 1; max-width: none; }
 /* Los textarea nunca habían tenido estilo: se veían con el aspecto por
    defecto del navegador (fuente monoespaciada, ancho por atributo cols) en medio de
    un panel cuidado — el único sitio donde se usan es Voz de marca, que es
@@ -1320,6 +1353,9 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .countbadge strong { font-family: var(--font-mono); color: var(--ink); }
 /* padding-left igual al del input de nombre (.dblclick-cell input, 4px) — sin esto el nombre y el "aliado · categoría" de abajo quedan desalineados horizontalmente. */
 .rowmeta { font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; padding-left: 4px; }
+/* Celda Cliente de la tabla de Leads: nombre arriba y canal debajo, en columna — el chip mantiene su color de canal pero deja de competir en la misma línea con el nombre. */
+.leadcell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; line-height: 1.3; }
+.leadcell__channel { margin-left: 4px; }
 
 /*
  * Previsualización editable de la carga por CSV — una card por producto
@@ -1537,6 +1573,12 @@ th.th--end { text-align: right; }
 .convtabs a.tab--redline.tab--active { background: var(--redline-soft); color: var(--redline); border-color: var(--redline); }
 .convtabs a.tab--go { color: var(--go); }
 .convtabs a.tab--go.tab--active { background: var(--go-soft); color: var(--go); border-color: var(--go); }
+.convtabs a.tab--amber { color: var(--ignition); }
+.convtabs a.tab--amber.tab--active { background: var(--ignition-soft); color: var(--ignition); border-color: var(--ignition); }
+.convtabs a.tab--violet { color: var(--violet); }
+.convtabs a.tab--violet.tab--active { background: var(--violet-soft); color: var(--violet); border-color: var(--violet); }
+.convtabs a.tab--muted { color: var(--ink-faint); }
+.convtabs a.tab--muted.tab--active { background: var(--panel-inset); color: var(--ink-muted); border-color: var(--border-strong); }
 .inbox { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 @media (max-width: 860px) { .inbox { grid-template-columns: 1fr; } }
 .inbox__list { max-height: 74vh; overflow-y: auto; }
@@ -1561,6 +1603,9 @@ th.th--end { text-align: right; }
 .thread__headactions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
 .thread__headactions-row { display: flex; align-items: center; gap: 8px; }
 .thread__meta { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; flex-wrap: wrap; }
+/* Costo y tokens acumulados de la conversación (migrations/0057) — al final
+   de la metarow del detalle, con el mismo aire mono/tenue que el resto. */
+.thread__costo { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; margin-left: auto; }
 .thread__body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; max-height: 64vh; }
 .bubble { max-width: 72%; padding: 9px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
 .bubble.inbound { align-self: flex-start; background: var(--panel-inset); border-bottom-left-radius: 4px; }
@@ -1707,6 +1752,24 @@ const CLIENT_SCRIPT = `
       });
       if (limpio) window.history.replaceState({}, "", url.pathname + url.search + url.hash);
     }
+  })();
+
+  /* ---------- tops del resumen: desplegar más de 5 a 10 ---------- */
+  (function () {
+    var toggles = document.querySelectorAll("[data-top-toggle]");
+    Array.prototype.forEach.call(toggles, function (btn) {
+      btn.addEventListener("click", function () {
+        var list = btn.closest(".panel") ? btn.closest(".panel").querySelectorAll("[data-top-extra]") : [];
+        var expandido = btn.getAttribute("data-expanded") === "1";
+        Array.prototype.forEach.call(list, function (fila) {
+          fila.style.display = expandido ? "none" : "";
+        });
+        btn.textContent = expandido
+          ? "Ver " + list.length + " más"
+          : "Mostrar menos";
+        btn.setAttribute("data-expanded", expandido ? "0" : "1");
+      });
+    });
   })();
 
   function easeOutBack(t) {
@@ -3081,10 +3144,12 @@ export async function cambiarContrasenaPropia(
 }
 
 interface OverviewKpiRow {
-  mensajes_24h: string;
-  mensajes_24h_prev: string;
-  clientes_unicos_24h: string;
-  clientes_unicos_24h_prev: string;
+  mensajes: string;
+  mensajes_prev: string;
+  clientes_unicos: string;
+  clientes_unicos_prev: string;
+  conversaciones_nuevas: string;
+  conversaciones_prev: string;
 }
 
 interface ResueltoSinHumanoRow {
@@ -3106,6 +3171,24 @@ interface ConversacionRecienteRow {
   has_open_handoff: boolean;
 }
 
+interface TopClienteRow {
+  nombre: string;
+  monto: string;
+  pedidos: string;
+}
+
+interface TopProductoRow {
+  producto: string;
+  cantidad: string;
+  monto: string;
+}
+
+interface TopAliadoRow {
+  aliado: string;
+  monto: string;
+  pedidos: string;
+}
+
 function trendChip(current: number, previous: number): string {
   if (previous === 0) {
     return current > 0
@@ -3121,26 +3204,48 @@ function trendChip(current: number, previous: number): string {
   return `<span class="trend trend--${dir}">${arrow}${Math.abs(pct)}%</span>`;
 }
 
+type PeriodoResumen = 7 | 15 | 30;
+
+const PERIODOS_RESUMEN: { valor: PeriodoResumen; etiqueta: string }[] = [
+  { valor: 7, etiqueta: "7 días" },
+  { valor: 15, etiqueta: "15 días" },
+  { valor: 30, etiqueta: "30 días" },
+];
+
+function parsePeriodoResumen(raw: string | undefined): PeriodoResumen {
+  if (raw === "15") return 15;
+  if (raw === "30") return 30;
+  return 7;
+}
+
 /**
  * Home del tenant en el panel (ver docs/fase-11-panel-admin-dashboard/
- * overview-kpis.md, Fase 11.1).
+ * overview-kpis.md, Fase 11.1). Muestra KPIs de actividad en un periodo
+ * configurable (7/15/30 días) vía `?periodo=`.
  */
-export async function renderOverviewPage(admin: AdminRecord): Promise<string | null> {
+export async function renderOverviewPage(
+  periodoParam: string | undefined,
+  admin: AdminRecord,
+): Promise<string | null> {
+  const periodo = parsePeriodoResumen(periodoParam);
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const { kpis, resuelto, actividad, recientes } = await withTransaction(async (client) => {
+  const { kpis, resuelto, actividad, recientes, topClientes, topProductos, topAliados } = await withTransaction(async (client) => {
+    // KPIs en la ventana pedida y en la ventana inmediatamente anterior del
+    // mismo largo (para el chip de tendencia "vs. periodo anterior").
     const kpisResult = await client.query<OverviewKpiRow>(
       `SELECT
-        count(*) filter (where m.created_at >= now() - interval '24 hours') AS mensajes_24h,
-        count(*) filter (where m.created_at >= now() - interval '48 hours' and m.created_at < now() - interval '24 hours') AS mensajes_24h_prev,
-        count(DISTINCT conv.customer_id) filter (where m.created_at >= now() - interval '24 hours') AS clientes_unicos_24h,
-        count(DISTINCT conv.customer_id) filter (where m.created_at >= now() - interval '48 hours' and m.created_at < now() - interval '24 hours') AS clientes_unicos_24h_prev
+        count(*) filter (where m.created_at >= now() - interval '${periodo} days') AS mensajes,
+        count(*) filter (where m.created_at >= now() - interval '${periodo * 2} days' and m.created_at < now() - interval '${periodo} days') AS mensajes_prev,
+        count(DISTINCT conv.customer_id) filter (where m.created_at >= now() - interval '${periodo} days') AS clientes_unicos,
+        count(DISTINCT conv.customer_id) filter (where m.created_at >= now() - interval '${periodo * 2} days' and m.created_at < now() - interval '${periodo} days') AS clientes_unicos_prev,
+        count(*) filter (where started_at >= now() - interval '${periodo} days') AS conversaciones_nuevas,
+        count(*) filter (where started_at >= now() - interval '${periodo * 2} days' and started_at < now() - interval '${periodo} days') AS conversaciones_prev
        FROM messages m
-       JOIN conversations conv ON conv.id = m.conversation_id
-       WHERE m.created_at >= now() - interval '48 hours'`,
+       JOIN conversations conv ON conv.id = m.conversation_id`,
     );
 
     const resueltoResult = await client.query<ResueltoSinHumanoRow>(
@@ -3149,7 +3254,7 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
        FROM conversations c
        LEFT JOIN handoff_queue h ON h.conversation_id = c.id
        WHERE c.status = 'closed'
-         AND c.closed_at >= now() - interval '7 days'`,
+         AND c.closed_at >= now() - interval '${periodo} days'`,
     );
 
     const actividadResult = await client.query<ActividadDiaRow>(
@@ -3157,7 +3262,7 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
       // como objeto Date, no string, y el cliente consume esto como JSON.
       `SELECT to_char(date_trunc('day', m.created_at), 'YYYY-MM-DD') AS dia, count(*) AS mensajes
        FROM messages m
-       WHERE m.created_at >= now() - interval '7 days'
+       WHERE m.created_at >= now() - interval '${periodo} days'
        GROUP BY 1
        ORDER BY 1`,
     );
@@ -3177,11 +3282,55 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
        LIMIT 10`,
     );
 
+    const topClientesResult = await client.query<TopClienteRow>(
+      `SELECT coalesce(c.name, c.external_id) AS nombre,
+              sum(o.total) AS monto,
+              count(*) AS pedidos
+       FROM orders o
+       JOIN customers c ON c.id = o.customer_id
+       WHERE o.status NOT IN ('cancelado', 'expirado')
+       GROUP BY c.id, c.name, c.external_id
+       ORDER BY monto DESC
+       LIMIT 10`,
+    );
+
+    const topProductosResult = await client.query<TopProductoRow>(
+      `SELECT p.name AS producto,
+              sum(oi.quantity) AS cantidad,
+              sum(oi.quantity * oi.unit_price) AS monto
+       FROM order_items oi
+       JOIN product_variants pv ON pv.id = oi.variant_id
+       JOIN products p ON p.id = pv.product_id
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.status NOT IN ('cancelado', 'expirado')
+       GROUP BY p.id, p.name
+       ORDER BY cantidad DESC
+       LIMIT 10`,
+    );
+
+    const topAliadosResult = await client.query<TopAliadoRow>(
+      `SELECT a.name AS aliado,
+              sum(oi.quantity * oi.unit_price) AS monto,
+              count(DISTINCT o.id) AS pedidos
+       FROM order_items oi
+       JOIN product_variants pv ON pv.id = oi.variant_id
+       JOIN products p ON p.id = pv.product_id
+       JOIN allies a ON a.id = p.ally_id
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.status NOT IN ('cancelado', 'expirado')
+       GROUP BY a.id, a.name
+       ORDER BY monto DESC
+       LIMIT 10`,
+    );
+
     return {
       kpis: kpisResult.rows[0]!,
       resuelto: resueltoResult.rows[0]!,
       actividad: actividadResult.rows,
       recientes: recientesResult.rows,
+      topClientes: topClientesResult.rows,
+      topProductos: topProductosResult.rows,
+      topAliados: topAliadosResult.rows,
     };
   });
 
@@ -3191,13 +3340,30 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
     conversacionesTotales > 0 ? Math.round(100 * (1 - escaladas / conversacionesTotales)) : null;
 
   const actividadPorDia = new Map(actividad.map((row) => [row.dia, Number(row.mensajes)]));
-  const dias = Array.from({ length: 7 }, (_, i) => {
+  const dias = Array.from({ length: periodo }, (_, i) => {
     const date = new Date();
-    date.setUTCDate(date.getUTCDate() - (6 - i));
+    date.setUTCDate(date.getUTCDate() - (periodo - 1 - i));
     const iso = date.toISOString().slice(0, 10);
     const label = `${String(date.getUTCDate()).padStart(2, "0")}/${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
     return { label, valor: actividadPorDia.get(iso) ?? 0 };
   });
+
+  const mensajes = Number(kpis.mensajes);
+  const mensajesPrev = Number(kpis.mensajes_prev);
+  const clientesUnicos = Number(kpis.clientes_unicos);
+  const clientesUnicosPrev = Number(kpis.clientes_unicos_prev);
+  const conversacionesNuevas = Number(kpis.conversaciones_nuevas);
+  const conversacionesPrev = Number(kpis.conversaciones_prev);
+
+  const arcHtml =
+    pctResueltoSinHumano === null
+      ? ""
+      : `<div class="kpi__arc-wrap">
+          <svg viewBox="0 0 54 54" aria-hidden="true">
+            <circle class="kpi__arc-bg" cx="27" cy="27" r="21"></circle>
+            <circle class="kpi__arc-fill${pctResueltoSinHumano < FASE0_META_RESUELTO_SIN_HUMANO ? " below-target" : ""}" data-arc="${pctResueltoSinHumano}" cx="27" cy="27" r="21"></circle>
+          </svg>
+        </div>`;
 
   const conversacionesHtml = recientes
     .map((row) => {
@@ -3212,110 +3378,224 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
     })
     .join("\n");
 
-  const mensajes24h = Number(kpis.mensajes_24h);
-  const mensajes24hPrev = Number(kpis.mensajes_24h_prev);
-  const clientes24h = Number(kpis.clientes_unicos_24h);
-  const clientes24hPrev = Number(kpis.clientes_unicos_24h_prev);
+  const periodoTabs = PERIODOS_RESUMEN.map(
+    ({ valor, etiqueta }) =>
+      `<a class="tab${valor === periodo ? " tab--active" : ""}" href="/admin?periodo=${valor}">${etiqueta}</a>`,
+  ).join("");
 
-  const arcHtml =
-    pctResueltoSinHumano === null
-      ? ""
-      : `<div class="kpi__arc-wrap">
-          <svg viewBox="0 0 54 54" aria-hidden="true">
-            <circle class="kpi__arc-bg" cx="27" cy="27" r="21"></circle>
-            <circle class="kpi__arc-fill${pctResueltoSinHumano < FASE0_META_RESUELTO_SIN_HUMANO ? " below-target" : ""}" data-arc="${pctResueltoSinHumano}" cx="27" cy="27" r="21"></circle>
-          </svg>
-        </div>`;
+  // Lista de top (clientes/productos/aliados): muestra los primeros 5 y, si
+  // hay más, un botón que despliega hasta 10. Las filas >5 arrancan ocultas
+  // con `data-top-extra` y CLIENT_SCRIPT las alterna con `data-top-toggle`.
+  const renderTop = (
+    filas: { nombre: string; valor: string; detalle?: string }[],
+  ): string => {
+    if (!filas.length) return `<p class="hint">Sin datos todavía.</p>`;
+    const visibles = filas.slice(0, 5);
+    const extras = filas.slice(5);
+    const filaHtml = (fila: { nombre: string; valor: string; detalle?: string }, idx: number, oculta = false) => `
+      <li class="toprow${oculta ? " toprow--extra" : ""}"${oculta ? ' data-top-extra=""' : ""}>
+        <span class="toprow__rank tabular">${idx + 1}</span>
+        <span class="toprow__nombre">${escapeHtml(fila.nombre)}</span>
+        <span class="toprow__valor tabular">${escapeHtml(fila.valor)}</span>
+        ${fila.detalle ? `<span class="toprow__detalle">${escapeHtml(fila.detalle)}</span>` : ""}
+      </li>`;
+    const itemsHtml = [
+      ...visibles.map((f, i) => filaHtml(f, i)),
+      ...extras.map((f, i) => filaHtml(f, i + 5, true)),
+    ].join("\n");
+    const toggle =
+      extras.length > 0
+        ? `<button type="button" class="toplist__toggle" data-top-toggle>Ver ${extras.length} más</button>`
+        : "";
+    return `<ul class="toplist">${itemsHtml}</ul>${toggle}`;
+  };
+
+  const topClientesHtml = renderTop(
+    topClientes.map((row) => ({
+      nombre: row.nombre,
+      valor: formatCOP(row.monto),
+      detalle: `${row.pedidos} pedido${Number(row.pedidos) === 1 ? "" : "s"}`,
+    })),
+  );
+  const topProductosHtml = renderTop(
+    topProductos.map((row) => ({
+      nombre: row.producto,
+      valor: `${row.cantidad} unid.`,
+      detalle: formatCOP(row.monto),
+    })),
+  );
+  const topAliadosHtml = renderTop(
+    topAliados.map((row) => ({
+      nombre: row.aliado,
+      valor: formatCOP(row.monto),
+      detalle: `${row.pedidos} pedido${Number(row.pedidos) === 1 ? "" : "s"}`,
+    })),
+  );
 
   const body = `
     <div class="pagehead">
-      <p class="eyebrow">Inicio / Resumen</p>
-      <h1>Así va ${escapeHtml(brandName(tenant))} hoy</h1>
-      <p>Lo que el agente resolvió solo, lo que preguntó la gente, y qué tan rápido respondió.</p>
+      <div class="pagehead__row">
+        <div>
+          <p class="eyebrow">Inicio / Resumen</p>
+          <h1>Así va ${escapeHtml(brandName(tenant))} hoy</h1>
+          <p>Lo que el agente resolvió solo, lo que preguntó la gente, y qué tan rápido respondió.</p>
+        </div>
+        <nav class="convtabs" aria-label="Periodo del resumen">${periodoTabs}</nav>
+      </div>
     </div>
 
-    <section class="kpirow" aria-label="Indicadores clave">
+    <section class="kpirow kpirow--four" aria-label="Indicadores clave">
       <article class="kpi">
-        <p class="kpi__label">Mensajes · 24 h</p>
-        <div class="kpi__figure"><span class="kpi__number tabular" data-count-to="${mensajes24h}">0</span></div>
-        <div class="kpi__foot">${trendChip(mensajes24h, mensajes24hPrev)}<span>vs. ayer (${mensajes24hPrev})</span></div>
+        <p class="kpi__label">Mensajes · ${periodo} d</p>
+        <div class="kpi__figure"><span class="kpi__number tabular" data-count-to="${mensajes}">0</span></div>
+        <div class="kpi__foot">${trendChip(mensajes, mensajesPrev)}<span>vs. anterior (${mensajesPrev})</span></div>
       </article>
       <article class="kpi">
-        <p class="kpi__label">Clientes únicos · 24 h</p>
-        <div class="kpi__figure"><span class="kpi__number tabular" data-count-to="${clientes24h}">0</span></div>
-        <div class="kpi__foot">${trendChip(clientes24h, clientes24hPrev)}<span>vs. ayer (${clientes24hPrev})</span></div>
+        <p class="kpi__label">Clientes únicos · ${periodo} d</p>
+        <div class="kpi__figure"><span class="kpi__number tabular" data-count-to="${clientesUnicos}">0</span></div>
+        <div class="kpi__foot">${trendChip(clientesUnicos, clientesUnicosPrev)}<span>vs. anterior (${clientesUnicosPrev})</span></div>
       </article>
       <article class="kpi">
-        <p class="kpi__label">Resueltas sin humano · 7 d</p>
+        <p class="kpi__label">Conversaciones nuevas · ${periodo} d</p>
+        <div class="kpi__figure"><span class="kpi__number tabular" data-count-to="${conversacionesNuevas}">0</span></div>
+        <div class="kpi__foot">${trendChip(conversacionesNuevas, conversacionesPrev)}<span>vs. anterior (${conversacionesPrev})</span></div>
+      </article>
+      <article class="kpi">
+        <p class="kpi__label">Resueltas sin humano · ${periodo} d</p>
         <div class="kpi__figure">
           <span class="kpi__number tabular"${pctResueltoSinHumano === null ? "" : ` data-count-to="${pctResueltoSinHumano}" data-suffix="%"`}>${pctResueltoSinHumano === null ? "—" : "0%"}</span>
           ${arcHtml}
         </div>
-        <div class="kpi__foot">${pctResueltoSinHumano === null ? "Sin conversaciones cerradas en 7 días" : `Meta Fase 0: <b class="tabular" style="color:var(--ink)">${FASE0_META_RESUELTO_SIN_HUMANO}%</b>`}</div>
+        <div class="kpi__foot">${pctResueltoSinHumano === null ? `Sin conversaciones cerradas en ${periodo} días` : `Meta Fase 0: <b class="tabular" style="color:var(--ink)">${FASE0_META_RESUELTO_SIN_HUMANO}%</b>`}</div>
       </article>
     </section>
 
     <section class="block" aria-label="Actividad de mensajes">
-      <div class="blockhead"><h2>Actividad — últimos 7 días</h2><span class="hint">mensajes / día</span></div>
+      <div class="blockhead"><h2>Actividad — últimos ${periodo} días</h2><span class="hint">mensajes / día</span></div>
       <div class="panel chartpanel">
         <div class="chart-wrap" id="chartWrap"></div>
         <script type="application/json" id="actividad-data">${JSON.stringify(dias)}</script>
       </div>
     </section>
 
-    <section class="block" aria-label="Conversaciones recientes">
-      <div class="blockhead"><h2>Conversaciones recientes</h2><span class="hint">últimas ${recientes.length}</span></div>
-      <div class="panel">
-        <ul class="convlist">${conversacionesHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Sin conversaciones todavía", "Acá aparecerán los últimos mensajes apenas un cliente le escriba al agente por WhatsApp.")}</li>`}</ul>
-      </div>
-    </section>
+    <div class="resumen-split">
+      <section class="block" aria-label="Conversaciones recientes">
+        <div class="blockhead"><h2>Conversaciones recientes</h2><span class="hint">últimas ${recientes.length}</span></div>
+        <div class="panel">
+          <ul class="convlist">${conversacionesHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Sin conversaciones todavía", "Acá aparecerán los últimos mensajes apenas un cliente le escriba al agente por WhatsApp.")}</li>`}</ul>
+        </div>
+      </section>
+
+      <section class="resumen-tops" aria-label="Tops de ventas">
+        <div class="block">
+          <div class="blockhead"><h2>Top clientes por compras</h2><span class="hint">monto total</span></div>
+          <div class="panel">
+            ${topClientesHtml}
+          </div>
+        </div>
+        <div class="block">
+          <div class="blockhead"><h2>Top productos más comprados</h2><span class="hint">unidades</span></div>
+          <div class="panel">
+            ${topProductosHtml}
+          </div>
+        </div>
+        <div class="block">
+          <div class="blockhead"><h2>Top aliados que más vendieron</h2><span class="hint">monto</span></div>
+          <div class="panel">
+            ${topAliadosHtml}
+          </div>
+        </div>
+      </section>
+    </div>
   `;
 
   return layout("Resumen", tenant, body, "resumen", admin);
 }
 
-type ConversacionesEstado = "todas" | "abiertas" | "escaladas" | "cerradas";
+type ConversacionesEstado = "todas" | "abiertas" | "con_cotizacion" | "con_pedido" | "en_despacho" | "cerradas" | "escaladas";
 
-// Orden y color pedidos explícitamente por el usuario: Abiertas primero
-// (es además el filtro por defecto al entrar a la página, ver más abajo),
-// Todas al final — cada tab lleva el mismo color que su chip de estado
-// (azul/rojo/verde, ver conversacionEstadoChip) salvo "Todas", que es
-// neutra por no representar un estado puntual.
+// Estado de funnel de una conversación, derivado de datos existentes (nunca
+// de un resumen por LLM — mismo criterio que Leads, ver ADR-036): Abierta
+// (solo interacción, sin cotización), Con cotización (ya hay una),
+// Con pedido (se generó el pago de un pedido), En despacho (se registró la
+// guía del pedido) y Cerrada (24h sin interacción del cliente, o cerrada
+// explícitamente). Precedencia por etapa del funnel: despacho > pedido >
+// cotización > cerrada > abierta — "cerrada" solo pesa cuando no hay
+// actividad comercial en curso (decisión de producto, ver abajo).
+type ConversacionFunnelEstado = "abierta" | "con_cotizacion" | "con_pedido" | "en_despacho" | "cerrada";
+
+const CONVERSACION_FUNNEL_LABEL: Record<ConversacionFunnelEstado, string> = {
+  abierta: "Abierta",
+  con_cotizacion: "Con cotización",
+  con_pedido: "Con pedido",
+  en_despacho: "En despacho",
+  cerrada: "Cerrada",
+};
+
+// Un solo chip de estado por conversación, usado tanto en la lista como en
+// el detalle. Precedencia deliberada: escalada primero — es un estado aparte
+// que pisa al funnel (ver CONVERSACION_ESCALADA_SQL); un ticket activo pesa
+// más que la etapa comercial de la fila.
+const CONVERSACION_FUNNEL_CHIP: Record<ConversacionFunnelEstado, string> = {
+  abierta: `<span class="chip chip--chrome">${CONVERSACION_FUNNEL_LABEL.abierta}</span>`,
+  con_cotizacion: `<span class="chip chip--amber">${CONVERSACION_FUNNEL_LABEL.con_cotizacion}</span>`,
+  con_pedido: `<span class="chip chip--go">${CONVERSACION_FUNNEL_LABEL.con_pedido}</span>`,
+  en_despacho: `<span class="chip chip--violet">${CONVERSACION_FUNNEL_LABEL.en_despacho}</span>`,
+  cerrada: `<span class="chip chip--muted">${CONVERSACION_FUNNEL_LABEL.cerrada}</span>`,
+};
+
+// Tabs en orden de funnel (Abiertas primero, es además el filtro por defecto
+// al entrar a la página, ver más abajo), con Escaladas y Todas al final —
+// cada tab lleva el mismo color que su chip de estado (ver
+// CONVERSACION_FUNNEL_CHIP) salvo "Todas", que es neutra.
 const CONVERSACIONES_TABS: { key: ConversacionesEstado; label: string; colorClass: string }[] = [
   { key: "abiertas", label: "Abiertas", colorClass: "tab--chrome" },
+  { key: "con_cotizacion", label: "Con cotización", colorClass: "tab--amber" },
+  { key: "con_pedido", label: "Con pedido", colorClass: "tab--go" },
+  { key: "en_despacho", label: "En despacho", colorClass: "tab--violet" },
+  { key: "cerradas", label: "Cerradas", colorClass: "tab--muted" },
   { key: "escaladas", label: "Escaladas", colorClass: "tab--redline" },
-  { key: "cerradas", label: "Cerradas", colorClass: "tab--go" },
   { key: "todas", label: "Todas", colorClass: "" },
 ];
 
+// Escalada = ticket activo en handoff_queue. Es un estado aparte que pisa al
+// funnel; los tabs de funnel lo excluyen (mutuamente excluyentes, pedido
+// explícito del usuario) para que el tab Escaladas sea la única vista donde
+// aparece un ticket activo.
+const CONVERSACION_ESCALADA_SQL =
+  "exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')";
+
+// Expresión SQL del estado de funnel, usada tanto en el SELECT (chip) como
+// en los filtros de tab — repetir la expresión en WHERE es lo que permite
+// filtrar por una columna calculada sin CTE. Depende de la LATERAL `cm`
+// (último mensaje inbound del cliente), que ambas queries agregan.
+const CONVERSACION_FUNNEL_ESTADO_SQL = `
+  CASE
+    WHEN exists(select 1 from orders o where o.conversation_id = conv.id and o.status in ('despachado', 'entregado')) THEN 'en_despacho'
+    WHEN exists(select 1 from orders o where o.conversation_id = conv.id and o.status = 'abierto') THEN 'con_pedido'
+    WHEN exists(select 1 from quotes q where q.conversation_id = conv.id) THEN 'con_cotizacion'
+    WHEN conv.status = 'closed' OR cm.created_at < now() - interval '24 hours' THEN 'cerrada'
+    ELSE 'abierta'
+  END`;
+
 // Cada filtro es una condición SQL independiente sobre columnas fijas
 // (nunca interpola el `estado` de la URL) — ver conversaciones-leads-tickets.md,
-// "Filtros por tab". Pedido explícito del usuario: Abiertas y Escaladas
-// pasan a ser mutuamente excluyentes (antes una conversación escalada
-// también aparecía en Abiertas, lo cual confundía al admin).
+// "Filtros por tab".
 const CONVERSACIONES_FILTRO_SQL: Record<ConversacionesEstado, string> = {
   todas: "",
-  abiertas:
-    "AND conv.status = 'open' AND NOT exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
-  escaladas:
-    "AND exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
-  cerradas: "AND conv.status = 'closed'",
+  abiertas: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'abierta' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  con_cotizacion: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'con_cotizacion' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  con_pedido: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'con_pedido' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  en_despacho: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'en_despacho' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  cerradas: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'cerrada' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  escaladas: `AND ${CONVERSACION_ESCALADA_SQL}`,
 };
 
-// Un solo chip de estado por conversación (pedido explícito del usuario:
-// mismo estilo para Abierta/Escalada/Cerrada, con Azul/Rojo/Verde), usado
-// tanto en la lista como en el detalle. Precedencia deliberada: escalada
-// primero — "abierta" y "escalada" no son mutuamente excluyentes (ver
-// CONVERSACIONES_FILTRO_SQL más arriba), pero como resumen de una sola
-// palabra, un ticket activo pesa más que el status crudo de la fila.
-function conversacionEstadoChip(status: string, escalada: boolean): string {
+function conversacionEstadoChip(funnel: ConversacionFunnelEstado, escalada: boolean): string {
   if (escalada) {
     return `<span class="chip chip--redline">Escalada</span>`;
   }
-  if (status === "closed") {
-    return `<span class="chip chip--go">Cerrada</span>`;
-  }
-  return `<span class="chip chip--chrome">Abierta</span>`;
+  return CONVERSACION_FUNNEL_CHIP[funnel];
 }
 
 interface ConversacionListRow {
@@ -3326,9 +3606,12 @@ interface ConversacionListRow {
   channel: Channel;
   /** `null` en conversaciones anteriores al backfill o con la conexión retirada. */
   provider: Provider | null;
+  /** Costo acumulado (USD) de la conversación — migrations/0057, se mantiene al día desde loop.ts. */
+  costo_total_usd: string;
   ultimo_mensaje: string;
   ultimo_at: string;
   escalada: boolean;
+  funnel_estado: ConversacionFunnelEstado;
 }
 
 /**
@@ -3357,6 +3640,10 @@ interface ConversacionDetalleRow {
   handoff_summary: string | null;
   handoff_assigned_to: string | null;
   escalada: boolean;
+  funnel_estado: ConversacionFunnelEstado;
+  costo_total_usd: string;
+  tokens_entrada_total: string;
+  tokens_salida_total: string;
 }
 
 /**
@@ -3386,8 +3673,10 @@ export async function renderConversacionesPage(
     const listaResult = await client.query<ConversacionListRow>(
       `SELECT conv.id, conv.status, c.name AS customer_name, c.external_id,
               conv.channel, cx.provider,
+              conv.costo_total_usd,
               m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
-              exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada
+              exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada,
+              ${CONVERSACION_FUNNEL_ESTADO_SQL} AS funnel_estado
        FROM conversations conv
        JOIN customers c ON c.id = conv.customer_id
        LEFT JOIN channel_connections cx ON cx.id = conv.connection_id
@@ -3396,6 +3685,11 @@ export async function renderConversacionesPage(
          WHERE conversation_id = conv.id
          ORDER BY created_at DESC LIMIT 1
        ) m ON true
+       LEFT JOIN LATERAL (
+         SELECT created_at FROM messages
+         WHERE conversation_id = conv.id AND direction = 'inbound' AND sender_type = 'customer'
+         ORDER BY created_at DESC LIMIT 1
+       ) cm ON true
        WHERE true ${CONVERSACIONES_FILTRO_SQL[estado]}
        ORDER BY m.created_at DESC
        LIMIT 100`,
@@ -3408,9 +3702,11 @@ export async function renderConversacionesPage(
     const detalleResult = await client.query<ConversacionDetalleRow>(
       `SELECT conv.id, conv.status, conv.started_at, conv.closed_at, conv.bot_paused,
               c.name AS customer_name, c.external_id,
+              conv.costo_total_usd, conv.tokens_entrada_total, conv.tokens_salida_total,
               h.id AS handoff_id, h.reason AS handoff_reason, h.status AS handoff_status,
               h.summary AS handoff_summary, a.username AS handoff_assigned_to,
-              exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada
+              exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada,
+              ${CONVERSACION_FUNNEL_ESTADO_SQL} AS funnel_estado
        FROM conversations conv
        JOIN customers c ON c.id = conv.customer_id
        LEFT JOIN LATERAL (
@@ -3420,6 +3716,11 @@ export async function renderConversacionesPage(
          ORDER BY created_at DESC LIMIT 1
        ) h ON true
        LEFT JOIN admins a ON a.id = h.assigned_admin_id
+       LEFT JOIN LATERAL (
+         SELECT created_at FROM messages
+         WHERE conversation_id = conv.id AND direction = 'inbound' AND sender_type = 'customer'
+         ORDER BY created_at DESC LIMIT 1
+       ) cm ON true
        WHERE conv.id = $1`,
       [selectedId],
     );
@@ -3449,10 +3750,10 @@ export async function renderConversacionesPage(
         <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/conversaciones?estado=${estado}&c=${row.id}">
           <div class="convitem__row">
             <span class="convitem__who">${escapeHtml(who)}</span>
-            <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
+            <span class="convitem__time">${formatMoney(Number(row.costo_total_usd), "USD")} · ${formatRelativo(row.ultimo_at)}</span>
           </div>
           <span class="convitem__msg">${escapeHtml(truncate(row.ultimo_mensaje, 64))}</span>
-          <div class="convitem__chips">${conversacionEstadoChip(row.status, row.escalada)}${conversacionCanalChip(row.channel, row.provider)}</div>
+          <div class="convitem__chips">${conversacionEstadoChip(row.funnel_estado, row.escalada)}${conversacionCanalChip(row.channel, row.provider)}</div>
         </a>
       </li>`;
     })
@@ -3556,7 +3857,8 @@ export async function renderConversacionesPage(
         <div>
           <h2>${escapeHtml(who)}</h2>
           <div class="thread__metarow">
-            <span class="thread__meta">${escapeHtml(detalle.external_id)} ${conversacionEstadoChip(detalle.status, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
+            <span class="thread__meta">${escapeHtml(detalle.external_id)} ${conversacionEstadoChip(detalle.funnel_estado, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
+            <span class="thread__costo">${formatMoney(Number(detalle.costo_total_usd), "USD")} · ${Number(detalle.tokens_entrada_total).toLocaleString("es-CO")} entrada / ${Number(detalle.tokens_salida_total).toLocaleString("es-CO")} salida</span>
           </div>
         </div>
         <div class="thread__headactions">
@@ -3582,7 +3884,7 @@ export async function renderConversacionesPage(
     <div class="convtabs">${tabsHtml}</div>
     <div class="inbox">
       <aside class="panel inbox__list">
-        <ul class="convitems">${listaHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Nada en este filtro", "Probá con otra pestaña — Todas, Abiertas, Escaladas o Cerradas.")}</li>`}</ul>
+        <ul class="convitems">${listaHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Nada en este filtro", "Probá con otra pestaña — Abiertas, Con cotización, Con pedido, En despacho, Cerradas o Todas.")}</li>`}</ul>
       </aside>
       <section class="panel inbox__detail">${detalleHtml}</section>
     </div>
@@ -3643,7 +3945,8 @@ const LEADS_QUERY = `
       ELSE 'sin_actividad_comercial'
     END AS estado,
     COALESCE(ord.pedidos, 0) AS pedidos,
-    ord.ultima_compra AS ultima_compra
+    ord.ultima_compra AS ultima_compra,
+    coalesce(costo.costo_acumulado_usd, 0) AS costo_acumulado_usd
   FROM customers c
   LEFT JOIN LATERAL (
     SELECT content FROM messages msg
@@ -3669,6 +3972,12 @@ const LEADS_QUERY = `
     JOIN conversations conv ON conv.id = h.conversation_id
   ) h ON h.customer_id = c.id
   LEFT JOIN (SELECT DISTINCT customer_id FROM quotes) q ON q.customer_id = c.id
+  -- Costo acumulado de TODAS las conversaciones del cliente (migrations/0057):
+  -- un lead con varias conversaciones suma el costo de todas.
+  LEFT JOIN (
+    SELECT customer_id, sum(costo_total_usd) AS costo_acumulado_usd
+    FROM conversations GROUP BY customer_id
+  ) costo ON costo.customer_id = c.id
   ORDER BY c.created_at DESC
 `;
 
@@ -3689,6 +3998,7 @@ interface LeadRow {
   estado: LeadEstado;
   pedidos: string;
   ultima_compra: string | null;
+  costo_acumulado_usd: string;
 }
 
 type LeadRowWithSegment = LeadRow & { segment: CustomerSegment };
@@ -3754,6 +4064,17 @@ function leadDetailDialogHtml(dialogId: string, row: LeadRowWithSegment): string
   </dialog>`;
 }
 
+/** Opciones de un filtro facetado de la tabla de Leads — solo los valores presentes, ordenados alfabéticamente (sensitivity base, como el sort de las tablas). */
+function leadFilterOptions<T extends string>(values: T[], label: (v: T) => string, allLabel: string): string {
+  const distinct = [...new Set(values.filter((v) => v !== "" && v !== null))].sort((a, b) =>
+    label(a).localeCompare(label(b), "es"),
+  );
+  return (
+    `<option value="">${allLabel}</option>` +
+    distinct.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(label(v))}</option>`).join("")
+  );
+}
+
 /**
  * Leads (Fase 11.2, ver docs/fase-11-panel-admin-dashboard/
  * conversaciones-leads-tickets.md): "resumen" y "estado" se derivan de
@@ -3779,25 +4100,33 @@ export async function renderLeadsPage(
 
   const tableRows = rows
     .map((row) => {
-      const who = row.name ?? row.external_id;
+      // `full_name` es el nombre real confirmado del perfil permanente
+      // (capturado al comprar); `name` es solo el ProfileName del canal y
+      // puede ser un alias o el nombre del dispositivo. Cuando hay nombre
+      // completo es el que se muestra; si no, cae al nombre del canal o a
+      // la dirección (external_id).
+      const who = row.full_name ?? row.name ?? row.external_id;
       const promoDialogId = `promo-lead-${row.id}`;
       const detailDialogId = `detalle-lead-${row.id}`;
-      const search = [row.name, row.external_id, row.contact_phone, CHANNEL_LABEL[row.channel], row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
+      const search = [row.full_name, row.name, row.external_id, row.contact_phone, CHANNEL_LABEL[row.channel], row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
       // Ver ADR-035 "Leads no puede crear una promoción 1:1": la promoción
       // queda anclada al segmento del cliente, no al cliente puntual.
       const warning = `Esta promoción aplicará a todos los clientes clasificados como "${SEGMENT_LABEL[row.segment]}", no solo a ${who}.`;
-      // El canal va pegado al nombre y no en una columna propia: desde la
+      // El canal va debajo del nombre y no en una columna propia: desde la
       // Etapa C1 el mismo humano puede aparecer como dos filas (una por canal)
-      // y sin esta marca se leen como duplicados de la base.
-      return `<tr data-search="${escapeHtml(search)}">
-        <td>${escapeHtml(who)} <span class="chip ${CHANNEL_CHIP[row.channel]}">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></td>
+      // y sin esa marca se leen como duplicados de la base.
+      return `<tr data-search="${escapeHtml(search)}"
+        data-filter-channel="${row.channel}" data-filter-estado="${row.estado}"
+        data-filter-segment="${row.segment}" data-filter-ciudad="${escapeHtml(row.city ?? "")}">
+        <td><div class="leadcell">${escapeHtml(who)}<span class="chip ${CHANNEL_CHIP[row.channel]} leadcell__channel">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></div></td>
         <td><span class="chip ${SEGMENT_CHIP[row.segment]}">${escapeHtml(SEGMENT_LABEL[row.segment])}</span></td>
         <td>${toggleSwitchHtml(`/admin/leads/${row.id}`, !row.bot_paused, `el bot para "${who}"`)}</td>
         <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
         <td class="mono">${row.pedidos}</td>
+        <td class="mono">${formatMoney(Number(row.costo_acumulado_usd), "USD")}</td>
         <td>${row.ultima_compra ? formatRelativo(row.ultima_compra) : "—"}</td>
         <td>${escapeHtml(row.city ?? "—")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
@@ -3810,6 +4139,14 @@ export async function renderLeadsPage(
       ${leadDetailDialogHtml(detailDialogId, row)}`;
     })
     .join("\n");
+
+  // Filtros facetados (mismo mecanismo `data-table-filter` que Productos):
+  // solo aparecen los valores presentes en la tabla, para no ofrecer un
+  // canal/clasificación que no tiene ninguna fila.
+  const channelOptions = leadFilterOptions(rows.map((r) => r.channel), (v) => CHANNEL_LABEL[v], "Todos los canales");
+  const estadoOptions = leadFilterOptions(rows.map((r) => r.estado), (v) => LEAD_ESTADO_LABEL[v], "Todos los estados");
+  const segmentOptions = leadFilterOptions(rows.map((r) => r.segment), (v) => SEGMENT_LABEL[v], "Todas las clasificaciones");
+  const cityOptions = leadFilterOptions(rows.map((r) => r.city ?? ""), (v) => v, "Todas las ciudades");
 
   const body = `
     <div class="pagehead">
@@ -3826,18 +4163,22 @@ export async function renderLeadsPage(
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, ciudad, clasificación o estado…" aria-label="Buscar leads">
+        <select class="tablefilter" data-table-filter data-filter-key="channel" aria-label="Filtrar por canal">${channelOptions}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">${estadoOptions}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="segment" aria-label="Filtrar por clasificación">${segmentOptions}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="ciudad" aria-label="Filtrar por ciudad">${cityOptions}</select>
       </div>
       <table data-resizable-table="leads">
         <colgroup>
-          <col style="width:16%"><col style="width:10%"><col style="width:6%">
-          <col style="width:10%"><col style="width:7%"><col style="width:10%">
-          <col style="width:9%"><col style="width:10%"><col style="width:22%">
+          <col style="width:15%"><col style="width:10%"><col style="width:6%">
+          <col style="width:10%"><col style="width:7%"><col style="width:8%">
+          <col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:15%">
         </colgroup>
         <thead><tr>
           <th>Cliente</th><th>Clasificación</th><th>Bot</th><th>Estado</th>
-          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
+          <th>Pedidos</th><th>Costo</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
         </tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
+        <tbody>${tableRows || `<tr><td colspan="10">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
@@ -3861,7 +4202,7 @@ export async function exportLeadsCsv(): Promise<string | null> {
   }
   const rows = await fetchLeads();
   return toCsv(
-    ["nombre", "telefono", "ultimo_mensaje", "estado", "clasificacion", "pedidos", "ultima_compra", "ciudad", "cliente_desde"],
+    ["nombre", "telefono", "ultimo_mensaje", "estado", "clasificacion", "pedidos", "costo_usd", "ultima_compra", "ciudad", "cliente_desde"],
     rows.map((row) => [
       row.name ?? "",
       row.external_id,
@@ -3869,6 +4210,7 @@ export async function exportLeadsCsv(): Promise<string | null> {
       LEAD_ESTADO_LABEL[row.estado],
       SEGMENT_LABEL[row.segment],
       row.pedidos,
+      Number(row.costo_acumulado_usd).toFixed(6),
       // pg parsea timestamptz como objeto Date, no string, pese al tipo
       // declarado en LeadRow — a diferencia de formatFecha() (que ya
       // tolera Date u string vía `new Date(value)`), acá se serializa a
@@ -4360,6 +4702,66 @@ interface PagosEnLineaRow {
   pendientes: string;
 }
 
+interface BotStatsRow {
+  llamadas: string;
+  latencia_p50: string | null;
+  latencia_p95: string | null;
+  tokens_promedio: string | null;
+}
+
+interface UsoModeloRow {
+  model: string;
+  provider: string;
+  llamadas: string;
+  tokens: string;
+  costo_usd: string | null;
+}
+
+interface InteraccionHumanaRow {
+  total_tickets: string;
+  abiertos: string;
+  resueltos: string;
+  tiempo_resolucion_h_promedio: string | null;
+}
+
+interface EscalamientoMotivoRow {
+  reason: string;
+  cantidad: string;
+}
+
+interface FunnelEstadoRow {
+  funnel_estado: string;
+  cantidad: string;
+}
+
+interface CanalRow {
+  canal: string;
+  cantidad: string;
+}
+
+interface ProbabilidadCierreRow {
+  tasa_cierre: string | null;
+  con_pedido: string;
+  con_cotizacion: string;
+  conversiones_cotizacion_a_pedido: string | null;
+  ticket_promedio: string | null;
+}
+
+interface SaludBotRow {
+  bot_pausado: string;
+  conversaciones_pausadas: string;
+  satisfaccion_promedio: string | null;
+  satisfaccion_total: string;
+}
+
+interface ObjetivoRow {
+  pct_resuelto_sin_humano: string | null;
+  tasa_cierre: string | null;
+  satisfaccion_promedio: string | null;
+  pedidos_periodo: string;
+  costo_periodo: string | null;
+}
+
 /**
  * Analítica de costos (Fase 11.5, ver docs/fase-11-panel-admin-dashboard/
  * analitica-costos.md): fuente Postgres nativa (`llm_usage`, ADR-017), no
@@ -4389,7 +4791,24 @@ export async function renderAnaliticaPage(
   const moneda: Currency = tasaNoDisponible ? "USD" : monedaPedida;
   const toDisplay = (usd: number): number => convertFromUsd(usd, moneda, rates) ?? usd;
 
-  const { costoMes, tendencia, costoPorResultado, satisfaccion, distribucion, reviews, pagosEnLinea } = await withTransaction(async (client) => {
+  const {
+    costoMes,
+    tendencia,
+    costoPorResultado,
+    satisfaccion,
+    distribucion,
+    reviews,
+    pagosEnLinea,
+    botStats,
+    usoModelo,
+    interaccionHumana,
+    escalamientoMotivo,
+    funnelEstado,
+    canal,
+    probabilidad,
+    saludBot,
+    objetivo,
+  } = await withTransaction(async (client) => {
     const costoMesResult = await client.query<CostoMesRow>(
       `SELECT
         coalesce(sum(input_tokens), 0) AS tokens_entrada,
@@ -4460,6 +4879,108 @@ export async function renderAnaliticaPage(
        FROM orders WHERE payment_method = 'pago_en_linea'`,
     );
 
+    // --- Estadísticas del bot (30 días) ---
+    const botStatsResult = await client.query<BotStatsRow>(
+      `SELECT count(*) AS llamadas,
+              round(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)) AS latencia_p50,
+              round(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)) AS latencia_p95,
+              round(avg(input_tokens + output_tokens)) AS tokens_promedio
+       FROM llm_usage
+       WHERE created_at >= now() - interval '30 days'`,
+    );
+
+    const usoModeloResult = await client.query<UsoModeloRow>(
+      `SELECT model, provider, count(*) AS llamadas,
+              sum(input_tokens + output_tokens) AS tokens,
+              sum(cost_usd) AS costo_usd
+       FROM llm_usage
+       WHERE created_at >= now() - interval '30 days'
+       GROUP BY model, provider
+       ORDER BY llamadas DESC`,
+    );
+
+    // --- Interacción con el humano ---
+    const interaccionHumanaResult = await client.query<InteraccionHumanaRow>(
+      `SELECT count(*) AS total_tickets,
+              count(*) FILTER (WHERE status <> 'resuelto') AS abiertos,
+              count(*) FILTER (WHERE status = 'resuelto') AS resueltos,
+              round(avg(extract(epoch from (resolved_at - created_at)) / 3600.0), 1) AS tiempo_resolucion_h_promedio
+       FROM handoff_queue
+       WHERE created_at >= now() - interval '30 days'`,
+    );
+
+    const escalamientoMotivoResult = await client.query<EscalamientoMotivoRow>(
+      `SELECT reason, count(*) AS cantidad
+       FROM handoff_queue
+       WHERE created_at >= now() - interval '30 days'
+       GROUP BY reason
+       ORDER BY cantidad DESC`,
+    );
+
+    // --- Estadísticas de conversaciones ---
+    const funnelEstadoResult = await client.query<FunnelEstadoRow>(
+      `SELECT ${CONVERSACION_FUNNEL_ESTADO_SQL} AS funnel_estado, count(*) AS cantidad
+       FROM conversations conv
+       JOIN LATERAL (
+         SELECT max(created_at) AS created_at FROM messages
+         WHERE conversation_id = conv.id AND direction = 'inbound' AND sender_type = 'customer'
+       ) cm ON true
+       GROUP BY 1
+       ORDER BY cantidad DESC`,
+    );
+
+    const canalResult = await client.query<CanalRow>(
+      `SELECT channel AS canal, count(*) AS cantidad
+       FROM conversations
+       WHERE started_at >= now() - interval '30 days'
+       GROUP BY 1
+       ORDER BY cantidad DESC`,
+    );
+
+    // --- Probabilidad de cierre / funnel ---
+    const probabilidadResult = await client.query<ProbabilidadCierreRow>(
+      `SELECT
+        round(100.0 * count(DISTINCT o.conversation_id) / nullif(count(DISTINCT c.id), 0), 1) AS tasa_cierre,
+        count(DISTINCT o.conversation_id) AS con_pedido,
+        count(DISTINCT q.conversation_id) AS con_cotizacion,
+        round(
+          100.0 * count(DISTINCT o.conversation_id) / nullif(count(DISTINCT q.conversation_id), 0), 1
+        ) AS conversiones_cotizacion_a_pedido,
+        round(avg(o.total)) AS ticket_promedio
+       FROM conversations c
+       LEFT JOIN quotes q ON q.conversation_id = c.id
+       LEFT JOIN orders o ON o.conversation_id = c.id
+       WHERE c.status = 'closed'`,
+    );
+
+    // --- Salud del bot ---
+    const saludBotResult = await client.query<SaludBotRow>(
+      `SELECT coalesce((SELECT bot_paused FROM settings LIMIT 1)::int, 0) AS bot_pausado,
+              (SELECT count(*) FROM conversations WHERE bot_paused) AS conversaciones_pausadas,
+              (SELECT round(avg(satisfaction_score), 2) FROM conversations WHERE satisfaction_score IS NOT NULL) AS satisfaccion_promedio,
+              (SELECT count(*) FROM conversations WHERE satisfaction_score IS NOT NULL) AS satisfaccion_total`,
+    );
+
+    // --- Índice de objetivo (Fase 0: resuelto ≥60%, cierre ≥ baseline) ---
+    const objetivoResult = await client.query<ObjetivoRow>(
+      `SELECT
+        (SELECT CASE WHEN count(DISTINCT c.id) > 0
+           THEN round(100 * (1 - 1.0 * count(DISTINCT h.conversation_id) / count(DISTINCT c.id)))
+           ELSE NULL END
+         FROM conversations c
+         LEFT JOIN handoff_queue h ON h.conversation_id = c.id
+         WHERE c.status = 'closed' AND c.closed_at >= now() - interval '30 days') AS pct_resuelto_sin_humano,
+        (SELECT CASE WHEN count(DISTINCT c.id) > 0
+           THEN round(100.0 * count(DISTINCT o.conversation_id) / count(DISTINCT c.id), 1)
+           ELSE NULL END
+         FROM conversations c
+         LEFT JOIN orders o ON o.conversation_id = c.id
+         WHERE c.status = 'closed' AND c.closed_at >= now() - interval '30 days') AS tasa_cierre,
+        (SELECT round(avg(satisfaction_score), 2) FROM conversations WHERE satisfaction_score IS NOT NULL) AS satisfaccion_promedio,
+        (SELECT count(*) FROM orders WHERE created_at >= now() - interval '30 days') AS pedidos_periodo,
+        (SELECT coalesce(sum(cost_usd), 0) FROM llm_usage WHERE created_at >= now() - interval '30 days') AS costo_periodo`,
+    );
+
     return {
       costoMes: costoMesResult.rows[0]!,
       tendencia: tendenciaResult.rows,
@@ -4468,6 +4989,15 @@ export async function renderAnaliticaPage(
       distribucion: distribucionResult.rows,
       reviews: reviewsResult.rows,
       pagosEnLinea: pagosEnLineaResult.rows[0]!,
+      botStats: botStatsResult.rows[0]!,
+      usoModelo: usoModeloResult.rows,
+      interaccionHumana: interaccionHumanaResult.rows[0]!,
+      escalamientoMotivo: escalamientoMotivoResult.rows,
+      funnelEstado: funnelEstadoResult.rows,
+      canal: canalResult.rows,
+      probabilidad: probabilidadResult.rows[0]!,
+      saludBot: saludBotResult.rows[0]!,
+      objetivo: objetivoResult.rows[0]!,
     };
   });
 
@@ -4532,6 +5062,98 @@ export async function renderAnaliticaPage(
   const currencyOptionsHtml = SUPPORTED_CURRENCIES.map(
     (c) => `<option value="${c}"${c === moneda ? " selected" : ""}>${c}</option>`,
   ).join("");
+
+  // --- Estadísticas del bot ---
+  const botStatsLlamadas = Number(botStats.llamadas);
+  const latenciaP50 = botStats.latencia_p50 != null ? Number(botStats.latencia_p50) : null;
+  const latenciaP95 = botStats.latencia_p95 != null ? Number(botStats.latencia_p95) : null;
+  const tokensPromedio = botStats.tokens_promedio != null ? Number(botStats.tokens_promedio) : null;
+  const usoModeloHtml = usoModelo.length
+    ? usoModelo
+        .map(
+          (row) =>
+            `<div class="toolpill"><span>${escapeHtml(row.model)}</span><span class="toolpill__count tabular">${Number(row.llamadas).toLocaleString("es-CO")} · ${row.costo_usd != null ? escapeHtml(formatMoney(toDisplay(Number(row.costo_usd)), moneda)) : "—"}</span></div>`,
+        )
+        .join("")
+    : `<p class="hint">Sin uso de LLM en los últimos 30 días.</p>`;
+
+  // --- Interacción con el humano ---
+  const totalTickets = Number(interaccionHumana.total_tickets);
+  const ticketsAbiertos = Number(interaccionHumana.abiertos);
+  const ticketsResueltos = Number(interaccionHumana.resueltos);
+  const tiempoResolucionPromedio = interaccionHumana.tiempo_resolucion_h_promedio;
+  const escalamientoMotivoHtml = escalamientoMotivo.length
+    ? escalamientoMotivo
+        .map(
+          (row) =>
+            `<div class="toolpill"><span>${escapeHtml(HANDOFF_REASON_LABEL[row.reason] ?? row.reason)}</span><span class="toolpill__count tabular">${row.cantidad}</span></div>`,
+        )
+        .join("")
+    : `<p class="hint">Sin escalamientos en los últimos 30 días.</p>`;
+
+  // --- Estadísticas de conversaciones ---
+  const funnelEstadoMap = new Map(funnelEstado.map((row) => [row.funnel_estado, Number(row.cantidad)]));
+  const canalHtml = canal.length
+    ? canal
+        .map(
+          (row) =>
+            `<div class="toolpill"><span>${escapeHtml(CHANNEL_LABEL[row.canal as Channel] ?? row.canal)}</span><span class="toolpill__count tabular">${row.cantidad}</span></div>`,
+        )
+        .join("")
+    : `<p class="hint">Sin conversaciones en los últimos 30 días.</p>`;
+
+  // --- Probabilidad de cierre ---
+  const tasaCierre = probabilidad.tasa_cierre != null ? Number(probabilidad.tasa_cierre) : null;
+  const conPedido = Number(probabilidad.con_pedido);
+  const conCotizacion = Number(probabilidad.con_cotizacion);
+  const conversionCotizacionAPedido = probabilidad.conversiones_cotizacion_a_pedido != null ? Number(probabilidad.conversiones_cotizacion_a_pedido) : null;
+  const ticketPromedio = probabilidad.ticket_promedio != null ? Number(probabilidad.ticket_promedio) : null;
+
+  // --- Salud del bot ---
+  const botPausado = Number(saludBot.bot_pausado) === 1;
+  const conversacionesPausadas = Number(saludBot.conversaciones_pausadas);
+
+  // --- Índice de objetivo ---
+  const pctResueltoSinHumanoObj = objetivo.pct_resuelto_sin_humano != null ? Number(objetivo.pct_resuelto_sin_humano) : null;
+  const tasaCierreObj = objetivo.tasa_cierre != null ? Number(objetivo.tasa_cierre) : null;
+  const satisfaccionObj = objetivo.satisfaccion_promedio != null ? Number(objetivo.satisfaccion_promedio) : null;
+  const pedidosPeriodo = Number(objetivo.pedidos_periodo);
+  const costoPeriodo = objetivo.costo_periodo != null ? toDisplay(Number(objetivo.costo_periodo)) : null;
+  const metaResuelto = FASE0_META_RESUELTO_SIN_HUMANO;
+  const objetivoPct =
+    pctResueltoSinHumanoObj != null
+      ? Math.round(
+          (pctResueltoSinHumanoObj >= metaResuelto ? 1 : 0) * 30 +
+            (tasaCierreObj != null && tasaCierreObj > 0 ? 1 : 0) * 25 +
+            (satisfaccionObj != null && satisfaccionObj >= 4 ? 1 : 0) * 25 +
+            (pedidosPeriodo > 0 ? 1 : 0) * 20,
+        )
+      : null;
+  const objetivoHtml =
+    objetivoPct === null
+      ? `<p class="hint">Faltan datos (cerradas en 30 días) para calcular el índice de objetivo.</p>`
+      : `<div class="toolgrid">
+          <div class="toolpill"><span>Resuelto sin humano ≥${metaResuelto}%</span><span class="toolpill__count tabular">${pctResueltoSinHumanoObj != null ? `${pctResueltoSinHumanoObj}%` : "—"} ${pctResueltoSinHumanoObj != null && pctResueltoSinHumanoObj >= metaResuelto ? "✓" : "✗"}</span></div>
+          <div class="toolpill"><span>Tasa de cierre &gt;0</span><span class="toolpill__count tabular">${tasaCierreObj != null ? `${tasaCierreObj}%` : "—"} ${tasaCierreObj != null && tasaCierreObj > 0 ? "✓" : "✗"}</span></div>
+          <div class="toolpill"><span>Satisfacción ≥4.0</span><span class="toolpill__count tabular">${satisfaccionObj != null ? satisfaccionObj.toFixed(2) : "—"} ${satisfaccionObj != null && satisfaccionObj >= 4 ? "✓" : "✗"}</span></div>
+          <div class="toolpill"><span>Pedidos en el periodo</span><span class="toolpill__count tabular">${pedidosPeriodo} ${pedidosPeriodo > 0 ? "✓" : "✗"}</span></div>
+          <div class="toolpill"><span>Costo 30 días</span><span class="toolpill__count tabular">${costoPeriodo != null ? escapeHtml(formatMoney(costoPeriodo, moneda)) : "—"}</span></div>
+        </div>`;
+
+  const funnelEstadoHtml = (
+    [
+      ["abierta", "Abiertas"],
+      ["con_cotizacion", "Con cotización"],
+      ["con_pedido", "Con pedido"],
+      ["en_despacho", "En despacho"],
+      ["cerrada", "Cerradas"],
+    ] as const
+  )
+    .map(([clave, etiqueta]) => {
+      const cant = funnelEstadoMap.get(clave) ?? 0;
+      return `<div class="toolpill"><span>${etiqueta}</span><span class="toolpill__count tabular">${cant}</span></div>`;
+    })
+    .join("");
 
   const body = `
     <div class="pagehead">
@@ -4610,6 +5232,91 @@ export async function renderAnaliticaPage(
           <div class="toolpill"><span>Monto confirmado</span><span class="toolpill__count tabular">$${Number(pagosEnLinea.monto_pagado_cop).toLocaleString("es-CO")}</span></div>
           <div class="toolpill"><span>Pendientes de pago</span><span class="toolpill__count tabular">${pagosEnLinea.pendientes}</span></div>
         </div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Estadísticas del bot">
+      <div class="blockhead"><h2>Estadísticas del bot</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">
+          <div class="toolpill"><span>Llamadas al LLM</span><span class="toolpill__count tabular">${botStatsLlamadas.toLocaleString("es-CO")}</span></div>
+          <div class="toolpill"><span>Tokens / llamada</span><span class="toolpill__count tabular">${tokensPromedio != null ? tokensPromedio.toLocaleString("es-CO") : "—"}</span></div>
+          <div class="toolpill"><span>Latencia p50</span><span class="toolpill__count tabular">${latenciaP50 != null ? `${latenciaP50} ms` : "—"}</span></div>
+          <div class="toolpill"><span>Latencia p95</span><span class="toolpill__count tabular">${latenciaP95 != null ? `${latenciaP95} ms` : "—"}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Uso por modelo">
+      <div class="blockhead"><h2>Uso por modelo</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">${usoModeloHtml}</div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Interacción con el humano">
+      <div class="blockhead"><h2>Interacción con el humano</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">
+          <div class="toolpill"><span>Tickets</span><span class="toolpill__count tabular">${totalTickets}</span></div>
+          <div class="toolpill"><span>Abiertos</span><span class="toolpill__count tabular">${ticketsAbiertos}</span></div>
+          <div class="toolpill"><span>Resueltos</span><span class="toolpill__count tabular">${ticketsResueltos}</span></div>
+          <div class="toolpill"><span>Tiempo prom. de resolución</span><span class="toolpill__count tabular">${tiempoResolucionPromedio != null ? `${tiempoResolucionPromedio} h` : "—"}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Motivos de escalamiento">
+      <div class="blockhead"><h2>Motivos de escalamiento</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">${escalamientoMotivoHtml}</div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Estadísticas de conversaciones">
+      <div class="blockhead"><h2>Conversaciones</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">${canalHtml}</div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Funnel de conversaciones">
+      <div class="blockhead"><h2>Estado del funnel</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">${funnelEstadoHtml}</div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Probabilidad de cierre">
+      <div class="blockhead"><h2>Probabilidad de cierre</h2><span class="hint">cerradas</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">
+          <div class="toolpill"><span>Tasa de cierre</span><span class="toolpill__count tabular">${tasaCierre != null ? `${tasaCierre}%` : "—"}</span></div>
+          <div class="toolpill"><span>Cotización → pedido</span><span class="toolpill__count tabular">${conversionCotizacionAPedido != null ? `${conversionCotizacionAPedido}%` : "—"}</span></div>
+          <div class="toolpill"><span>Ticket promedio</span><span class="toolpill__count tabular">${ticketPromedio != null ? formatCOP(ticketPromedio) : "—"}</span></div>
+          <div class="toolpill"><span>Con pedido / con cotización</span><span class="toolpill__count tabular">${conPedido} / ${conCotizacion}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Salud del bot">
+      <div class="blockhead"><h2>Salud del bot</h2><span class="hint">estado</span></div>
+      <div class="panel connection">
+        <div class="toolgrid">
+          <div class="toolpill"><span>Bot global</span><span class="toolpill__count tabular">${botPausado ? "Pausado" : "Activo"}</span></div>
+          <div class="toolpill"><span>Conversaciones pausadas</span><span class="toolpill__count tabular">${conversacionesPausadas}</span></div>
+          <div class="toolpill"><span>Satisfacción promedio</span><span class="toolpill__count tabular">${saludBot.satisfaccion_promedio != null ? `${saludBot.satisfaccion_promedio} / 5` : "—"}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block block--narrow" aria-label="Índice de objetivo">
+      <div class="blockhead"><h2>Índice de objetivo</h2><span class="hint">30 días</span></div>
+      <div class="panel connection">
+        <div class="connection__head">
+          <h2>${objetivoPct != null ? `${objetivoPct} / 100` : "—"}</h2>
+        </div>
+        ${objetivoHtml}
       </div>
     </section>
   `;
@@ -7674,6 +8381,7 @@ export async function renderConfiguracionPage(
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
   const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
   const reportRecipient = await getReportRecipient();
+  const { prefijo: reportePrefijo, numero: reporteNumero } = parseReporteTelefono(reportRecipient);
   const reportFrequencyDays = await getReportFrequencyDays();
   const transferAccounts = await getTransferAccounts();
   const reportFrequencyPreset =
@@ -7886,8 +8594,13 @@ export async function renderConfiguracionPage(
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/reporte-diario">
           <div class="field">
-            <label for="reporte-telefono">WhatsApp que recibe el resumen</label>
-            <input type="text" id="reporte-telefono" name="telefono" value="${escapeHtml(reportRecipient ?? "")}" placeholder="whatsapp:+573001234567">
+            <label id="reporte-telefono-label">Número que recibe el resumen</label>
+            <div class="inputrow">
+              <select id="reporte-prefijo" name="prefijo" aria-label="Código de país">
+                ${REPORTE_PAISES.map((p) => `<option value="${p.code}"${p.code === reportePrefijo ? " selected" : ""}>${escapeHtml(p.label)} ${p.code}</option>`).join("")}
+              </select>
+              <input type="text" id="reporte-telefono" name="telefono" value="${escapeHtml(reporteNumero)}" placeholder="3001234567" inputmode="tel" autocomplete="tel" aria-labelledby="reporte-telefono-label">
+            </div>
             <p class="hint">A las 8:00 a. m. (hora Colombia) se manda un resumen de mensajes, clientes, conversaciones cerradas y pedidos. Dejar vacío para no recibirlo.</p>
           </div>
           <div class="field">
@@ -8211,12 +8924,58 @@ function formatWhatsappPhoneDisplay(phone: string): string {
 // migrations/0038_settings_reporte_frecuencia.cjs.
 const REPORT_FREQUENCY_PRESET_DAYS: Record<string, number> = { diario: 1, semanal: 7, mensual: 30 };
 
+/** Prefijos de país para el "Número que recibe el resumen" (Configuración → Reportes y reseñas). El valor guardado sigue siendo `whatsapp:+CCNNN...` (el envío del reporte siempre es por WhatsApp, ver dailyReport.ts); la lista solo separa el código de país del número local en la UI, así el usuario no escribe "whatsapp:" ni el prefijo a mano. */
+const REPORTE_PAISES: ReadonlyArray<{ code: string; label: string }> = [
+  { code: "+57", label: "Colombia" },
+  { code: "+52", label: "México" },
+  { code: "+54", label: "Argentina" },
+  { code: "+56", label: "Chile" },
+  { code: "+51", label: "Perú" },
+  { code: "+58", label: "Venezuela" },
+  { code: "+55", label: "Brasil" },
+  { code: "+591", label: "Bolivia" },
+  { code: "+593", label: "Ecuador" },
+  { code: "+595", label: "Paraguay" },
+  { code: "+598", label: "Uruguay" },
+  { code: "+502", label: "Guatemala" },
+  { code: "+503", label: "El Salvador" },
+  { code: "+504", label: "Honduras" },
+  { code: "+505", label: "Nicaragua" },
+  { code: "+506", label: "Costa Rica" },
+  { code: "+507", label: "Panamá" },
+  { code: "+1", label: "Estados Unidos / Canadá" },
+  { code: "+34", label: "España" },
+];
+
+/** Separa el teléfono guardado (`whatsapp:+573001234567`) en código de país y número local para el formulario. Si el valor no matchea ningún prefijo conocido, devuelve +57 como default con el resto en el campo número (el guardado valida el formato final). */
+function parseReporteTelefono(recipient: string | null): { prefijo: string; numero: string } {
+  const sinCanal = recipient?.replace(/^whatsapp:/, "") ?? "";
+  const conPrefijo = sinCanal.startsWith("+") ? sinCanal : `+${sinCanal}`;
+  const match = [...REPORTE_PAISES]
+    .sort((a, b) => b.code.length - a.code.length)
+    .find((p) => conPrefijo.startsWith(p.code));
+  if (!match) {
+    return { prefijo: "+57", numero: sinCanal.replace(/^\+/, "") };
+  }
+  return { prefijo: match.code, numero: conPrefijo.slice(match.code.length) };
+}
+
 export async function guardarReporteDiario(
-  input: { telefono: string; frecuencia: string; diasPersonalizados: string },
+  input: { telefono: string; frecuencia: string; diasPersonalizados: string; prefijo?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const trimmed = input.telefono.trim();
-  if (trimmed !== "" && !WHATSAPP_PHONE_RE.test(trimmed)) {
-    return { ok: false, error: 'Formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.' };
+  const prefijoConSigno = (input.prefijo ?? "+57").trim();
+  const prefijo = prefijoConSigno.startsWith("+") ? prefijoConSigno : `+${prefijoConSigno}`;
+  if (prefijo !== "" && !REPORTE_PAISES.some((p) => p.code === prefijo)) {
+    return { ok: false, error: "Código de país no válido." };
+  }
+  const digitosPrefijo = prefijo.replace(/\D/g, "");
+  const numeroLocal = input.telefono.trim().replace(/\D/g, "");
+  const numero = numeroLocal.startsWith(digitosPrefijo) && numeroLocal.length > digitosPrefijo.length
+    ? numeroLocal.slice(digitosPrefijo.length)
+    : numeroLocal;
+  const phone = numero === "" ? "" : `whatsapp:${prefijo}${numero}`;
+  if (phone !== "" && !WHATSAPP_PHONE_RE.test(phone)) {
+    return { ok: false, error: "Número inválido. Revisá el código de país y el número." };
   }
 
   let frequencyDays: number;
@@ -8232,7 +8991,7 @@ export async function guardarReporteDiario(
     return { ok: false, error: "Frecuencia no válida." };
   }
 
-  await saveReportRecipient(trimmed === "" ? null : trimmed);
+  await saveReportRecipient(phone === "" ? null : phone);
   await saveReportFrequencyDays(frequencyDays);
   return { ok: true };
 }

@@ -100,6 +100,12 @@ Tras QA visual el hint del bloque decía literalmente "conversaciones cerradas" 
 
 De paso se corrigió la tarjeta KPI "Costo promedio · conversación con pedido", que decía "Últimas conversaciones cerradas" — la query nunca tuvo `LIMIT`, promedia *todas* las conversaciones cerradas con pedido, así que "Últimas" era información falsa. Ahora muestra el conteo real (ej. "1 conversación cerrada").
 
+### Costo acumulado por conversación y por lead
+
+Migración `0057_conversaciones_costo_acumulado.cjs`: `conversations` suma columnas `costo_total_usd`, `tokens_entrada_total` y `tokens_salida_total`, persistidas desde `loop.ts` en la misma transacción que el insert a `llm_usage` (best-effort, no rompe la respuesta). El panel de Conversaciones muestra el costo en cada ítem de la lista y en el detalle (con tokens), y Leads suma el acumulado de todas las conversaciones del cliente en la columna "Costo" (y en el CSV como `costo_usd`).
+
+El backfill (pedido del usuario, datos existentes): donde `llm_usage` tenía datos reales se suma la suma real; las conversaciones sin uso registrado reciben valores sintéticos realistas en `llm_usage` (tokens/costo derivados de sus mensajes con precio deepseek-chat, `created_at` dentro del ciclo de vida de la conversación), de modo que la Analítica (costo del mes, tendencia, costo por resultado) también refleja esos costos. Es one-time — instalaciones nuevas solo acumulan uso real.
+
 ## Insights por IA (stretch goal, no comprometido)
 
 Resumen de conversación por LLM (qué quería el cliente, objeciones, oportunidad de venta) — factible con los datos ya disponibles (`messages` completo por conversación), pero implica una llamada nueva al LLM por conversación cerrada, con costo recurrente que esta misma fase ahora puede medir con precisión (`llm_usage`) antes de comprometerse a pagarlo. Se documenta como candidato a implementar después de tener al menos una semana de datos reales de costo — no se agenda dentro del alcance comprometido de la Fase 11.
@@ -109,3 +115,17 @@ Resumen de conversación por LLM (qué quería el cliente, objeciones, oportunid
 - Percentiles de latencia operacional (p50/p95) a nivel de infraestructura — sigue en Grafana/Loki (ADR-009), no se duplica.
 - Insights por IA — ver arriba, stretch goal.
 - Tope de presupuesto mensual configurable (mencionado en el panel de referencia) — se puede construir sobre esta misma tabla en una iteración posterior una vez haya datos reales de gasto para calibrar umbrales razonables; no se diseña sin ese dato.
+
+## Extension: secciones de negocio en la Analítica
+
+Además del costo/consumo, `renderAnaliticaPage` ahora agrega secciones de negocio derivadas de los datos que ya viven en Postgres (skill `kpi-dashboard-design` para la selección de métricas):
+
+- **Estadísticas del bot** — llamadas LLM, tokens/llamada, latencia p50/p95 (30 días).
+- **Uso por modelo** — llamadas y costo por modelo/proveedor (30 días).
+- **Interacción con el humano** — tickets totales/abiertos/resueltos, tiempo promedio de resolución, motivos de escalamiento (30 días).
+- **Estadísticas de conversaciones** — distribución por canal y por estado del funnel (30 días, reusa `CONVERSACION_FUNNEL_ESTADO_SQL`).
+- **Probabilidad de cierre** — tasa de cierre, conversión cotización→pedido, ticket promedio (sobre conversaciones cerradas, reusa el funnel de metricas-cierre-ventas.md).
+- **Salud del bot** — bot global pausado, conversaciones pausadas, satisfacción promedio.
+- **Índice de objetivo** — score compuesto 0-100 ponderando: resuelto sin humano ≥60% (30 pts), tasa de cierre >0 (25), satisfacción ≥4.0 (25), pedidos en el periodo >0 (20).
+
+Todas las queries corren dentro de `withTransaction` sin `tenant_id` (multi-tenancy eliminado) y la moneda de visualización respeta `?moneda=`.

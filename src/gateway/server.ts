@@ -292,7 +292,8 @@ export async function buildServer() {
   });
 
   app.get("/admin", async (request, reply) => {
-    const html = await renderOverviewPage(request.admin!);
+    const { periodo } = request.query as { periodo?: string };
+    const html = await renderOverviewPage(periodo, request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
@@ -789,13 +790,15 @@ export async function buildServer() {
   });
 
   app.post("/admin/configuracion/reporte-diario", async (request, reply) => {
-    const { telefono, frecuencia, diasPersonalizados } = request.body as {
+    const { telefono, prefijo, frecuencia, diasPersonalizados } = request.body as {
       telefono?: string;
+      prefijo?: string;
       frecuencia?: string;
       diasPersonalizados?: string;
     };
     const result = await guardarReporteDiario({
       telefono: telefono ?? "",
+      prefijo: prefijo ?? "",
       frecuencia: frecuencia ?? "",
       diasPersonalizados: diasPersonalizados ?? "",
     });

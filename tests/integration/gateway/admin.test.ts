@@ -290,6 +290,47 @@ beforeAll(async () => {
     [quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
 
+  // Conversación en despacho — cubre el tab "En despacho": un pedido con
+  // guía registrada (tracking_number + shipped_at) y status 'despachado'.
+  const customerDespacho = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000008', 'Cliente En Despacho') RETURNING id`,
+  );
+  customerIds.push(customerDespacho.rows[0]!.id);
+  const conversationDespacho = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerDespacho.rows[0]!.id],
+  );
+  conversationIds.push(conversationDespacho.rows[0]!.id);
+  await adminPool.query(
+    `INSERT INTO messages (conversation_id, direction, sender_type, content)
+     VALUES ($1, 'inbound', 'customer', 'Perfecto, quedo pendiente del envio')`,
+    [conversationDespacho.rows[0]!.id],
+  );
+  const quoteDespacho = await adminPool.query<{ id: string }>(
+    `INSERT INTO quotes (conversation_id, customer_id, subtotal, total)
+     VALUES ($1, $2, 250000, 250000) RETURNING id`,
+    [conversationDespacho.rows[0]!.id, customerDespacho.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total,
+                         tracking_number, carrier, shipped_at)
+     VALUES ($1, $2, $3, 'despachado', 'transferencia', 'pagado', 'domicilio', 'admin-test-order-2', 250000,
+             '779000001', 'Coordinadora', now())`,
+    [quoteDespacho.rows[0]!.id, conversationDespacho.rows[0]!.id, customerDespacho.rows[0]!.id],
+  );
+
+  // Costo/tokens acumulados (migrations/0057): se fijan valores conocidos en
+  // dos conversaciones para aserciones estables de la UI (lista, detalle y
+  // columna de Leads), en vez de depender de la data sintética del backfill.
+  await adminPool.query(
+    `UPDATE conversations SET costo_total_usd = 0.1234, tokens_entrada_total = 150000, tokens_salida_total = 8000 WHERE id = $1`,
+    [conversacionAbierta],
+  );
+  await adminPool.query(
+    `UPDATE conversations SET costo_total_usd = 0.05, tokens_entrada_total = 50000, tokens_salida_total = 3000 WHERE id = $1`,
+    [conversacionCerrada],
+  );
+
   // Admin real (Fase 13, ver ADR-025) para autenticar el resto de los
   // tests — role='master' para no depender de permisos granulares acá
   // (esos se prueban en tests/unit de src/admin/auth/).
@@ -755,7 +796,13 @@ describe("panel admin", () => {
     const response = await app.inject({ method: "GET", url: "/admin", headers: { cookie: sessionCookie } });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Admin Panel Test");
-    expect(response.body).toContain("Mensajes · 24 h");
+    expect(response.body).toContain("Mensajes · 7 d");
+    expect(response.body).toContain("Clientes únicos · 7 d");
+    expect(response.body).toContain("Conversaciones nuevas · 7 d");
+    expect(response.body).toContain("Resueltas sin humano · 7 d");
+    expect(response.body).toContain("Top clientes por compras");
+    expect(response.body).toContain("Top productos más comprados");
+    expect(response.body).toContain("Top aliados que más vendieron");
     expect(response.body).toContain("Cliente Overview");
     expect(response.body).toContain("Hola, ¿tienen cascos?");
 
@@ -769,7 +816,48 @@ describe("panel admin", () => {
     );
     expect(match).not.toBeNull();
     const actividad = JSON.parse(match![1]!) as { label: string; valor: number }[];
+    expect(actividad).toHaveLength(7);
     expect(actividad.some((dia) => dia.valor > 0)).toBe(true);
+  });
+
+  it("el resumen permite cambiar el periodo a 15 y 30 días con sus KPIs", async () => {
+    for (const periodo of ["15", "30"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin?periodo=${periodo}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(`Mensajes · ${periodo} d`);
+      expect(response.body).toContain(`Clientes únicos · ${periodo} d`);
+      expect(response.body).toContain(`Actividad — últimos ${periodo} días`);
+      // El gráfico se re-renderiza con tantos buckets como días del periodo.
+      const match = response.body.match(
+        /<script type="application\/json" id="actividad-data">(.*?)<\/script>/s,
+      );
+      expect(match).not.toBeNull();
+      const actividad = JSON.parse(match![1]!) as { label: string; valor: number }[];
+      expect(actividad).toHaveLength(Number(periodo));
+    }
+  });
+
+  it("muestra la Analítica con las secciones de costo, bot, humano, funnel, cierre, salud e índice de objetivo", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/analitica",
+      headers: { cookie: sessionCookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("Analítica");
+    expect(response.body).toContain("Costo — últimos 30 días");
+    expect(response.body).toContain("Estadísticas del bot");
+    expect(response.body).toContain("Interacción con el humano");
+    expect(response.body).toContain("Motivos de escalamiento");
+    expect(response.body).toContain("Conversaciones");
+    expect(response.body).toContain("Estado del funnel");
+    expect(response.body).toContain("Probabilidad de cierre");
+    expect(response.body).toContain("Salud del bot");
+    expect(response.body).toContain("Índice de objetivo");
   });
 
   it("usa display_name como marca cuando se configura", async () => {
@@ -815,7 +903,7 @@ describe("panel admin", () => {
       expect(response.body).toContain("whatsapp:+573000000002");
     });
 
-    it("cada conversación de la lista muestra un chip de estado con su color propio (azul/rojo/verde)", async () => {
+    it("cada conversación de la lista muestra un chip de estado con su color propio (azul/ambar/verde/violeta/gris)", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/conversaciones?estado=todas",
@@ -824,7 +912,28 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('<span class="chip chip--chrome">Abierta</span>');
       expect(response.body).toContain('<span class="chip chip--redline">Escalada</span>');
-      expect(response.body).toContain('<span class="chip chip--go">Cerrada</span>');
+      expect(response.body).toContain('<span class="chip chip--amber">Con cotización</span>');
+      expect(response.body).toContain('<span class="chip chip--go">Con pedido</span>');
+      expect(response.body).toContain('<span class="chip chip--violet">En despacho</span>');
+      expect(response.body).toContain('<span class="chip chip--muted">Cerrada</span>');
+    });
+
+    it("muestra el costo acumulado de cada conversación en la lista y en el detalle (migrations/0057)", async () => {
+      const lista = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=todas",
+        headers: { cookie: sessionCookie },
+      });
+      expect(lista.statusCode).toBe(200);
+      expect(lista.body).toContain("$0.1234");
+      const detalle = await app.inject({
+        method: "GET",
+        url: `/admin/conversaciones?estado=todas&c=${conversacionAbierta}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(detalle.statusCode).toBe(200);
+      expect(detalle.body).toContain("$0.1234");
+      expect(detalle.body).toContain("150.000 entrada / 8.000 salida");
     });
 
     it("el detalle de una conversación escalada muestra el estado del ticket, quién lo tomó y el botón para ver el ticket", async () => {
@@ -859,6 +968,42 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("whatsapp:+573000000002");
       expect(response.body).not.toContain("Cliente Overview");
+    });
+
+    it("el tab Con cotización solo muestra conversaciones con cotización (sin pedido)", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=con_cotizacion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Con Cotización");
+      expect(response.body).not.toContain("Cliente Con Pedido");
+      expect(response.body).not.toContain("Cliente Overview");
+    });
+
+    it("el tab Con pedido solo muestra conversaciones con pedido sin despachar", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=con_pedido",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Con Pedido");
+      expect(response.body).not.toContain("Cliente Con Cotización");
+      expect(response.body).not.toContain("Cliente En Despacho");
+    });
+
+    it("el tab En despacho solo muestra conversaciones con guía registrada", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=en_despacho",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente En Despacho");
+      expect(response.body).not.toContain("Cliente Con Pedido");
+      expect(response.body).not.toContain("Cliente Con Cotización");
     });
 
     it("muestra el historial completo de una conversación seleccionada, incluida la tool ejecutada", async () => {
@@ -921,11 +1066,23 @@ describe("panel admin", () => {
       expect(response.body).toContain("Clasificación");
       expect(response.body).toContain("<th>Bot</th>");
       expect(response.body).toContain("<th>Pedidos</th>");
+      expect(response.body).toContain("<th>Costo</th>");
       expect(response.body).toContain("Última compra");
       expect(response.body).toContain("<th>Ciudad</th>");
       expect(response.body).toContain("Crear promoción para este segmento");
       expect(response.body).toContain("Ver información del cliente");
       expect(response.body).not.toContain("<th>Último mensaje</th>");
+    });
+
+    it("muestra el costo acumulado del cliente (suma de sus conversaciones, migrations/0057)", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/leads",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      // "Cliente Overview" tiene conversacionAbierta con costo 0.1234.
+      expect(response.body).toContain("$0.1234");
     });
 
     it("el último mensaje ignora los tool_results vacíos y muestra el texto real del cliente en el CSV (Fase 23: la tabla en pantalla ya no muestra esta columna, ver ADR-036)", async () => {
@@ -948,7 +1105,7 @@ describe("panel admin", () => {
       expect(response.headers["content-type"]).toContain("text/csv");
       expect(response.headers["content-disposition"]).toContain("leads.csv");
       expect(response.body).toContain(
-        "nombre,telefono,ultimo_mensaje,estado,clasificacion,pedidos,ultima_compra,ciudad,cliente_desde",
+        "nombre,telefono,ultimo_mensaje,estado,clasificacion,pedidos,costo_usd,ultima_compra,ciudad,cliente_desde",
       );
       expect(response.body).toContain("Cliente Con Pedido");
       // Regresión: pg parsea timestamptz como objeto Date, no string — un
@@ -1634,6 +1791,16 @@ describe("panel admin", () => {
         headers: { cookie: colabCookie },
       });
       expect(response.statusCode).toBe(403);
+
+      // Un colaborador tampoco ve el enlace en el menú (se oculta del rail):
+      // no tiene sentido mostrar una sección a la que no puede entrar.
+      const resumen = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: colabCookie },
+      });
+      expect(resumen.statusCode).toBe(200);
+      expect(resumen.body).not.toContain('href="/admin/conexiones"');
     });
   });
 
