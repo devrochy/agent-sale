@@ -789,13 +789,15 @@ export async function buildServer() {
   });
 
   app.post("/admin/configuracion/reporte-diario", async (request, reply) => {
-    const { telefono, frecuencia, diasPersonalizados } = request.body as {
+    const { telefono, prefijo, frecuencia, diasPersonalizados } = request.body as {
       telefono?: string;
+      prefijo?: string;
       frecuencia?: string;
       diasPersonalizados?: string;
     };
     const result = await guardarReporteDiario({
       telefono: telefono ?? "",
+      prefijo: prefijo ?? "",
       frecuencia: frecuencia ?? "",
       diasPersonalizados: diasPersonalizados ?? "",
     });

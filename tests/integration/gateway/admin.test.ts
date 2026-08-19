@@ -290,6 +290,35 @@ beforeAll(async () => {
     [quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
 
+  // Conversación en despacho — cubre el tab "En despacho": un pedido con
+  // guía registrada (tracking_number + shipped_at) y status 'despachado'.
+  const customerDespacho = await adminPool.query<{ id: string }>(
+    `INSERT INTO customers (external_id, name) VALUES ('whatsapp:+573000000008', 'Cliente En Despacho') RETURNING id`,
+  );
+  customerIds.push(customerDespacho.rows[0]!.id);
+  const conversationDespacho = await adminPool.query<{ id: string }>(
+    `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+    [customerDespacho.rows[0]!.id],
+  );
+  conversationIds.push(conversationDespacho.rows[0]!.id);
+  await adminPool.query(
+    `INSERT INTO messages (conversation_id, direction, sender_type, content)
+     VALUES ($1, 'inbound', 'customer', 'Perfecto, quedo pendiente del envio')`,
+    [conversationDespacho.rows[0]!.id],
+  );
+  const quoteDespacho = await adminPool.query<{ id: string }>(
+    `INSERT INTO quotes (conversation_id, customer_id, subtotal, total)
+     VALUES ($1, $2, 250000, 250000) RETURNING id`,
+    [conversationDespacho.rows[0]!.id, customerDespacho.rows[0]!.id],
+  );
+  await adminPool.query(
+    `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total,
+                         tracking_number, carrier, shipped_at)
+     VALUES ($1, $2, $3, 'despachado', 'transferencia', 'pagado', 'domicilio', 'admin-test-order-2', 250000,
+             '779000001', 'Coordinadora', now())`,
+    [quoteDespacho.rows[0]!.id, conversationDespacho.rows[0]!.id, customerDespacho.rows[0]!.id],
+  );
+
   // Admin real (Fase 13, ver ADR-025) para autenticar el resto de los
   // tests — role='master' para no depender de permisos granulares acá
   // (esos se prueban en tests/unit de src/admin/auth/).
@@ -815,7 +844,7 @@ describe("panel admin", () => {
       expect(response.body).toContain("whatsapp:+573000000002");
     });
 
-    it("cada conversación de la lista muestra un chip de estado con su color propio (azul/rojo/verde)", async () => {
+    it("cada conversación de la lista muestra un chip de estado con su color propio (azul/ambar/verde/violeta/gris)", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin/conversaciones?estado=todas",
@@ -824,7 +853,10 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('<span class="chip chip--chrome">Abierta</span>');
       expect(response.body).toContain('<span class="chip chip--redline">Escalada</span>');
-      expect(response.body).toContain('<span class="chip chip--go">Cerrada</span>');
+      expect(response.body).toContain('<span class="chip chip--amber">Con cotización</span>');
+      expect(response.body).toContain('<span class="chip chip--go">Con pedido</span>');
+      expect(response.body).toContain('<span class="chip chip--violet">En despacho</span>');
+      expect(response.body).toContain('<span class="chip chip--muted">Cerrada</span>');
     });
 
     it("el detalle de una conversación escalada muestra el estado del ticket, quién lo tomó y el botón para ver el ticket", async () => {
@@ -859,6 +891,42 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain("whatsapp:+573000000002");
       expect(response.body).not.toContain("Cliente Overview");
+    });
+
+    it("el tab Con cotización solo muestra conversaciones con cotización (sin pedido)", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=con_cotizacion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Con Cotización");
+      expect(response.body).not.toContain("Cliente Con Pedido");
+      expect(response.body).not.toContain("Cliente Overview");
+    });
+
+    it("el tab Con pedido solo muestra conversaciones con pedido sin despachar", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=con_pedido",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente Con Pedido");
+      expect(response.body).not.toContain("Cliente Con Cotización");
+      expect(response.body).not.toContain("Cliente En Despacho");
+    });
+
+    it("el tab En despacho solo muestra conversaciones con guía registrada", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=en_despacho",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Cliente En Despacho");
+      expect(response.body).not.toContain("Cliente Con Pedido");
+      expect(response.body).not.toContain("Cliente Con Cotización");
     });
 
     it("muestra el historial completo de una conversación seleccionada, incluida la tool ejecutada", async () => {

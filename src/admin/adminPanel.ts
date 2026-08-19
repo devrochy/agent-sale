@@ -1220,6 +1220,10 @@ table.resizing { cursor: col-resize; user-select: none; }
 .field { margin-bottom: 20px; }
 .field:last-of-type { margin-bottom: 0; }
 .field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
+/* Prefijo de país + número local en la misma fila (Configuración → Reportes y reseñas): el select mantiene su alto fijo y el input flexea para ocupar el resto. */
+.field .inputrow { display: flex; gap: 10px; max-width: 440px; }
+.field .inputrow select { width: 210px; flex-shrink: 0; }
+.field .inputrow input { flex: 1; max-width: none; }
 /* Los textarea nunca habían tenido estilo: se veían con el aspecto por
    defecto del navegador (fuente monoespaciada, ancho por atributo cols) en medio de
    un panel cuidado — el único sitio donde se usan es Voz de marca, que es
@@ -1320,6 +1324,9 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .countbadge strong { font-family: var(--font-mono); color: var(--ink); }
 /* padding-left igual al del input de nombre (.dblclick-cell input, 4px) — sin esto el nombre y el "aliado · categoría" de abajo quedan desalineados horizontalmente. */
 .rowmeta { font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; padding-left: 4px; }
+/* Celda Cliente de la tabla de Leads: nombre arriba y canal debajo, en columna — el chip mantiene su color de canal pero deja de competir en la misma línea con el nombre. */
+.leadcell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; line-height: 1.3; }
+.leadcell__channel { margin-left: 4px; }
 
 /*
  * Previsualización editable de la carga por CSV — una card por producto
@@ -1537,6 +1544,12 @@ th.th--end { text-align: right; }
 .convtabs a.tab--redline.tab--active { background: var(--redline-soft); color: var(--redline); border-color: var(--redline); }
 .convtabs a.tab--go { color: var(--go); }
 .convtabs a.tab--go.tab--active { background: var(--go-soft); color: var(--go); border-color: var(--go); }
+.convtabs a.tab--amber { color: var(--ignition); }
+.convtabs a.tab--amber.tab--active { background: var(--ignition-soft); color: var(--ignition); border-color: var(--ignition); }
+.convtabs a.tab--violet { color: var(--violet); }
+.convtabs a.tab--violet.tab--active { background: var(--violet-soft); color: var(--violet); border-color: var(--violet); }
+.convtabs a.tab--muted { color: var(--ink-faint); }
+.convtabs a.tab--muted.tab--active { background: var(--panel-inset); color: var(--ink-muted); border-color: var(--border-strong); }
 .inbox { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 @media (max-width: 860px) { .inbox { grid-template-columns: 1fr; } }
 .inbox__list { max-height: 74vh; overflow-y: auto; }
@@ -3274,48 +3287,90 @@ export async function renderOverviewPage(admin: AdminRecord): Promise<string | n
   return layout("Resumen", tenant, body, "resumen", admin);
 }
 
-type ConversacionesEstado = "todas" | "abiertas" | "escaladas" | "cerradas";
+type ConversacionesEstado = "todas" | "abiertas" | "con_cotizacion" | "con_pedido" | "en_despacho" | "cerradas" | "escaladas";
 
-// Orden y color pedidos explícitamente por el usuario: Abiertas primero
-// (es además el filtro por defecto al entrar a la página, ver más abajo),
-// Todas al final — cada tab lleva el mismo color que su chip de estado
-// (azul/rojo/verde, ver conversacionEstadoChip) salvo "Todas", que es
-// neutra por no representar un estado puntual.
+// Estado de funnel de una conversación, derivado de datos existentes (nunca
+// de un resumen por LLM — mismo criterio que Leads, ver ADR-036): Abierta
+// (solo interacción, sin cotización), Con cotización (ya hay una),
+// Con pedido (se generó el pago de un pedido), En despacho (se registró la
+// guía del pedido) y Cerrada (24h sin interacción del cliente, o cerrada
+// explícitamente). Precedencia por etapa del funnel: despacho > pedido >
+// cotización > cerrada > abierta — "cerrada" solo pesa cuando no hay
+// actividad comercial en curso (decisión de producto, ver abajo).
+type ConversacionFunnelEstado = "abierta" | "con_cotizacion" | "con_pedido" | "en_despacho" | "cerrada";
+
+const CONVERSACION_FUNNEL_LABEL: Record<ConversacionFunnelEstado, string> = {
+  abierta: "Abierta",
+  con_cotizacion: "Con cotización",
+  con_pedido: "Con pedido",
+  en_despacho: "En despacho",
+  cerrada: "Cerrada",
+};
+
+// Un solo chip de estado por conversación, usado tanto en la lista como en
+// el detalle. Precedencia deliberada: escalada primero — es un estado aparte
+// que pisa al funnel (ver CONVERSACION_ESCALADA_SQL); un ticket activo pesa
+// más que la etapa comercial de la fila.
+const CONVERSACION_FUNNEL_CHIP: Record<ConversacionFunnelEstado, string> = {
+  abierta: `<span class="chip chip--chrome">${CONVERSACION_FUNNEL_LABEL.abierta}</span>`,
+  con_cotizacion: `<span class="chip chip--amber">${CONVERSACION_FUNNEL_LABEL.con_cotizacion}</span>`,
+  con_pedido: `<span class="chip chip--go">${CONVERSACION_FUNNEL_LABEL.con_pedido}</span>`,
+  en_despacho: `<span class="chip chip--violet">${CONVERSACION_FUNNEL_LABEL.en_despacho}</span>`,
+  cerrada: `<span class="chip chip--muted">${CONVERSACION_FUNNEL_LABEL.cerrada}</span>`,
+};
+
+// Tabs en orden de funnel (Abiertas primero, es además el filtro por defecto
+// al entrar a la página, ver más abajo), con Escaladas y Todas al final —
+// cada tab lleva el mismo color que su chip de estado (ver
+// CONVERSACION_FUNNEL_CHIP) salvo "Todas", que es neutra.
 const CONVERSACIONES_TABS: { key: ConversacionesEstado; label: string; colorClass: string }[] = [
   { key: "abiertas", label: "Abiertas", colorClass: "tab--chrome" },
+  { key: "con_cotizacion", label: "Con cotización", colorClass: "tab--amber" },
+  { key: "con_pedido", label: "Con pedido", colorClass: "tab--go" },
+  { key: "en_despacho", label: "En despacho", colorClass: "tab--violet" },
+  { key: "cerradas", label: "Cerradas", colorClass: "tab--muted" },
   { key: "escaladas", label: "Escaladas", colorClass: "tab--redline" },
-  { key: "cerradas", label: "Cerradas", colorClass: "tab--go" },
   { key: "todas", label: "Todas", colorClass: "" },
 ];
 
+// Escalada = ticket activo en handoff_queue. Es un estado aparte que pisa al
+// funnel; los tabs de funnel lo excluyen (mutuamente excluyentes, pedido
+// explícito del usuario) para que el tab Escaladas sea la única vista donde
+// aparece un ticket activo.
+const CONVERSACION_ESCALADA_SQL =
+  "exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')";
+
+// Expresión SQL del estado de funnel, usada tanto en el SELECT (chip) como
+// en los filtros de tab — repetir la expresión en WHERE es lo que permite
+// filtrar por una columna calculada sin CTE. Depende de la LATERAL `cm`
+// (último mensaje inbound del cliente), que ambas queries agregan.
+const CONVERSACION_FUNNEL_ESTADO_SQL = `
+  CASE
+    WHEN exists(select 1 from orders o where o.conversation_id = conv.id and o.status in ('despachado', 'entregado')) THEN 'en_despacho'
+    WHEN exists(select 1 from orders o where o.conversation_id = conv.id and o.status = 'abierto') THEN 'con_pedido'
+    WHEN exists(select 1 from quotes q where q.conversation_id = conv.id) THEN 'con_cotizacion'
+    WHEN conv.status = 'closed' OR cm.created_at < now() - interval '24 hours' THEN 'cerrada'
+    ELSE 'abierta'
+  END`;
+
 // Cada filtro es una condición SQL independiente sobre columnas fijas
 // (nunca interpola el `estado` de la URL) — ver conversaciones-leads-tickets.md,
-// "Filtros por tab". Pedido explícito del usuario: Abiertas y Escaladas
-// pasan a ser mutuamente excluyentes (antes una conversación escalada
-// también aparecía en Abiertas, lo cual confundía al admin).
+// "Filtros por tab".
 const CONVERSACIONES_FILTRO_SQL: Record<ConversacionesEstado, string> = {
   todas: "",
-  abiertas:
-    "AND conv.status = 'open' AND NOT exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
-  escaladas:
-    "AND exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto')",
-  cerradas: "AND conv.status = 'closed'",
+  abiertas: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'abierta' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  con_cotizacion: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'con_cotizacion' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  con_pedido: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'con_pedido' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  en_despacho: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'en_despacho' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  cerradas: `AND ${CONVERSACION_FUNNEL_ESTADO_SQL} = 'cerrada' AND NOT ${CONVERSACION_ESCALADA_SQL}`,
+  escaladas: `AND ${CONVERSACION_ESCALADA_SQL}`,
 };
 
-// Un solo chip de estado por conversación (pedido explícito del usuario:
-// mismo estilo para Abierta/Escalada/Cerrada, con Azul/Rojo/Verde), usado
-// tanto en la lista como en el detalle. Precedencia deliberada: escalada
-// primero — "abierta" y "escalada" no son mutuamente excluyentes (ver
-// CONVERSACIONES_FILTRO_SQL más arriba), pero como resumen de una sola
-// palabra, un ticket activo pesa más que el status crudo de la fila.
-function conversacionEstadoChip(status: string, escalada: boolean): string {
+function conversacionEstadoChip(funnel: ConversacionFunnelEstado, escalada: boolean): string {
   if (escalada) {
     return `<span class="chip chip--redline">Escalada</span>`;
   }
-  if (status === "closed") {
-    return `<span class="chip chip--go">Cerrada</span>`;
-  }
-  return `<span class="chip chip--chrome">Abierta</span>`;
+  return CONVERSACION_FUNNEL_CHIP[funnel];
 }
 
 interface ConversacionListRow {
@@ -3329,6 +3384,7 @@ interface ConversacionListRow {
   ultimo_mensaje: string;
   ultimo_at: string;
   escalada: boolean;
+  funnel_estado: ConversacionFunnelEstado;
 }
 
 /**
@@ -3357,6 +3413,7 @@ interface ConversacionDetalleRow {
   handoff_summary: string | null;
   handoff_assigned_to: string | null;
   escalada: boolean;
+  funnel_estado: ConversacionFunnelEstado;
 }
 
 /**
@@ -3387,7 +3444,8 @@ export async function renderConversacionesPage(
       `SELECT conv.id, conv.status, c.name AS customer_name, c.external_id,
               conv.channel, cx.provider,
               m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
-              exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada
+              exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada,
+              ${CONVERSACION_FUNNEL_ESTADO_SQL} AS funnel_estado
        FROM conversations conv
        JOIN customers c ON c.id = conv.customer_id
        LEFT JOIN channel_connections cx ON cx.id = conv.connection_id
@@ -3396,6 +3454,11 @@ export async function renderConversacionesPage(
          WHERE conversation_id = conv.id
          ORDER BY created_at DESC LIMIT 1
        ) m ON true
+       LEFT JOIN LATERAL (
+         SELECT created_at FROM messages
+         WHERE conversation_id = conv.id AND direction = 'inbound' AND sender_type = 'customer'
+         ORDER BY created_at DESC LIMIT 1
+       ) cm ON true
        WHERE true ${CONVERSACIONES_FILTRO_SQL[estado]}
        ORDER BY m.created_at DESC
        LIMIT 100`,
@@ -3410,7 +3473,8 @@ export async function renderConversacionesPage(
               c.name AS customer_name, c.external_id,
               h.id AS handoff_id, h.reason AS handoff_reason, h.status AS handoff_status,
               h.summary AS handoff_summary, a.username AS handoff_assigned_to,
-              exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada
+              exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada,
+              ${CONVERSACION_FUNNEL_ESTADO_SQL} AS funnel_estado
        FROM conversations conv
        JOIN customers c ON c.id = conv.customer_id
        LEFT JOIN LATERAL (
@@ -3420,6 +3484,11 @@ export async function renderConversacionesPage(
          ORDER BY created_at DESC LIMIT 1
        ) h ON true
        LEFT JOIN admins a ON a.id = h.assigned_admin_id
+       LEFT JOIN LATERAL (
+         SELECT created_at FROM messages
+         WHERE conversation_id = conv.id AND direction = 'inbound' AND sender_type = 'customer'
+         ORDER BY created_at DESC LIMIT 1
+       ) cm ON true
        WHERE conv.id = $1`,
       [selectedId],
     );
@@ -3452,7 +3521,7 @@ export async function renderConversacionesPage(
             <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
           </div>
           <span class="convitem__msg">${escapeHtml(truncate(row.ultimo_mensaje, 64))}</span>
-          <div class="convitem__chips">${conversacionEstadoChip(row.status, row.escalada)}${conversacionCanalChip(row.channel, row.provider)}</div>
+          <div class="convitem__chips">${conversacionEstadoChip(row.funnel_estado, row.escalada)}${conversacionCanalChip(row.channel, row.provider)}</div>
         </a>
       </li>`;
     })
@@ -3556,7 +3625,7 @@ export async function renderConversacionesPage(
         <div>
           <h2>${escapeHtml(who)}</h2>
           <div class="thread__metarow">
-            <span class="thread__meta">${escapeHtml(detalle.external_id)} ${conversacionEstadoChip(detalle.status, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
+            <span class="thread__meta">${escapeHtml(detalle.external_id)} ${conversacionEstadoChip(detalle.funnel_estado, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
           </div>
         </div>
         <div class="thread__headactions">
@@ -3582,7 +3651,7 @@ export async function renderConversacionesPage(
     <div class="convtabs">${tabsHtml}</div>
     <div class="inbox">
       <aside class="panel inbox__list">
-        <ul class="convitems">${listaHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Nada en este filtro", "Probá con otra pestaña — Todas, Abiertas, Escaladas o Cerradas.")}</li>`}</ul>
+        <ul class="convitems">${listaHtml || `<li>${emptyState(ICON_CONVERSACIONES, "Nada en este filtro", "Probá con otra pestaña — Abiertas, Con cotización, Con pedido, En despacho, Cerradas o Todas.")}</li>`}</ul>
       </aside>
       <section class="panel inbox__detail">${detalleHtml}</section>
     </div>
@@ -3754,6 +3823,17 @@ function leadDetailDialogHtml(dialogId: string, row: LeadRowWithSegment): string
   </dialog>`;
 }
 
+/** Opciones de un filtro facetado de la tabla de Leads — solo los valores presentes, ordenados alfabéticamente (sensitivity base, como el sort de las tablas). */
+function leadFilterOptions<T extends string>(values: T[], label: (v: T) => string, allLabel: string): string {
+  const distinct = [...new Set(values.filter((v) => v !== "" && v !== null))].sort((a, b) =>
+    label(a).localeCompare(label(b), "es"),
+  );
+  return (
+    `<option value="">${allLabel}</option>` +
+    distinct.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(label(v))}</option>`).join("")
+  );
+}
+
 /**
  * Leads (Fase 11.2, ver docs/fase-11-panel-admin-dashboard/
  * conversaciones-leads-tickets.md): "resumen" y "estado" se derivan de
@@ -3779,21 +3859,28 @@ export async function renderLeadsPage(
 
   const tableRows = rows
     .map((row) => {
-      const who = row.name ?? row.external_id;
+      // `full_name` es el nombre real confirmado del perfil permanente
+      // (capturado al comprar); `name` es solo el ProfileName del canal y
+      // puede ser un alias o el nombre del dispositivo. Cuando hay nombre
+      // completo es el que se muestra; si no, cae al nombre del canal o a
+      // la dirección (external_id).
+      const who = row.full_name ?? row.name ?? row.external_id;
       const promoDialogId = `promo-lead-${row.id}`;
       const detailDialogId = `detalle-lead-${row.id}`;
-      const search = [row.name, row.external_id, row.contact_phone, CHANNEL_LABEL[row.channel], row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
+      const search = [row.full_name, row.name, row.external_id, row.contact_phone, CHANNEL_LABEL[row.channel], row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
       // Ver ADR-035 "Leads no puede crear una promoción 1:1": la promoción
       // queda anclada al segmento del cliente, no al cliente puntual.
       const warning = `Esta promoción aplicará a todos los clientes clasificados como "${SEGMENT_LABEL[row.segment]}", no solo a ${who}.`;
-      // El canal va pegado al nombre y no en una columna propia: desde la
+      // El canal va debajo del nombre y no en una columna propia: desde la
       // Etapa C1 el mismo humano puede aparecer como dos filas (una por canal)
-      // y sin esta marca se leen como duplicados de la base.
-      return `<tr data-search="${escapeHtml(search)}">
-        <td>${escapeHtml(who)} <span class="chip ${CHANNEL_CHIP[row.channel]}">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></td>
+      // y sin esa marca se leen como duplicados de la base.
+      return `<tr data-search="${escapeHtml(search)}"
+        data-filter-channel="${row.channel}" data-filter-estado="${row.estado}"
+        data-filter-segment="${row.segment}" data-filter-ciudad="${escapeHtml(row.city ?? "")}">
+        <td><div class="leadcell">${escapeHtml(who)}<span class="chip ${CHANNEL_CHIP[row.channel]} leadcell__channel">${escapeHtml(CHANNEL_LABEL[row.channel])}</span></div></td>
         <td><span class="chip ${SEGMENT_CHIP[row.segment]}">${escapeHtml(SEGMENT_LABEL[row.segment])}</span></td>
         <td>${toggleSwitchHtml(`/admin/leads/${row.id}`, !row.bot_paused, `el bot para "${who}"`)}</td>
         <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
@@ -3811,6 +3898,14 @@ export async function renderLeadsPage(
     })
     .join("\n");
 
+  // Filtros facetados (mismo mecanismo `data-table-filter` que Productos):
+  // solo aparecen los valores presentes en la tabla, para no ofrecer un
+  // canal/clasificación que no tiene ninguna fila.
+  const channelOptions = leadFilterOptions(rows.map((r) => r.channel), (v) => CHANNEL_LABEL[v], "Todos los canales");
+  const estadoOptions = leadFilterOptions(rows.map((r) => r.estado), (v) => LEAD_ESTADO_LABEL[v], "Todos los estados");
+  const segmentOptions = leadFilterOptions(rows.map((r) => r.segment), (v) => SEGMENT_LABEL[v], "Todas las clasificaciones");
+  const cityOptions = leadFilterOptions(rows.map((r) => r.city ?? ""), (v) => v, "Todas las ciudades");
+
   const body = `
     <div class="pagehead">
       <p class="eyebrow">Panel</p>
@@ -3826,6 +3921,10 @@ export async function renderLeadsPage(
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por cliente, ciudad, clasificación o estado…" aria-label="Buscar leads">
+        <select class="tablefilter" data-table-filter data-filter-key="channel" aria-label="Filtrar por canal">${channelOptions}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">${estadoOptions}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="segment" aria-label="Filtrar por clasificación">${segmentOptions}</select>
+        <select class="tablefilter" data-table-filter data-filter-key="ciudad" aria-label="Filtrar por ciudad">${cityOptions}</select>
       </div>
       <table data-resizable-table="leads">
         <colgroup>
@@ -7674,6 +7773,7 @@ export async function renderConfiguracionPage(
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
   const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
   const reportRecipient = await getReportRecipient();
+  const { prefijo: reportePrefijo, numero: reporteNumero } = parseReporteTelefono(reportRecipient);
   const reportFrequencyDays = await getReportFrequencyDays();
   const transferAccounts = await getTransferAccounts();
   const reportFrequencyPreset =
@@ -7886,8 +7986,13 @@ export async function renderConfiguracionPage(
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/reporte-diario">
           <div class="field">
-            <label for="reporte-telefono">WhatsApp que recibe el resumen</label>
-            <input type="text" id="reporte-telefono" name="telefono" value="${escapeHtml(reportRecipient ?? "")}" placeholder="whatsapp:+573001234567">
+            <label id="reporte-telefono-label">Número que recibe el resumen</label>
+            <div class="inputrow">
+              <select id="reporte-prefijo" name="prefijo" aria-label="Código de país">
+                ${REPORTE_PAISES.map((p) => `<option value="${p.code}"${p.code === reportePrefijo ? " selected" : ""}>${escapeHtml(p.label)} ${p.code}</option>`).join("")}
+              </select>
+              <input type="text" id="reporte-telefono" name="telefono" value="${escapeHtml(reporteNumero)}" placeholder="3001234567" inputmode="tel" autocomplete="tel" aria-labelledby="reporte-telefono-label">
+            </div>
             <p class="hint">A las 8:00 a. m. (hora Colombia) se manda un resumen de mensajes, clientes, conversaciones cerradas y pedidos. Dejar vacío para no recibirlo.</p>
           </div>
           <div class="field">
@@ -8211,12 +8316,58 @@ function formatWhatsappPhoneDisplay(phone: string): string {
 // migrations/0038_settings_reporte_frecuencia.cjs.
 const REPORT_FREQUENCY_PRESET_DAYS: Record<string, number> = { diario: 1, semanal: 7, mensual: 30 };
 
+/** Prefijos de país para el "Número que recibe el resumen" (Configuración → Reportes y reseñas). El valor guardado sigue siendo `whatsapp:+CCNNN...` (el envío del reporte siempre es por WhatsApp, ver dailyReport.ts); la lista solo separa el código de país del número local en la UI, así el usuario no escribe "whatsapp:" ni el prefijo a mano. */
+const REPORTE_PAISES: ReadonlyArray<{ code: string; label: string }> = [
+  { code: "+57", label: "Colombia" },
+  { code: "+52", label: "México" },
+  { code: "+54", label: "Argentina" },
+  { code: "+56", label: "Chile" },
+  { code: "+51", label: "Perú" },
+  { code: "+58", label: "Venezuela" },
+  { code: "+55", label: "Brasil" },
+  { code: "+591", label: "Bolivia" },
+  { code: "+593", label: "Ecuador" },
+  { code: "+595", label: "Paraguay" },
+  { code: "+598", label: "Uruguay" },
+  { code: "+502", label: "Guatemala" },
+  { code: "+503", label: "El Salvador" },
+  { code: "+504", label: "Honduras" },
+  { code: "+505", label: "Nicaragua" },
+  { code: "+506", label: "Costa Rica" },
+  { code: "+507", label: "Panamá" },
+  { code: "+1", label: "Estados Unidos / Canadá" },
+  { code: "+34", label: "España" },
+];
+
+/** Separa el teléfono guardado (`whatsapp:+573001234567`) en código de país y número local para el formulario. Si el valor no matchea ningún prefijo conocido, devuelve +57 como default con el resto en el campo número (el guardado valida el formato final). */
+function parseReporteTelefono(recipient: string | null): { prefijo: string; numero: string } {
+  const sinCanal = recipient?.replace(/^whatsapp:/, "") ?? "";
+  const conPrefijo = sinCanal.startsWith("+") ? sinCanal : `+${sinCanal}`;
+  const match = [...REPORTE_PAISES]
+    .sort((a, b) => b.code.length - a.code.length)
+    .find((p) => conPrefijo.startsWith(p.code));
+  if (!match) {
+    return { prefijo: "+57", numero: sinCanal.replace(/^\+/, "") };
+  }
+  return { prefijo: match.code, numero: conPrefijo.slice(match.code.length) };
+}
+
 export async function guardarReporteDiario(
-  input: { telefono: string; frecuencia: string; diasPersonalizados: string },
+  input: { telefono: string; frecuencia: string; diasPersonalizados: string; prefijo?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const trimmed = input.telefono.trim();
-  if (trimmed !== "" && !WHATSAPP_PHONE_RE.test(trimmed)) {
-    return { ok: false, error: 'Formato inválido. Usá "whatsapp:+" seguido del número, ej. whatsapp:+573001234567.' };
+  const prefijoConSigno = (input.prefijo ?? "+57").trim();
+  const prefijo = prefijoConSigno.startsWith("+") ? prefijoConSigno : `+${prefijoConSigno}`;
+  if (prefijo !== "" && !REPORTE_PAISES.some((p) => p.code === prefijo)) {
+    return { ok: false, error: "Código de país no válido." };
+  }
+  const digitosPrefijo = prefijo.replace(/\D/g, "");
+  const numeroLocal = input.telefono.trim().replace(/\D/g, "");
+  const numero = numeroLocal.startsWith(digitosPrefijo) && numeroLocal.length > digitosPrefijo.length
+    ? numeroLocal.slice(digitosPrefijo.length)
+    : numeroLocal;
+  const phone = numero === "" ? "" : `whatsapp:${prefijo}${numero}`;
+  if (phone !== "" && !WHATSAPP_PHONE_RE.test(phone)) {
+    return { ok: false, error: "Número inválido. Revisá el código de país y el número." };
   }
 
   let frequencyDays: number;
@@ -8232,7 +8383,7 @@ export async function guardarReporteDiario(
     return { ok: false, error: "Frecuencia no válida." };
   }
 
-  await saveReportRecipient(trimmed === "" ? null : trimmed);
+  await saveReportRecipient(phone === "" ? null : phone);
   await saveReportFrequencyDays(frequencyDays);
   return { ok: true };
 }
