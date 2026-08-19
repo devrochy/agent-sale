@@ -796,7 +796,13 @@ describe("panel admin", () => {
     const response = await app.inject({ method: "GET", url: "/admin", headers: { cookie: sessionCookie } });
     expect(response.statusCode).toBe(200);
     expect(response.body).toContain("Admin Panel Test");
-    expect(response.body).toContain("Mensajes · 24 h");
+    expect(response.body).toContain("Mensajes · 7 d");
+    expect(response.body).toContain("Clientes únicos · 7 d");
+    expect(response.body).toContain("Conversaciones nuevas · 7 d");
+    expect(response.body).toContain("Resueltas sin humano · 7 d");
+    expect(response.body).toContain("Top clientes por compras");
+    expect(response.body).toContain("Top productos más comprados");
+    expect(response.body).toContain("Top aliados que más vendieron");
     expect(response.body).toContain("Cliente Overview");
     expect(response.body).toContain("Hola, ¿tienen cascos?");
 
@@ -810,7 +816,48 @@ describe("panel admin", () => {
     );
     expect(match).not.toBeNull();
     const actividad = JSON.parse(match![1]!) as { label: string; valor: number }[];
+    expect(actividad).toHaveLength(7);
     expect(actividad.some((dia) => dia.valor > 0)).toBe(true);
+  });
+
+  it("el resumen permite cambiar el periodo a 15 y 30 días con sus KPIs", async () => {
+    for (const periodo of ["15", "30"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/admin?periodo=${periodo}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(`Mensajes · ${periodo} d`);
+      expect(response.body).toContain(`Clientes únicos · ${periodo} d`);
+      expect(response.body).toContain(`Actividad — últimos ${periodo} días`);
+      // El gráfico se re-renderiza con tantos buckets como días del periodo.
+      const match = response.body.match(
+        /<script type="application\/json" id="actividad-data">(.*?)<\/script>/s,
+      );
+      expect(match).not.toBeNull();
+      const actividad = JSON.parse(match![1]!) as { label: string; valor: number }[];
+      expect(actividad).toHaveLength(Number(periodo));
+    }
+  });
+
+  it("muestra la Analítica con las secciones de costo, bot, humano, funnel, cierre, salud e índice de objetivo", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/admin/analitica",
+      headers: { cookie: sessionCookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("Analítica");
+    expect(response.body).toContain("Costo — últimos 30 días");
+    expect(response.body).toContain("Estadísticas del bot");
+    expect(response.body).toContain("Interacción con el humano");
+    expect(response.body).toContain("Motivos de escalamiento");
+    expect(response.body).toContain("Conversaciones");
+    expect(response.body).toContain("Estado del funnel");
+    expect(response.body).toContain("Probabilidad de cierre");
+    expect(response.body).toContain("Salud del bot");
+    expect(response.body).toContain("Índice de objetivo");
   });
 
   it("usa display_name como marca cuando se configura", async () => {
@@ -1744,6 +1791,16 @@ describe("panel admin", () => {
         headers: { cookie: colabCookie },
       });
       expect(response.statusCode).toBe(403);
+
+      // Un colaborador tampoco ve el enlace en el menú (se oculta del rail):
+      // no tiene sentido mostrar una sección a la que no puede entrar.
+      const resumen = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: colabCookie },
+      });
+      expect(resumen.statusCode).toBe(200);
+      expect(resumen.body).not.toContain('href="/admin/conexiones"');
     });
   });
 

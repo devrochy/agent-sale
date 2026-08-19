@@ -49,3 +49,29 @@ Lista de las últimas N conversaciones con su último mensaje, ordenadas por `me
 - **Costo del mes** — depende de `llm_usage` ([Fase 11.5](./analitica-costos.md)).
 - **"Salud del bot" / "Estado del agente"** (tickets abiertos, canales conectados, modelo activo, tools activas) del panel de referencia — corresponde a las [Fases 11.2 y 11.3](./flujo-conexiones.md), que introducen los datos de Tickets/Conexiones/Flujo que esta card resumiría. Se agrega a esta página del Overview recién cuando esas fases existan, para no mostrar un resumen de algo que el panel aún no tiene.
 - **"Mejoras sugeridas"** del panel de referencia — requiere el subsistema de Conocimiento/RAG, explícitamente fuera de alcance de toda la Fase 11 (ver [mapeo-funcionalidades.md](./mapeo-funcionalidades.md)).
+
+## Extension: selector de periodo y KPIs del Resumen
+
+`renderOverviewPage` ahora acepta `?periodo=7|15|30` (default 7) y muestra KPIs en esa ventana, comparados contra la ventana inmediatamente anterior del mismo largo (chip de tendencia "vs. periodo anterior"). Se agrega un KPI nuevo "Conversaciones nuevas" además de los originales (mensajes, clientes únicos, % resuelto sin humano). El gráfico SVG de actividad se re-renderiza con tantos buckets como días del periodo elegido.
+
+KPIs del Resumen por periodo:
+
+| KPI | Query |
+|-----|-------|
+| Mensajes | `count(*)` de `messages` en la ventana |
+| Clientes únicos | `count(distinct conv.customer_id)` en la ventana |
+| Conversaciones nuevas | `count(*)` de `conversations.started_at` en la ventana |
+| % resuelto sin humano | `1 - escaladas / conversaciones_totales` (funnel de metricas-cierre-ventas.md) sobre cerradas en la ventana |
+
+## Análisis de la BD (datos piloto, ~30 días)
+
+Exploración con la skill `data-analysis` contra la BD local (4 ago – 19 ago 2026):
+
+- **Actividad**: 317 mensajes, 33 conversaciones, 26 clientes, 3 pedidos ($1.42M COP), 249 llamadas LLM (deepseek-chat, $0.60 USD acumulado).
+- **Funnel (7 cerradas)**: 1 con pedido, 2 con cotización, 4 escaladas, 3 sin actividad → tasa de cierre 14.3%, cotización→pedido 50%.
+- **Escalamientos**: 8 tickets (6 resueltos, 2 abiertos), motivos: solicitud_cliente (5), intentos_fallidos (2), queja (1); tiempo promedio de resolución ~2.8 h.
+- **Bot**: latencia p50 ~2.0 s, p95 ~3.3 s, ~8.4K tokens/llamada.
+- **Satisfacción**: 2 calificaciones, ambas 5.0.
+- **Canales**: whatsapp (15 conv) e instagram (1 conv).
+
+Estos valores informan las metas y umbrales de la Analítica (índice de objetivo).

@@ -292,7 +292,8 @@ export async function buildServer() {
   });
 
   app.get("/admin", async (request, reply) => {
-    const html = await renderOverviewPage(request.admin!);
+    const { periodo } = request.query as { periodo?: string };
+    const html = await renderOverviewPage(periodo, request.admin!);
     if (!html) {
       return reply.status(404).send();
     }
