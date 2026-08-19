@@ -1574,6 +1574,9 @@ th.th--end { text-align: right; }
 .thread__headactions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
 .thread__headactions-row { display: flex; align-items: center; gap: 8px; }
 .thread__meta { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; flex-wrap: wrap; }
+/* Costo y tokens acumulados de la conversación (migrations/0057) — al final
+   de la metarow del detalle, con el mismo aire mono/tenue que el resto. */
+.thread__costo { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; margin-left: auto; }
 .thread__body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; max-height: 64vh; }
 .bubble { max-width: 72%; padding: 9px 13px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
 .bubble.inbound { align-self: flex-start; background: var(--panel-inset); border-bottom-left-radius: 4px; }
@@ -3381,6 +3384,8 @@ interface ConversacionListRow {
   channel: Channel;
   /** `null` en conversaciones anteriores al backfill o con la conexión retirada. */
   provider: Provider | null;
+  /** Costo acumulado (USD) de la conversación — migrations/0057, se mantiene al día desde loop.ts. */
+  costo_total_usd: string;
   ultimo_mensaje: string;
   ultimo_at: string;
   escalada: boolean;
@@ -3414,6 +3419,9 @@ interface ConversacionDetalleRow {
   handoff_assigned_to: string | null;
   escalada: boolean;
   funnel_estado: ConversacionFunnelEstado;
+  costo_total_usd: string;
+  tokens_entrada_total: string;
+  tokens_salida_total: string;
 }
 
 /**
@@ -3443,6 +3451,7 @@ export async function renderConversacionesPage(
     const listaResult = await client.query<ConversacionListRow>(
       `SELECT conv.id, conv.status, c.name AS customer_name, c.external_id,
               conv.channel, cx.provider,
+              conv.costo_total_usd,
               m.content AS ultimo_mensaje, m.created_at AS ultimo_at,
               exists(select 1 from handoff_queue h where h.conversation_id = conv.id and h.status <> 'resuelto') AS escalada,
               ${CONVERSACION_FUNNEL_ESTADO_SQL} AS funnel_estado
@@ -3471,6 +3480,7 @@ export async function renderConversacionesPage(
     const detalleResult = await client.query<ConversacionDetalleRow>(
       `SELECT conv.id, conv.status, conv.started_at, conv.closed_at, conv.bot_paused,
               c.name AS customer_name, c.external_id,
+              conv.costo_total_usd, conv.tokens_entrada_total, conv.tokens_salida_total,
               h.id AS handoff_id, h.reason AS handoff_reason, h.status AS handoff_status,
               h.summary AS handoff_summary, a.username AS handoff_assigned_to,
               exists(select 1 from handoff_queue h2 where h2.conversation_id = conv.id and h2.status <> 'resuelto') AS escalada,
@@ -3518,7 +3528,7 @@ export async function renderConversacionesPage(
         <a class="convitem${row.id === selectedId ? " convitem--active" : ""}" href="/admin/conversaciones?estado=${estado}&c=${row.id}">
           <div class="convitem__row">
             <span class="convitem__who">${escapeHtml(who)}</span>
-            <span class="convitem__time">${formatRelativo(row.ultimo_at)}</span>
+            <span class="convitem__time">${formatMoney(Number(row.costo_total_usd), "USD")} · ${formatRelativo(row.ultimo_at)}</span>
           </div>
           <span class="convitem__msg">${escapeHtml(truncate(row.ultimo_mensaje, 64))}</span>
           <div class="convitem__chips">${conversacionEstadoChip(row.funnel_estado, row.escalada)}${conversacionCanalChip(row.channel, row.provider)}</div>
@@ -3626,6 +3636,7 @@ export async function renderConversacionesPage(
           <h2>${escapeHtml(who)}</h2>
           <div class="thread__metarow">
             <span class="thread__meta">${escapeHtml(detalle.external_id)} ${conversacionEstadoChip(detalle.funnel_estado, detalle.escalada)} ${ticketStatusInline} ${asignadoInline}</span>
+            <span class="thread__costo">${formatMoney(Number(detalle.costo_total_usd), "USD")} · ${Number(detalle.tokens_entrada_total).toLocaleString("es-CO")} entrada / ${Number(detalle.tokens_salida_total).toLocaleString("es-CO")} salida</span>
           </div>
         </div>
         <div class="thread__headactions">
@@ -3712,7 +3723,8 @@ const LEADS_QUERY = `
       ELSE 'sin_actividad_comercial'
     END AS estado,
     COALESCE(ord.pedidos, 0) AS pedidos,
-    ord.ultima_compra AS ultima_compra
+    ord.ultima_compra AS ultima_compra,
+    coalesce(costo.costo_acumulado_usd, 0) AS costo_acumulado_usd
   FROM customers c
   LEFT JOIN LATERAL (
     SELECT content FROM messages msg
@@ -3738,6 +3750,12 @@ const LEADS_QUERY = `
     JOIN conversations conv ON conv.id = h.conversation_id
   ) h ON h.customer_id = c.id
   LEFT JOIN (SELECT DISTINCT customer_id FROM quotes) q ON q.customer_id = c.id
+  -- Costo acumulado de TODAS las conversaciones del cliente (migrations/0057):
+  -- un lead con varias conversaciones suma el costo de todas.
+  LEFT JOIN (
+    SELECT customer_id, sum(costo_total_usd) AS costo_acumulado_usd
+    FROM conversations GROUP BY customer_id
+  ) costo ON costo.customer_id = c.id
   ORDER BY c.created_at DESC
 `;
 
@@ -3758,6 +3776,7 @@ interface LeadRow {
   estado: LeadEstado;
   pedidos: string;
   ultima_compra: string | null;
+  costo_acumulado_usd: string;
 }
 
 type LeadRowWithSegment = LeadRow & { segment: CustomerSegment };
@@ -3885,6 +3904,7 @@ export async function renderLeadsPage(
         <td>${toggleSwitchHtml(`/admin/leads/${row.id}`, !row.bot_paused, `el bot para "${who}"`)}</td>
         <td><span class="chip ${LEAD_ESTADO_CHIP[row.estado]}">${escapeHtml(LEAD_ESTADO_LABEL[row.estado])}</span></td>
         <td class="mono">${row.pedidos}</td>
+        <td class="mono">${formatMoney(Number(row.costo_acumulado_usd), "USD")}</td>
         <td>${row.ultima_compra ? formatRelativo(row.ultima_compra) : "—"}</td>
         <td>${escapeHtml(row.city ?? "—")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
@@ -3928,15 +3948,15 @@ export async function renderLeadsPage(
       </div>
       <table data-resizable-table="leads">
         <colgroup>
-          <col style="width:16%"><col style="width:10%"><col style="width:6%">
-          <col style="width:10%"><col style="width:7%"><col style="width:10%">
-          <col style="width:9%"><col style="width:10%"><col style="width:22%">
+          <col style="width:15%"><col style="width:10%"><col style="width:6%">
+          <col style="width:10%"><col style="width:7%"><col style="width:8%">
+          <col style="width:10%"><col style="width:9%"><col style="width:10%"><col style="width:15%">
         </colgroup>
         <thead><tr>
           <th>Cliente</th><th>Clasificación</th><th>Bot</th><th>Estado</th>
-          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
+          <th>Pedidos</th><th>Costo</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
         </tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
+        <tbody>${tableRows || `<tr><td colspan="10">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
@@ -3960,7 +3980,7 @@ export async function exportLeadsCsv(): Promise<string | null> {
   }
   const rows = await fetchLeads();
   return toCsv(
-    ["nombre", "telefono", "ultimo_mensaje", "estado", "clasificacion", "pedidos", "ultima_compra", "ciudad", "cliente_desde"],
+    ["nombre", "telefono", "ultimo_mensaje", "estado", "clasificacion", "pedidos", "costo_usd", "ultima_compra", "ciudad", "cliente_desde"],
     rows.map((row) => [
       row.name ?? "",
       row.external_id,
@@ -3968,6 +3988,7 @@ export async function exportLeadsCsv(): Promise<string | null> {
       LEAD_ESTADO_LABEL[row.estado],
       SEGMENT_LABEL[row.segment],
       row.pedidos,
+      Number(row.costo_acumulado_usd).toFixed(6),
       // pg parsea timestamptz como objeto Date, no string, pese al tipo
       // declarado en LeadRow — a diferencia de formatFecha() (que ya
       // tolera Date u string vía `new Date(value)`), acá se serializa a

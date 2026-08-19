@@ -383,11 +383,15 @@ export async function processConversation(
     // Espejo de negocio en Postgres (Fase 11.5, ver ADR-017 y
     // analitica-costos.md) — best-effort: un fallo acá no debe interrumpir
     // la respuesta al cliente, el log a Loki sigue siendo la fuente de
-    // verdad operacional.
+    // verdad operacional. En la misma transacción se acumula el costo/tokens
+    // en `conversations` (migrations/0057): el panel (lista de Conversaciones
+    // y columna de Leads) lee ese acumulado sin recomputar llm_usage.
     try {
       const cost = calculateCost(resolvedModel, response.usage.inputTokens, response.usage.outputTokens);
-      await withTransaction((client) =>
-        client.query(
+      const inputTokens = response.usage.inputTokens;
+      const outputTokens = response.usage.outputTokens;
+      await withTransaction(async (client) => {
+        await client.query(
           `INSERT INTO llm_usage
              (conversation_id, provider, model, input_tokens, output_tokens, latency_ms, cost_usd)
            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -395,13 +399,21 @@ export async function processConversation(
             conversationId,
             providerKey,
             resolvedModel,
-            response.usage.inputTokens,
-            response.usage.outputTokens,
+            inputTokens,
+            outputTokens,
             llmLatencyMs,
             cost,
           ],
-        ),
-      );
+        );
+        await client.query(
+          `UPDATE conversations SET
+             costo_total_usd = costo_total_usd + coalesce($2, 0),
+             tokens_entrada_total = tokens_entrada_total + $3,
+             tokens_salida_total = tokens_salida_total + $4
+           WHERE id = $1`,
+          [conversationId, cost, inputTokens, outputTokens],
+        );
+      });
     } catch (error) {
       turnLogger.warn({ error, event: "orchestrator.llm_usage_insert_fallido" }, "No se pudo registrar el uso de LLM en llm_usage");
     }

@@ -100,6 +100,12 @@ Tras QA visual el hint del bloque decía literalmente "conversaciones cerradas" 
 
 De paso se corrigió la tarjeta KPI "Costo promedio · conversación con pedido", que decía "Últimas conversaciones cerradas" — la query nunca tuvo `LIMIT`, promedia *todas* las conversaciones cerradas con pedido, así que "Últimas" era información falsa. Ahora muestra el conteo real (ej. "1 conversación cerrada").
 
+### Costo acumulado por conversación y por lead
+
+Migración `0057_conversaciones_costo_acumulado.cjs`: `conversations` suma columnas `costo_total_usd`, `tokens_entrada_total` y `tokens_salida_total`, persistidas desde `loop.ts` en la misma transacción que el insert a `llm_usage` (best-effort, no rompe la respuesta). El panel de Conversaciones muestra el costo en cada ítem de la lista y en el detalle (con tokens), y Leads suma el acumulado de todas las conversaciones del cliente en la columna "Costo" (y en el CSV como `costo_usd`).
+
+El backfill (pedido del usuario, datos existentes): donde `llm_usage` tenía datos reales se suma la suma real; las conversaciones sin uso registrado reciben valores sintéticos realistas en `llm_usage` (tokens/costo derivados de sus mensajes con precio deepseek-chat, `created_at` dentro del ciclo de vida de la conversación), de modo que la Analítica (costo del mes, tendencia, costo por resultado) también refleja esos costos. Es one-time — instalaciones nuevas solo acumulan uso real.
+
 ## Insights por IA (stretch goal, no comprometido)
 
 Resumen de conversación por LLM (qué quería el cliente, objeciones, oportunidad de venta) — factible con los datos ya disponibles (`messages` completo por conversación), pero implica una llamada nueva al LLM por conversación cerrada, con costo recurrente que esta misma fase ahora puede medir con precisión (`llm_usage`) antes de comprometerse a pagarlo. Se documenta como candidato a implementar después de tener al menos una semana de datos reales de costo — no se agenda dentro del alcance comprometido de la Fase 11.

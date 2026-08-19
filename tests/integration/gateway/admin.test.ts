@@ -319,6 +319,18 @@ beforeAll(async () => {
     [quoteDespacho.rows[0]!.id, conversationDespacho.rows[0]!.id, customerDespacho.rows[0]!.id],
   );
 
+  // Costo/tokens acumulados (migrations/0057): se fijan valores conocidos en
+  // dos conversaciones para aserciones estables de la UI (lista, detalle y
+  // columna de Leads), en vez de depender de la data sintética del backfill.
+  await adminPool.query(
+    `UPDATE conversations SET costo_total_usd = 0.1234, tokens_entrada_total = 150000, tokens_salida_total = 8000 WHERE id = $1`,
+    [conversacionAbierta],
+  );
+  await adminPool.query(
+    `UPDATE conversations SET costo_total_usd = 0.05, tokens_entrada_total = 50000, tokens_salida_total = 3000 WHERE id = $1`,
+    [conversacionCerrada],
+  );
+
   // Admin real (Fase 13, ver ADR-025) para autenticar el resto de los
   // tests — role='master' para no depender de permisos granulares acá
   // (esos se prueban en tests/unit de src/admin/auth/).
@@ -859,6 +871,24 @@ describe("panel admin", () => {
       expect(response.body).toContain('<span class="chip chip--muted">Cerrada</span>');
     });
 
+    it("muestra el costo acumulado de cada conversación en la lista y en el detalle (migrations/0057)", async () => {
+      const lista = await app.inject({
+        method: "GET",
+        url: "/admin/conversaciones?estado=todas",
+        headers: { cookie: sessionCookie },
+      });
+      expect(lista.statusCode).toBe(200);
+      expect(lista.body).toContain("$0.1234");
+      const detalle = await app.inject({
+        method: "GET",
+        url: `/admin/conversaciones?estado=todas&c=${conversacionAbierta}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(detalle.statusCode).toBe(200);
+      expect(detalle.body).toContain("$0.1234");
+      expect(detalle.body).toContain("150.000 entrada / 8.000 salida");
+    });
+
     it("el detalle de una conversación escalada muestra el estado del ticket, quién lo tomó y el botón para ver el ticket", async () => {
       const response = await app.inject({
         method: "GET",
@@ -989,11 +1019,23 @@ describe("panel admin", () => {
       expect(response.body).toContain("Clasificación");
       expect(response.body).toContain("<th>Bot</th>");
       expect(response.body).toContain("<th>Pedidos</th>");
+      expect(response.body).toContain("<th>Costo</th>");
       expect(response.body).toContain("Última compra");
       expect(response.body).toContain("<th>Ciudad</th>");
       expect(response.body).toContain("Crear promoción para este segmento");
       expect(response.body).toContain("Ver información del cliente");
       expect(response.body).not.toContain("<th>Último mensaje</th>");
+    });
+
+    it("muestra el costo acumulado del cliente (suma de sus conversaciones, migrations/0057)", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/leads",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      // "Cliente Overview" tiene conversacionAbierta con costo 0.1234.
+      expect(response.body).toContain("$0.1234");
     });
 
     it("el último mensaje ignora los tool_results vacíos y muestra el texto real del cliente en el CSV (Fase 23: la tabla en pantalla ya no muestra esta columna, ver ADR-036)", async () => {
@@ -1016,7 +1058,7 @@ describe("panel admin", () => {
       expect(response.headers["content-type"]).toContain("text/csv");
       expect(response.headers["content-disposition"]).toContain("leads.csv");
       expect(response.body).toContain(
-        "nombre,telefono,ultimo_mensaje,estado,clasificacion,pedidos,ultima_compra,ciudad,cliente_desde",
+        "nombre,telefono,ultimo_mensaje,estado,clasificacion,pedidos,costo_usd,ultima_compra,ciudad,cliente_desde",
       );
       expect(response.body).toContain("Cliente Con Pedido");
       // Regresión: pg parsea timestamptz como objeto Date, no string — un
