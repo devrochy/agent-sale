@@ -1431,7 +1431,7 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
      act--redline   cancela o destruye        cancelar pedido
      act--ignition  modifica o toma control   editar, tomar ticket
      act--violet    crea algo aparte          crear promocion
-     act--chrome    reencamina                reasignar al asistente
+     act--chrome    lleva a otro lado         reasignar al asistente, ver conversacion
 
    Va tambien en :focus-visible: quien navega con teclado necesita la misma
    pista que quien usa el mouse. */
@@ -4226,7 +4226,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
         <td><div class="rowactions">${row.assigned_to_name ? `<span>${escapeHtml(row.assigned_to_name)}</span>` : `<span class="hint">Sin asignar</span>`}${actionsHtml}</div></td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td>${escapeHtml(row.summary ?? "")}</td>
-        <td><a class="btn btn--ghost btn--icon" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></td>
+        <td><a class="btn btn--ghost btn--icon act--chrome" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></td>
       </tr>`;
     })
     .join("\n");
@@ -4256,7 +4256,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
       <table data-resizable-table="tickets">
         <colgroup>
           <col style="width:14%"><col style="width:13%"><col style="width:9%">
-          <col style="width:21%"><col style="width:10%"><col style="width:27%"><col style="width:56px">
+          <col style="width:21%"><col style="width:10%"><col style="width:24%"><col style="width:9%">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="cliente">Cliente</th>
@@ -4265,7 +4265,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
           <th class="sortable" data-sort-key="asignado">Asignado a</th>
           <th class="sortable" data-sort-key="creado">Creado</th>
           <th>Resumen</th>
-          <th></th>
+          <th>Conversación</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>

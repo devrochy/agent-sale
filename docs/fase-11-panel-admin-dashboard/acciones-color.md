@@ -27,12 +27,16 @@ la clase dice qué tono usa, y esta tabla dice dónde va cada tono.
 | `act--redline` | rojo | cancelan o destruyen | Cancelar pedido |
 | `act--ignition` | naranja | modifican o toman control | Editar, Tomar ticket |
 | `act--violet` | violeta | crean algo aparte | Crear promoción |
-| `act--chrome` | celeste | reencaminan | Reasignar al asistente |
+| `act--chrome` | celeste | llevan a otro lado | Reasignar al asistente, Ver conversación |
 
-**Un botón sin clase queda neutro, y eso también es una decisión.** "Ver
-conversación" y el chevron de expandir no llevan color: navegar no confirma,
-no destruye y no modifica nada, así que teñirlos sería inventar una
-intención que no existe.
+**Un botón sin clase queda neutro, y eso también es una decisión.** El
+chevron de expandir no lleva color: abre y cierra la propia fila, no lleva a
+ningún lado ni cambia nada.
+
+"Ver conversación" sí lo lleva, en `act--chrome`. Por eso ese tono se define
+como **"lleva a otro lado"** y no como "reencamina": abarca tanto mandar el
+caso de vuelta al asistente como abrir la conversación en otra pantalla. Las
+dos sacan el foco de esta fila.
 
 ## Se unificaron dos sistemas
 

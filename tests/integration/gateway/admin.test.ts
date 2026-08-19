@@ -401,6 +401,19 @@ describe("panel admin", () => {
       expect(response.body).not.toMatch(/\.act--redline \{/);
     });
 
+    it("ninguna columna de Tickets queda sin encabezado", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // Era la única columna sin título del panel. Se llama "Conversación"
+      // y no "Acción" porque las acciones del ticket —tomar, resolver,
+      // reasignar— viven en la columna "Asignado a".
+      expect(response.body).toContain("<th>Conversación</th>");
+      expect(response.body).not.toContain("<th></th>");
+    });
+
     it("no quedan dos sistemas de color para lo mismo", async () => {
       const response = await app.inject({
         method: "GET",
