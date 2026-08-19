@@ -12,7 +12,14 @@ export interface ProductMatch {
   name: string;
   attributes: Record<string, unknown>;
   price: number;
-  stock: number;
+  /**
+   * Si hay unidades para vender, no cuántas. El número exacto no le sirve
+   * al cliente —"quedan 12" no cambia ninguna decisión de compra— y una vez
+   * que el LLM lo tiene, tarde o temprano lo escribe. `generar_cotizacion`
+   * sí valida la cantidad real contra la base y devuelve el número cuando
+   * el pedido excede lo disponible, que es el único momento en que importa.
+   */
+  disponible: boolean;
   description: string | null;
   image_url: string | null;
 }
@@ -40,7 +47,8 @@ const MATCH_FROM = `
 `;
 
 /**
- * Tool consultar_inventario (ver docs/fase-14-catalogo-extendido/contratos-tools-v2.md).
+ * Tool consultar_inventario (ver docs/fase-14-catalogo-extendido/contratos-tools-v2.md
+ * y docs/fase-21-mensajes-asistente/catalogo-en-conversacion.md).
  * `matches[]` sigue siendo plano — una fila por variante (SKU real), no por
  * producto genérico agrupado: el LLM es quien agrupa variantes del mismo
  * producto (mismo `product_id`) al responder, ver ADR-026. Solo variantes
@@ -76,7 +84,7 @@ export async function consultarInventario(
       name: row.name,
       attributes: row.attributes,
       price: Number(row.price),
-      stock: Number(row.stock),
+      disponible: Number(row.stock) > 0,
       description: row.description,
       image_url: row.image_url,
     })),
