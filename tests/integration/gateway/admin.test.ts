@@ -401,6 +401,22 @@ describe("panel admin", () => {
       expect(response.body).not.toMatch(/\.act--redline \{/);
     });
 
+    it("los iconos de acción no se envuelven a una segunda línea", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/productos",
+        headers: { cookie: sessionCookie },
+      });
+      // Con flex-wrap: wrap y una columna angosta, los tres botones de
+      // Productos caían dos arriba y uno abajo, y la fila crecía de alto.
+      expect(response.body).toContain("flex-wrap: nowrap");
+      expect(response.body).not.toMatch(/\.rowactions \{[^}]*flex-wrap: wrap/);
+      // El ancho de esa columna va en px: con table-layout: fixed un
+      // porcentaje manda estricto, y una columna de botones necesita el
+      // ancho que ocupan, no una fracción de la tabla.
+      expect(response.body).toMatch(/<col style="width:\d+px">/);
+    });
+
     it("ninguna columna de Tickets queda sin encabezado", async () => {
       const response = await app.inject({
         method: "GET",

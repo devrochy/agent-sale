@@ -61,9 +61,30 @@ cambio: existía `--go-soft`, `--redline-soft`, `--violet-soft` y
 `--chrome-soft`, pero el naranja de marca no tenía su versión suave y se
 venía resolviendo con `rgba()` a mano en cada sitio.
 
+## Una sola línea, siempre
+
+`.rowactions` es `flex-wrap: nowrap`. Con `wrap` y una columna angosta, los
+tres botones de Productos caían **dos arriba y uno abajo**, y la fila entera
+crecía de alto por eso.
+
+Que entren depende de tres cosas que van juntas:
+
+- **`gap: 6px`** entre botones (era 8).
+- **`padding` lateral de 12px** en la celda que los contiene (era 16), vía
+  `td:has(> .rowactions)`.
+- **El ancho de la columna en píxeles, no en porcentaje.** Con
+  `table-layout: fixed` el porcentaje manda estricto, así que una columna de
+  botones necesita el ancho que los botones ocupan y no una fracción de la
+  tabla, que cambia con cada pantalla. La cuenta: `n × 34px + (n−1) × 6px +
+  24px` de padding — **130px para tres botones, 100px para dos**.
+
+Al agregar un botón a una fila hay que subir el ancho de su columna. Si no,
+con `nowrap` el icono nuevo no se envuelve: se corta.
+
 ## Cobertura
 
 `tests/integration/gateway/admin.test.ts`: que Cancelar lleva `act--redline`
 y Guardar/Editar sus tonos, que **el color solo aparece bajo `:hover` /
-`:focus-visible`** y nunca en la regla base de la clase, y que no quedan
-rastros del sistema viejo de Tickets.
+`:focus-visible`** y nunca en la regla base de la clase, que no quedan
+rastros del sistema viejo de Tickets, y que `.rowactions` no vuelve a
+`flex-wrap: wrap`.

@@ -1457,7 +1457,15 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
    permisos (conectado por atributo form="..." a un <form> en la columna
    de Notificaciones, ver renderColaboradoresPage) + Activar/Desactivar,
    para que todos los botones de la fila queden juntos al final. */
-.rowactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* Los iconos de accion van SIEMPRE en una linea. Con flex-wrap: wrap y una
+   columna angosta, tres botones caian dos arriba y uno abajo, y la fila
+   crecia de alto por eso. El gap baja de 8 a 6 px para que entren, y la
+   celda que los contiene achica su padding lateral por la misma razon.
+   El ancho de la columna va en px y no en % (ver los colgroup): con
+   table-layout: fixed el porcentaje manda estricto, asi que una columna de
+   botones necesita el ancho que ocupan y no una fraccion de la tabla. */
+.rowactions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+td:has(> .rowactions) { padding-left: 12px; padding-right: 12px; }
 .permcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
@@ -5426,7 +5434,7 @@ export async function renderProductosPage(
       <table data-resizable-table="productos">
         <colgroup>
           <col style="width:7%"><col style="width:24%"><col style="width:13%">
-          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:8%">
+          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:130px">
         </colgroup>
         <thead><tr>
           <th>Foto</th>
@@ -6113,7 +6121,7 @@ export async function renderPedidosPage(
       <table data-resizable-table="pedidos">
         <colgroup>
           <col style="width:11%"><col style="width:16%"><col style="width:14%"><col style="width:14%">
-          <col style="width:19%"><col style="width:9%"><col style="width:9%"><col style="width:8%">
+          <col style="width:19%"><col style="width:9%"><col style="width:9%"><col style="width:100px">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="numero">N° pedido</th>
@@ -6257,7 +6265,7 @@ export async function renderAliadosPage(
       <table>
         <colgroup>
           <col style="width:28%"><col style="width:26%">
-          <col style="width:16%"><col style="width:16%"><col style="width:14%">
+          <col style="width:16%"><col style="width:16%"><col style="width:130px">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="name">Nombre</th>
@@ -6516,7 +6524,7 @@ export async function renderCategoriasPage(
       <table data-cattree>
         <colgroup>
           <col style="width:32%"><col style="width:12%">
-          <col style="width:19%"><col style="width:20%"><col style="width:17%">
+          <col style="width:19%"><col style="width:20%"><col style="width:130px">
         </colgroup>
         <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
@@ -7191,7 +7199,7 @@ export async function renderColaboradoresPage(
       <table data-resizable-table="colaboradores">
         <colgroup>
           <col style="width:16%"><col style="width:18%"><col style="width:13%">
-          <col style="width:10%"><col style="width:12%"><col style="width:23%"><col style="width:8%">
+          <col style="width:10%"><col style="width:12%"><col style="width:23%"><col style="width:100px">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="usuario">Usuario</th>
