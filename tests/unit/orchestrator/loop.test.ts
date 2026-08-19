@@ -197,11 +197,16 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
     vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
   });
 
-  it("responde normalmente cuando la cantidad de stock del texto coincide con el resultado real de una tool", async () => {
+  it("responde normalmente cuando informa disponibilidad sin decir cantidades", async () => {
+    // consultar_inventario ya no devuelve el número de stock: informa
+    // `disponible`. El guardrail no tiene cantidades contra qué comparar,
+    // así que una respuesta que no menciona ninguna pasa limpia.
     vi.mocked(executeTool).mockResolvedValue({
       type: "tool_result",
       tool_use_id: "toolu_1",
-      content: JSON.stringify({ matches: [{ sku: "CAS-001", price: 300000, stock: 12 }] }),
+      content: JSON.stringify({
+        matches: [{ sku: "CAS-001", price: 300000, disponible: true }],
+      }),
     });
     mockConverse
       .mockResolvedValueOnce({
@@ -209,19 +214,64 @@ describe("runTurn — guardrail de stock (Fase 12.1)", () => {
         content: [{ type: "tool_use", id: "toolu_1", name: "consultar_inventario", input: {} }],
         usage: USAGE,
       })
-      .mockResolvedValueOnce(endTurn("El casco cuesta $300.000. Quedan 12."));
+      .mockResolvedValueOnce(endTurn("El casco cuesta $300.000 y lo tenemos disponible."));
 
     const result = await runTurn("+573000000000", "tienen cascos?", "sid-5");
 
-    expect(result.responseText).toBe("El casco cuesta $300.000. Quedan 12.");
+    expect(result.responseText).toBe("El casco cuesta $300.000 y lo tenemos disponible.");
     expect(escalarHumano).not.toHaveBeenCalled();
   });
 
-  it("reintenta una vez y luego escala por seguridad si la cantidad de stock del texto no coincide con ninguna tool", async () => {
+  it("manda la foto solo si se consultó por sku, no por búsqueda de texto", async () => {
+    const conFoto = JSON.stringify({
+      matches: [{ sku: "CAS-001", price: 300000, disponible: true, image_url: "https://x/y.jpg" }],
+    });
     vi.mocked(executeTool).mockResolvedValue({
       type: "tool_result",
       tool_use_id: "toolu_1",
-      content: JSON.stringify({ matches: [{ sku: "CAS-001", price: 300000, stock: 12 }] }),
+      content: conFoto,
+    });
+
+    // Búsqueda por texto: aunque devuelva un único resultado, el cliente
+    // está explorando y no pidió ver ese producto.
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "consultar_inventario", input: { query: "casco" } },
+        ],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Tenemos el Casco Integral a $300.000."));
+    const porTexto = await runTurn("+573000000000", "tienen cascos?", "sid-foto-1");
+    expect(porTexto.mediaUrl).toBeNull();
+
+    // Por sku: el prompt indica consultar así cuando piden detalle de un
+    // producto puntual, así que eso sí es una solicitud explícita.
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "consultar_inventario", input: { sku: "CAS-001" } },
+        ],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Te paso la foto del Casco Integral."));
+    const porSku = await runTurn("+573000000000", "mostrame ese casco", "sid-foto-2");
+    expect(porSku.mediaUrl).toBe("https://x/y.jpg");
+  });
+
+  it("reintenta una vez y luego escala si el texto menciona una cantidad disponible", async () => {
+    // Con `disponible` en vez de `stock`, no hay cantidad conocida alguna:
+    // cualquier "quedan N" falla la verificación. El guardrail pasó de
+    // comprobar que el número fuera el correcto a impedir que se mencione
+    // uno, y esa regla la hace cumplir el código y no el prompt.
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({
+        matches: [{ sku: "CAS-001", price: 300000, disponible: true }],
+      }),
     });
     mockConverse
       .mockResolvedValueOnce({

@@ -280,9 +280,13 @@ beforeAll(async () => {
      VALUES ($1, $2, 250000, 250000) RETURNING id`,
     [conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
+  // Con datos de entrega: un pedido a domicilio real los tiene, y sin
+  // ellos la columna Entrega no puede ofrecer "Ver dirección".
   await adminPool.query(
-    `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total)
-     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'admin-test-order-1', 250000)`,
+    `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total,
+                         delivery_address, delivery_full_name, delivery_id_document, delivery_city)
+     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'admin-test-order-1', 250000,
+             'Calle 10 # 20-30', 'Cliente De Prueba', '1020304050', 'Manizales')`,
     [quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
 
@@ -356,16 +360,128 @@ afterAll(async () => {
 
 describe("panel admin", () => {
   describe("apariencia (tema claro/oscuro)", () => {
-    it("el menú de cuenta ofrece las tres opciones de apariencia", async () => {
+    it("el menú de cuenta trae un switch de dos estados", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/admin",
         headers: { cookie: sessionCookie },
       });
       expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('data-theme-option="system"');
-      expect(response.body).toContain('data-theme-option="light"');
-      expect(response.body).toContain('data-theme-option="dark"');
+      // role="switch" y no tres botones: la opción "Sistema" se retiró.
+      expect(response.body).toContain("data-theme-toggle");
+      expect(response.body).toContain('role="switch"');
+      expect(response.body).not.toContain("data-theme-option");
+    });
+
+    it("los botones de acción toman color según lo que hacen, solo en hover", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // Cancelar en rojo, marcar entregado en verde — y neutros en reposo,
+      // que es lo que evita que una columna de colores repetidos deje de
+      // significar nada.
+      expect(response.body).toMatch(/class="btn btn--ghost btn--icon act--redline"[^>]*Cancelar/);
+
+      // "Marcar entregado" solo existe en un pedido despachado, y el del
+      // fixture está abierto; el verde de confirmar se verifica sobre
+      // "Guardar cambios", que es la misma intención.
+      const aliados = await app.inject({
+        method: "GET",
+        url: "/admin/aliados",
+        headers: { cookie: sessionCookie },
+      });
+      expect(aliados.body).toMatch(/class="btn btn--ghost btn--icon act--go"[^>]*Guardar cambios/);
+      expect(aliados.body).toMatch(/class="btn btn--ghost btn--icon act--ignition"[^>]*Editar/);
+      // El color solo aparece bajo :hover / :focus-visible, nunca en la
+      // regla base de la clase.
+      expect(response.body).toContain(".btn--ghost.act--redline:hover");
+      expect(response.body).toContain(".btn--ghost.act--redline:focus-visible");
+      expect(response.body).not.toMatch(/\.act--redline \{/);
+    });
+
+    it("los iconos de acción no se envuelven a una segunda línea", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/productos",
+        headers: { cookie: sessionCookie },
+      });
+      // Con flex-wrap: wrap y una columna angosta, los tres botones de
+      // Productos caían dos arriba y uno abajo, y la fila crecía de alto.
+      expect(response.body).toContain("flex-wrap: nowrap");
+      expect(response.body).not.toMatch(/\.rowactions \{[^}]*flex-wrap: wrap/);
+      // El ancho de esa columna va en px: con table-layout: fixed un
+      // porcentaje manda estricto, y una columna de botones necesita el
+      // ancho que ocupan, no una fracción de la tabla.
+      expect(response.body).toMatch(/<col style="width:\d+px">/);
+    });
+
+    it("los iconos de la última columna se apoyan en el borde derecho", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/productos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("td:last-child > .rowactions { justify-content: flex-end; }");
+      // El encabezado acompaña a sus botones, con clase y no con
+      // th:last-child: hay tablas que terminan en texto.
+      expect(response.body).toContain('<th class="th--end">Acciones</th>');
+      expect(response.body).toContain("th.th--end { text-align: right; }");
+    });
+
+    it("la celda mixta de Tickets no se alinea a la derecha", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // "Asignado a" también usa .rowactions, pero lleva el nombre del
+      // asesor adelante y no es la última celda: ahí el texto tiene que
+      // empezar a la izquierda como el resto de la tabla. Lo que lo
+      // garantiza es el td:last-child del selector, no una excepción.
+      expect(response.body).not.toContain('<th class="th--end">Asignado a</th>');
+      expect(response.body).toContain('<th class="th--end">Conversación</th>');
+    });
+
+    it("ninguna columna de Tickets queda sin encabezado", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // Era la única columna sin título del panel. Se llama "Conversación"
+      // y no "Acción" porque las acciones del ticket —tomar, resolver,
+      // reasignar— viven en la columna "Asignado a".
+      expect(response.body).toMatch(/<th[^>]*>Conversación<\/th>/);
+      expect(response.body).not.toContain("<th></th>");
+    });
+
+    it("no quedan dos sistemas de color para lo mismo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // Tickets tenía su propio btn--icon-go/amber/chrome, que pintaba
+      // siempre. Se unificó al de hover para que el panel entero se
+      // comporte igual.
+      expect(response.body).not.toContain("btn--icon-go");
+      expect(response.body).not.toContain("btn--icon-amber");
+      expect(response.body).not.toContain("btn--icon-chrome");
+    });
+
+    it("el modal declara su color, que no hereda del body", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      // Un <dialog> vive en el top layer y el navegador le asigna
+      // CanvasText. Mientras el tema salía de prefers-color-scheme
+      // coincidían por casualidad; forzando "Oscuro" con el sistema en
+      // claro, los títulos del modal salían negros sobre el panel oscuro.
+      expect(response.body).toMatch(/dialog\.modal \{[^}]*color: var\(--ink\)/);
     });
 
     it("aplica el tema guardado antes de pintar, para que no haya parpadeo", async () => {
@@ -387,11 +503,24 @@ describe("panel admin", () => {
         url: "/admin",
         headers: { cookie: sessionCookie },
       });
-      // Las dos vías tienen que existir: sin la primera se pierde el
-      // comportamiento automático que el panel ya tenía; sin la segunda el
-      // selector no haría nada.
+      // La vía por `prefers-color-scheme` se mantiene aunque el script
+      // siempre fije `data-theme`: es lo único que queda si el JS no corre.
       expect(response.body).toContain(':root:not([data-theme="light"])');
       expect(response.body).toContain(':root[data-theme="dark"]');
+    });
+
+    it("sin preferencia guardada el tema arranca por el del sistema", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      const head = response.body.slice(0, response.body.indexOf("</head>"));
+      // Con dos estados el switch tiene que reflejar algo real desde la
+      // primera visita: si arrancara siempre en "claro" mentiría sobre lo
+      // que se está viendo en un equipo configurado en oscuro.
+      expect(head).toContain("prefers-color-scheme: dark");
+      expect(head).toContain('setAttribute("data-theme"');
     });
   });
 
@@ -1614,6 +1743,157 @@ describe("panel admin", () => {
         `SELECT brand_voice_config FROM settings`,
       );
       expect(row.rows[0]!.brand_voice_config).toBeNull();
+    });
+  });
+
+  describe("pedidos — estados, filtros y entrega", () => {
+    it("la tabla trae filtros por estado, pago y entrega", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-filter-key="estado"');
+      expect(response.body).toContain('data-filter-key="pago"');
+      expect(response.body).toContain('data-filter-key="entrega"');
+      // Los filtros no sirven si las filas no traen contra qué comparar.
+      expect(response.body).toMatch(/data-filter-estado="[a-z_]+"/);
+      expect(response.body).toMatch(/data-filter-pago="[a-z_]+"/);
+    });
+
+    it("el estado sale del par status + payment_status, no de una columna cruda", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // El pedido del fixture es 'abierto' + 'pagado' -> "Pagado".
+      expect(response.body).toContain("Pagado");
+      // Y nunca se muestra el valor crudo de la columna.
+      expect(response.body).not.toContain(">abierto<");
+    });
+
+    it("el chip de Domicilio es el que abre la dirección, sin botón aparte", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // Es un <button> real y no un span con onclick: se alcanza con
+      // teclado y se anuncia como control.
+      expect(response.body).toMatch(
+        /<button[^>]*data-open-dialog="direccion-[^"]*"[^>]*class="chip chip--chrome chip--action"/,
+      );
+      expect(response.body).toContain("<dl class=\"datalist\">");
+      // El botón de texto al lado repetía lo que el chip ya nombraba.
+      expect(response.body).not.toContain("Ver dirección");
+      // Y antes de eso, la dirección se imprimía apretada en los items.
+      expect(response.body).not.toContain("Entrega a:");
+    });
+
+    it("los métodos de pago se muestran con su nombre, no con la clave de la tool", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("Transferencia");
+      // `efectivo_contraentrega` se lee como una variable en una tabla.
+      expect(response.body).not.toContain(">efectivo_contraentrega<");
+    });
+  });
+
+  describe("cuentas para transferencia", () => {
+    it("guarda las cuentas y descarta las filas vacías", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transferencias",
+        payload: new URLSearchParams([
+          ["entity", "Nequi"],
+          ["accountType", ""],
+          ["accountNumber", "3001234567"],
+          ["holderName", "ForMotos SAS"],
+          ["holderDocument", "900123456-7"],
+          ["active", "1"],
+          // Fila agregada y dejada en blanco: no debería guardarse.
+          ["entity", ""],
+          ["accountType", ""],
+          ["accountNumber", ""],
+          ["holderName", ""],
+          ["holderDocument", ""],
+          ["active", "1"],
+        ]).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{ transfer_accounts: unknown[] }>(
+        `SELECT transfer_accounts FROM settings WHERE id = $1`,
+        [settingsId],
+      );
+      expect(fila.rows[0]!.transfer_accounts).toHaveLength(1);
+      expect(fila.rows[0]!.transfer_accounts[0]).toMatchObject({
+        entity: "Nequi",
+        accountNumber: "3001234567",
+        active: true,
+      });
+    });
+
+    it("una cuenta a medio llenar no se guarda en silencio", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transferencias",
+        payload: new URLSearchParams([
+          ["entity", "Bancolombia"],
+          ["accountType", "Ahorros"],
+          ["accountNumber", ""],
+          ["holderName", "ForMotos"],
+          ["holderDocument", ""],
+          ["active", "1"],
+        ]).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      // Guardar media cuenta deja al asistente mandando datos incompletos,
+      // que es peor que rechazar el formulario.
+      expect(decodeURIComponent(response.headers.location as string)).toContain(
+        "entidad y número",
+      );
+    });
+
+    it("Cobros muestra la URL de eventos de Wompi, y es la ruta que el servidor escucha", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // Sin este dato, configurar Wompi exigía adivinar la ruta o buscarla
+      // en el código: la sección pedía llave y secreto pero no decía a
+      // dónde apuntar el webhook.
+      expect(response.body).toContain("/webhooks/wompi");
+      expect(response.body).toContain("transaction.updated");
+      // Y la ruta anunciada tiene que ser una que el servidor atienda de
+      // verdad — un 404 acá se descubriría recién con el primer pago real.
+      const webhook = await app.inject({
+        method: "POST",
+        url: "/webhooks/wompi",
+        headers: { "content-type": "application/json" },
+        payload: {},
+      });
+      expect(webhook.statusCode).not.toBe(404);
+    });
+
+    it("el estado viaja en un select, no en un checkbox", async () => {
+      // Un checkbox desmarcado no se envía: `active` llegaría más corto que
+      // el resto de los arrays y las filas se desfasarían entre sí.
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('name="active"');
+      expect(response.body).not.toContain('type="checkbox" name="active"');
     });
   });
 

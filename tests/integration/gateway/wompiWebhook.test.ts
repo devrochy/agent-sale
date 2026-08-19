@@ -86,7 +86,7 @@ beforeAll(async () => {
   quoteId = quote.rows[0]!.id;
   const order = await adminPool.query<{ id: string }>(
     `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
-     VALUES ($1, $2, $3, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
+     VALUES ($1, $2, $3, 'abierto', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
      RETURNING id`,
     [quoteId, conversationId, customerId, `idem-wompi-webhook-${Date.now()}`, PAYMENT_LINK_ID],
   );
@@ -153,9 +153,46 @@ describe("POST /webhooks/wompi", () => {
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
   });
 
-  it("transacción DECLINED responde 200 pero no marca el pedido como pagado", async () => {
-    const event = buildEvent("tx-declined", "DECLINED", PAYMENT_LINK_ID);
-    const response = await post(event);
+  it("transacción DECLINED marca el pedido como rechazado y avisa", async () => {
+    // Pedido propio: marcar rechazado es un cambio real de estado, y sobre
+    // el pedido compartido dejaría a los tests de APPROVED sin nada que
+    // aprobar (el guard es `payment_status = 'pendiente'`).
+    const linkId = `link-declined-${Date.now()}`;
+    const order = await adminPool.query<{ id: string }>(
+      `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
+       VALUES ($1, $2, $3, 'abierto', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
+       RETURNING id`,
+      [quoteId, conversationId, customerId, `idem-declined-${Date.now()}`, linkId],
+    );
+    const declinedOrderId = order.rows[0]!.id;
+    await adminPool.query(
+      `INSERT INTO wompi_payment_links (payment_link_id, order_id) VALUES ($1, $2)`,
+      [linkId, declinedOrderId],
+    );
+
+    const response = await post(buildEvent("tx-declined", "DECLINED", linkId));
+    expect(response.statusCode).toBe(200);
+
+    // Antes se descartaba con un log: el pedido se quedaba "pendiente de
+    // pago" hasta que el job de los 5 días lo vencía, y nadie se enteraba
+    // de que el pago había rebotado hoy.
+    const fila = await adminPool.query<{ payment_status: string; status_reason: string | null }>(
+      `SELECT payment_status, status_reason FROM orders WHERE id = $1`,
+      [declinedOrderId],
+    );
+    expect(fila.rows[0]!.payment_status).toBe("rechazado");
+    expect(fila.rows[0]!.status_reason).toContain("DECLINED");
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+
+    // Y el pedido compartido, intacto: el rechazo no toca a nadie más.
+    expect(await paymentStatus()).toBe("pendiente");
+
+    await adminPool.query(`DELETE FROM wompi_payment_links WHERE order_id = $1`, [declinedOrderId]);
+    await adminPool.query(`DELETE FROM orders WHERE id = $1`, [declinedOrderId]);
+  });
+
+  it("PENDING no toca el pedido — es transitorio y Wompi manda otro evento al resolver", async () => {
+    const response = await post(buildEvent("tx-pending", "PENDING", PAYMENT_LINK_ID));
     expect(response.statusCode).toBe(200);
     expect(await paymentStatus()).toBe("pendiente");
     expect(sendWhatsAppMessage).not.toHaveBeenCalled();
@@ -230,7 +267,7 @@ describe("POST /webhooks/wompi — notificación a admins con permiso (Fase 13)"
     quoteId2 = quote.rows[0]!.id;
     const order = await adminPool.query<{ id: string }>(
       `INSERT INTO orders (quote_id, conversation_id, customer_id, status, payment_method, payment_status, delivery_method, idempotency_key, total, wompi_payment_link_id)
-       VALUES ($1, $2, $3, 'confirmed', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
+       VALUES ($1, $2, $3, 'abierto', 'pago_en_linea', 'pendiente', 'domicilio', $4, 1000, $5)
        RETURNING id`,
       [quoteId2, conversationId2, customerId2, `idem-wompi-webhook-admins-${Date.now()}`, PAYMENT_LINK_ID_2],
     );

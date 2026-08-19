@@ -39,4 +39,8 @@ export type {
 export { createHandoffToken, resolveHandoffToken } from "./handoffTokenDirectory.js";
 export type { HandoffTokenLookup } from "./handoffTokenDirectory.js";
 export { createReviewToken, resolveReviewToken } from "./reviewTokenDirectory.js";
-export { createWompiPaymentLink, resolveWompiPaymentLink } from "./wompiPaymentLinkDirectory.js";
+export {
+  createWompiPaymentLink,
+  guardarPaymentLinkUrl,
+  resolveWompiPaymentLink,
+} from "./wompiPaymentLinkDirectory.js";

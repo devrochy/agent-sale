@@ -45,8 +45,15 @@ const GUARDRAIL_RETRY_INSTRUCTION_PRECIO =
 // Extensión de "Guardrail 1" a disponibilidad (Fase 12.1, ver
 // analisis-superpoderes.md, superpoder #1) — misma técnica y mismo
 // presupuesto de reintento que el guardrail de precios.
+//
+// Cambió de propósito: consultar_inventario ya no devuelve el número de
+// stock (solo `disponible`), así que la lista de cantidades conocidas queda
+// vacía siempre y CUALQUIER "quedan N" en la respuesta falla la
+// verificación. De "que la cantidad sea la correcta" pasó a "que no se
+// mencione ninguna cantidad", que es la regla nueva — y la hace cumplir el
+// código en vez del prompt.
 const GUARDRAIL_RETRY_INSTRUCTION_STOCK =
-  'Tu respuesta anterior incluye una cantidad de stock ("Quedan N") que no coincide con ningún resultado real de consultar_inventario en esta conversación. Genera una respuesta nueva usando únicamente la cantidad de stock que sí devolvió la tool.';
+  'Tu respuesta anterior le dice al cliente cuántas unidades quedan de un producto. Nunca se le dicen cantidades de stock: consultar_inventario solo informa si hay o no hay. Genera una respuesta nueva sin mencionar ninguna cantidad disponible.';
 
 export interface TurnResult {
   // `null` cuando la conversación ya está escalada: el mensaje se guarda
@@ -115,12 +122,29 @@ function isPedidoRechazadoPorMontoAlto(toolName: string, toolResult: ContentBloc
 
 /**
  * Imagen a adjuntar al mensaje (ver TurnResult.mediaUrl): solo cuando
- * "consultar_inventario" devolvió exactamente un match con image_url —
- * con varios matches no hay forma de saber a cuál se refiere el cliente,
- * así que no se adjunta nada.
+ * "consultar_inventario" se llamó **por sku** y devolvió exactamente un
+ * match con image_url.
+ *
+ * La condición del sku es lo que distingue "mostrame ese casco" de "qué
+ * cascos tienen": el prompt indica consultar por sku cuando el cliente pide
+ * detalle de un producto puntual, así que una búsqueda por texto es una
+ * exploración y no merece foto — aunque devuelva un solo resultado. Antes
+ * bastaba con que hubiera un match, así que una búsqueda con un único
+ * resultado mandaba una foto que nadie había pedido.
+ *
+ * Se lee del input de la tool y no de una señal del LLM: una regla
+ * determinística no se puede desobedecer.
  */
-function extractSingleMatchImageUrl(toolName: string, toolResult: ContentBlock): string | null {
+function extractSingleMatchImageUrl(
+  toolName: string,
+  toolInput: unknown,
+  toolResult: ContentBlock,
+): string | null {
   if (toolName !== "consultar_inventario" || toolResult.type !== "tool_result" || toolResult.is_error) {
+    return null;
+  }
+  const pedidoPorSku = Boolean((toolInput as { sku?: string | null } | null)?.sku);
+  if (!pedidoPorSku) {
     return null;
   }
   try {
@@ -427,7 +451,7 @@ export async function processConversation(
         if (amount !== null) {
           montoAltoAmount = amount;
         }
-        const singleMatchImageUrl = extractSingleMatchImageUrl(toolUse.name, toolResult);
+        const singleMatchImageUrl = extractSingleMatchImageUrl(toolUse.name, toolUse.input, toolResult);
         if (singleMatchImageUrl !== null) {
           mediaUrl = singleMatchImageUrl;
         }

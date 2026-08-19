@@ -20,6 +20,11 @@ import {
   createPasswordResetToken,
   resolvePasswordResetToken,
 } from "./auth/passwordReset.js";
+import {
+  derivarEstado,
+  ESTADOS_VISIBLES,
+  cambiarEstadoPedido,
+} from "../domains/commerce/estadoPedido.js";
 import { env } from "../config/env.js";
 import { outboundAdapterFor } from "../gateway/channels/registry.js";
 import { sendToConversation, sendWhatsAppMessage } from "../gateway/sendMessage.js";
@@ -38,6 +43,11 @@ import {
 import { appendMessage } from "../orchestrator/memory.js";
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { logger } from "../shared/observability/logger.js";
+import {
+  getTransferAccounts,
+  saveTransferAccounts,
+  type TransferAccount,
+} from "../shared/db/settingsDirectory.js";
 import {
   createAlly,
   listAllies,
@@ -205,9 +215,31 @@ interface PedidoRow {
   customer_name: string | null;
   delivery_address: string | null;
   delivery_id_document: string | null;
+  delivery_full_name: string | null;
+  delivery_municipality: string | null;
+  delivery_city: string | null;
   tracking_number: string | null;
   carrier: string | null;
+  wompi_payment_link_url: string | null;
+  status_reason: string | null;
   items: OrderItemJson[];
+}
+
+/**
+ * Los métodos de pago se guardan con el valor que usa la tool
+ * (`efectivo_contraentrega`), que en una tabla se lee como una variable.
+ * Acá viven sus nombres y su orden para el filtro — un solo lugar, para que
+ * la etiqueta de la celda y la opción del `<select>` no se separen.
+ */
+const METODOS_PAGO: { key: string; label: string }[] = [
+  { key: "transferencia", label: "Transferencia" },
+  { key: "pago_en_linea", label: "Pago en línea" },
+  { key: "efectivo_contraentrega", label: "Efectivo contra entrega" },
+  { key: "tarjeta", label: "Tarjeta al recibir" },
+];
+
+function etiquetaMetodoPago(key: string): string {
+  return METODOS_PAGO.find((m) => m.key === key)?.label ?? key;
 }
 
 function formatCOP(value: string | number): string {
@@ -270,6 +302,56 @@ function emptyState(icon: string, title: string, desc: string): string {
  * barra funciona como diagnóstico, no solo como navegación — se ve qué falta
  * configurar sin entrar a las cinco pestañas una por una.
  */
+/**
+ * Una cuenta para transferencia dentro del formulario de Cobros. Los campos
+ * viajan como arrays (`entity[]`, `accountNumber[]`…) y se recomponen por
+ * posición al guardar: es la forma más simple de un formulario de N filas
+ * sin estado en el servidor ni un endpoint por fila, y la lista se reescribe
+ * entera igual (ver saveTransferAccounts).
+ *
+ * `index` solo alimenta los `id`/`for`; la plantilla que clona el navegador
+ * pasa -1 y el script le asigna el índice real al insertarla.
+ *
+ * El estado va en un `<select>` y no en un checkbox por la alineación: un
+ * checkbox desmarcado no se envía, así que `active[]` llegaría más corto
+ * que el resto y las filas se desfasarían. Un select siempre manda valor.
+ */
+function transferAccountFieldsHtml(account: TransferAccount, index: number): string {
+  const uid = index >= 0 ? String(index) : "__i__";
+  return `<div class="transferrow" data-transfer-row>
+    <div class="transferrow__grid">
+      <div class="field">
+        <label for="tr-${uid}-entity">Entidad</label>
+        <input type="text" id="tr-${uid}-entity" name="entity" required placeholder="Nequi, Bancolombia, Daviplata…" value="${escapeHtml(account.entity)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-type">Tipo de cuenta</label>
+        <input type="text" id="tr-${uid}-type" name="accountType" placeholder="Ahorros, Corriente… (opcional)" value="${escapeHtml(account.accountType)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-number">Número</label>
+        <input type="text" id="tr-${uid}-number" name="accountNumber" required inputmode="numeric" value="${escapeHtml(account.accountNumber)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-holder">Titular</label>
+        <input type="text" id="tr-${uid}-holder" name="holderName" required value="${escapeHtml(account.holderName)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-doc">Documento del titular</label>
+        <input type="text" id="tr-${uid}-doc" name="holderDocument" placeholder="Cédula o NIT" value="${escapeHtml(account.holderDocument)}">
+      </div>
+    </div>
+    <div class="transferrow__foot">
+      <label class="sr-only" for="tr-${uid}-active">Estado de la cuenta</label>
+      <select id="tr-${uid}-active" class="tablefilter" name="active">
+        <option value="1" ${account.active ? "selected" : ""}>Activa — se le manda al cliente</option>
+        <option value="0" ${account.active ? "" : "selected"}>Inactiva</option>
+      </select>
+      <button type="button" class="btn btn--ghost btn--sm" data-transfer-remove>Quitar</button>
+    </div>
+  </div>`;
+}
+
 function cfgTab(id: string, nombre: string, estado: string, tono: "on" | "off" | "neutral"): string {
   const activa = id === "agente";
   return `<button type="button" class="cfgtab${activa ? " cfgtab--active" : ""}" role="tab" data-cfg-tab="${escapeHtml(id)}" aria-selected="${activa ? "true" : "false"}">
@@ -414,6 +496,23 @@ const ICON_TOAST_OK =
 const ICON_TOAST_ERROR =
   '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="7.2"/><path d="M9 5.4v4.2"/><path d="M9 12.3v.3"/></svg>';
 
+/** Caja de envío — acompaña a la palabra "Guía" en Pedidos. Un icono solo ahí sería ambiguo: no se sabría si abre la guía o la crea. */
+const ICON_GUIA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5.2 8 2.4l5.5 2.8v5.6L8 13.6l-5.5-2.8z"/><path d="M2.5 5.2 8 8l5.5-2.8"/><path d="M8 8v5.6"/></svg>';
+
+/** Check en círculo — "marcar entregado". Distinto de ICON_SAVE (check suelto), que en el panel significa "guardar esta edición". */
+const ICON_ENTREGADO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M5.4 8.2 7.3 10l3.4-3.8"/></svg>';
+
+const ICON_CANCELAR =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6 6l4 4M10 6l-4 4"/></svg>';
+
+const ICON_SOL =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.1"/><path d="M8 1.4v1.5M8 13.1v1.5M14.6 8h-1.5M2.9 8H1.4M12.7 3.3l-1 1M4.3 11.7l-1 1M12.7 12.7l-1-1M4.3 4.3l-1-1"/></svg>';
+
+const ICON_LUNA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.4 9.8A5.6 5.6 0 0 1 6.2 2.6a5.7 5.7 0 1 0 7.2 7.2Z"/></svg>';
+
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
 
@@ -496,13 +595,13 @@ async function navRail(
   const railProfile = `<div class="railprofile-wrap">
     <button type="button" class="railprofile navitem${perfilActive ? " navitem--active" : ""}" data-profile-menu-toggle aria-haspopup="menu" aria-expanded="false" title="Cuenta">${avatar}<span class="navitem__label">${escapeHtml(admin.username)}</span></button>
     <div class="railprofile-menu" data-profile-menu role="menu">
-      <div class="themepick" role="group" aria-label="Apariencia del panel">
+      <div class="themepick">
         <span class="themepick__label">Apariencia</span>
-        <div class="themepick__opts">
-          <button type="button" class="themepick__opt" data-theme-option="system" aria-pressed="false">Sistema</button>
-          <button type="button" class="themepick__opt" data-theme-option="light" aria-pressed="false">Claro</button>
-          <button type="button" class="themepick__opt" data-theme-option="dark" aria-pressed="false">Oscuro</button>
-        </div>
+        <button type="button" class="themetoggle" data-theme-toggle role="switch" aria-checked="false" aria-label="Modo oscuro">
+          <span class="themetoggle__icon themetoggle__icon--sun" aria-hidden="true">${ICON_SOL}</span>
+          <span class="themetoggle__track"><span class="themetoggle__knob"></span></span>
+          <span class="themetoggle__icon themetoggle__icon--moon" aria-hidden="true">${ICON_LUNA}</span>
+        </button>
       </div>
       <a class="railprofile-menu__item" href="/admin/perfil" role="menuitem">${ICON_EDIT}Editar perfil</a>
       <form method="POST" action="/logout" role="none">
@@ -678,7 +777,7 @@ ${STYLE_BLOCK}
  */
 const DARK_PALETTE = `    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; --panel-inset: #21262E;
     --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
-    --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
+    --ignition: #E8A33D; --ignition-glow: #FFC875; --ignition-soft: rgba(232,163,61,0.14); --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
     --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
     --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
     --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
@@ -695,7 +794,7 @@ const DARK_PALETTE = `    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; -
  * Sin preferencia guardada no toca nada y manda `prefers-color-scheme`, que
  * es el comportamiento que el panel ya tenía.
  */
-const THEME_BOOT_SCRIPT = `(function(){try{var t=localStorage.getItem("panel-theme");if(t==="dark"||t==="light"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
+const THEME_BOOT_SCRIPT = `(function(){var t=null;try{t=localStorage.getItem("panel-theme");}catch(e){}if(t!=="dark"&&t!=="light"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);})();`;
 
 const STYLE_BLOCK = `
 :root {
@@ -711,6 +810,7 @@ const STYLE_BLOCK = `
   --ink-faint: #889198;
   --ignition: #9C6108;
   --ignition-glow: #C9820F;
+  --ignition-soft: rgba(156, 97, 8, 0.1);
   --chrome: #0F6B7A;
   --chrome-soft: rgba(15, 107, 122, 0.12);
   --redline: #B4362A;
@@ -832,8 +932,19 @@ body.rail-collapsed .rail__toggle svg { transform: rotate(180deg); }
    siempre. */
 .themepick { padding: 4px 10px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
 .themepick__label { display: block; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px; }
-.themepick__opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-inset); }
-.themepick__opt { padding: 5px 4px; border: none; border-radius: 5px; background: transparent; color: var(--ink-muted); font: inherit; font-size: 12px; cursor: pointer; }
+/* Switch de dos estados. Sol y luna a los lados en vez de las palabras
+   "Claro"/"Oscuro": el par es universal y no necesita traduccion, y el que
+   esta apagado se atenua, asi que el estado se lee sin mirar la perilla. */
+.themetoggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 4px 2px; border: 0; background: none; cursor: pointer; color: var(--ink-muted); }
+.themetoggle__icon { display: inline-flex; opacity: 0.4; transition: opacity 140ms ease; }
+.themetoggle__icon svg { width: 14px; height: 14px; display: block; }
+.themetoggle[aria-checked="false"] .themetoggle__icon--sun,
+.themetoggle[aria-checked="true"] .themetoggle__icon--moon { opacity: 1; color: var(--ignition); }
+.themetoggle__track { flex: 1; height: 18px; max-width: 38px; border-radius: 10px; position: relative; background: var(--panel-inset); border: 1px solid var(--border); transition: background 140ms ease; }
+.themetoggle__knob { position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-faint); transition: transform 160ms cubic-bezier(.2,.8,.2,1), background 140ms ease; }
+.themetoggle[aria-checked="true"] .themetoggle__knob { transform: translateX(18px); background: var(--ignition); }
+.themetoggle:focus-visible { outline: 2px solid var(--ignition); outline-offset: 2px; border-radius: 7px; }
+@media (prefers-reduced-motion: reduce) { .themetoggle__knob { transition: none; } }
 .themepick__opt:hover { color: var(--ink); }
 .themepick__opt[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
 body.rail-collapsed .navitem__label,
@@ -936,6 +1047,30 @@ section.block { margin-bottom: 34px; }
 .chip--muted { color: var(--ink-faint); background: var(--panel-inset); }
 .chip--inactive { color: var(--redline); background: var(--panel-inset); }
 .chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
+/* Chip que abre algo (la direccion de entrega en Pedidos). Es un <button>
+   real y no un span con onclick: se alcanza con teclado y se anuncia como
+   control.
+
+   NO lleva font:inherit: eso pisaba el font-size de .chip y lo dejaba
+   mas grande que el chip de Estado en la misma fila, que era el desbalance
+   que se veia. Solo se agrega lo que un <button> no hereda del UA.
+
+   La affordance es un borde del mismo color a media opacidad, no un
+   subrayado: mantiene el radio simetrico de los demas chips y no le suma
+   altura por un solo lado. Un chip identico al de al lado que ademas hace
+   algo seria una trampa; uno con borde se lee como control sin dejar de
+   pertenecer a la familia. */
+.chip--action { cursor: pointer; font-family: inherit; line-height: inherit; border: 1px solid currentColor; padding: 1px 6px; }
+.chip--action:hover { filter: brightness(0.94); }
+.chip--action:focus-visible { outline: 2px solid var(--ignition); outline-offset: 2px; }
+
+/* Celda de Entrega: el tipo de entrega arriba y lo que se puede hacer o
+   saber de ella abajo. En una sola linea, un chip de 18px al lado de un
+   boton de 30px no se alinea con ningun gap — no son la misma clase de
+   cosa. Apilados, el chip queda a la misma escala que el de Estado y la
+   accion tiene su propio renglon. */
+.deliverycell { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.deliverycell .hint { margin: 0; }
 .chip--violet { color: var(--violet); background: var(--violet-soft); }
 .chip--whatsapp { color: var(--wa); background: var(--wa-soft); }
 .chip--instagram { color: var(--ig); background: var(--ig-soft); }
@@ -1001,6 +1136,23 @@ table.resizing { cursor: col-resize; user-select: none; }
 .flowfoot { margin-top: 14px; font-size: 12px; color: var(--ink-faint); font-family: var(--font-mono); }
 .connection { padding: 22px 24px; max-width: 640px; }
 .connection + .connection { margin-top: 22px; }
+/* Ficha de datos de entrega — pares etiqueta/valor dentro del dialog de
+   Pedidos. Grid de dos columnas y no un <table> porque no son filas
+   comparables entre si, son campos de un mismo registro. */
+/* Fila de cuenta para transferencia (Configuracion -> Cobros). Grid propio
+   y no .cfggrid porque son cinco campos cortos que se leen juntos, no una
+   columna de formulario. */
+.transferrow { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; background: var(--surface-2); }
+.transferrow__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 16px; }
+.transferrow__grid .field { margin: 0; }
+.transferrow__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.datalist { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; margin: 4px 0 0; font-size: 13px; }
+.datalist dt { color: var(--ink-faint); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; align-self: center; }
+.datalist dd { margin: 0; color: var(--ink); }
+/* Enlace de pago en la celda: bloque propio bajo el metodo, para que no
+   compita con el a la misma altura y se pueda tocar comodo. */
+.paylink { display: inline-block; margin-top: 4px; font-size: 12px; font-family: var(--font-mono); color: var(--ignition); text-decoration: none; border-bottom: 1px solid currentColor; }
+.paylink:hover { opacity: 0.75; }
 /* Enlace de pie de las paginas de credenciales (login, recuperar): no es una
    accion del formulario, asi que no va en .formfoot ni compite con el boton. */
 .authlink { margin: 18px 0 0; text-align: center; font-size: 13px; }
@@ -1015,6 +1167,10 @@ table.resizing { cursor: col-resize; user-select: none; }
 .connection__meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .connection__meta dt { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 4px; }
 .connection__meta dd { margin: 0; font-size: 13.5px; }
+/* En Cobros el bloque de la URL de eventos va DESPUES del formulario de
+   credenciales, y sin separacion se leia como un campo mas del form. La
+   linea lo separa de lo que se guarda: la URL no se guarda, se copia. */
+.connection__webhook--aparte { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
 .connection__webhook label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
 .copyrow { display: flex; align-items: center; gap: 10px; }
 .copyrow code { flex: 1; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
@@ -1261,6 +1417,31 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--primary:hover { filter: brightness(1.08); border-color: var(--chrome); background: var(--chrome); }
 .btn--ghost { background: transparent; }
 .btn--ghost:hover { background: var(--panel-inset); }
+
+/* Color de la accion, revelado al pasar por encima.
+   En reposo los iconos son neutros a proposito: una columna de botones de
+   colores repetidos en cada fila es ruido y deja de significar nada. El
+   color aparece cuando importa, que es el instante antes del clic.
+
+   Se nombran por token y no por accion (act--go, no act--guardar), igual
+   que chip--go o banner--warn: la clase dice que tono usa, y donde se usa
+   cada tono es la convencion de abajo.
+
+     act--go        confirma o completa       guardar, entregado, resuelto
+     act--redline   cancela o destruye        cancelar pedido
+     act--ignition  modifica o toma control   editar, tomar ticket
+     act--violet    crea algo aparte          crear promocion
+     act--chrome    lleva a otro lado         reasignar al asistente, ver conversacion
+
+   Va tambien en :focus-visible: quien navega con teclado necesita la misma
+   pista que quien usa el mouse. */
+.btn--ghost.act--go:hover, .btn--ghost.act--go:focus-visible { color: var(--go); border-color: var(--go); background: var(--go-soft); }
+.btn--ghost.act--redline:hover, .btn--ghost.act--redline:focus-visible { color: var(--redline); border-color: var(--redline); background: var(--redline-soft); }
+.btn--ghost.act--ignition:hover, .btn--ghost.act--ignition:focus-visible { color: var(--ignition); border-color: var(--ignition); background: var(--ignition-soft); }
+.btn--ghost.act--violet:hover, .btn--ghost.act--violet:focus-visible { color: var(--violet); border-color: var(--violet); background: var(--violet-soft); }
+.btn--ghost.act--chrome:hover, .btn--ghost.act--chrome:focus-visible { color: var(--chrome); border-color: var(--chrome); background: var(--chrome-soft); }
+.btn--ghost[class*="act--"] { transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
+@media (prefers-reduced-motion: reduce) { .btn--ghost[class*="act--"] { transition: none; } }
 /* Color = la acción que el botón va a ejecutar, no el estado actual (ver
    estadoForm en renderColaboradoresPage) — mismo lenguaje de --go/--redline
    que ya usan los chips Activo/Inactivo. */
@@ -1270,25 +1451,34 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--go:hover { filter: brightness(1.08); }
 .btn--icon { width: 34px; height: 34px; padding: 0; justify-content: center; flex-shrink: 0; }
 .btn--icon svg { width: 15px; height: 15px; }
-/* Botones icono de acción sobre tickets (Fase 18): minimalistas — color
-   solo en el icono/borde en reposo, se rellenan suave al pasar el mouse. */
-.btn--icon-go { color: var(--go); border-color: var(--go-soft); }
-.btn--icon-go:hover { background: var(--go-soft); border-color: var(--go); }
-.btn--icon-amber { color: var(--ignition); border-color: rgba(156, 97, 8, 0.22); }
-.btn--icon-amber:hover { background: rgba(156, 97, 8, 0.12); border-color: var(--ignition); }
-@media (prefers-color-scheme: dark) {
-  .btn--icon-amber { border-color: rgba(232, 163, 61, 0.28); }
-  .btn--icon-amber:hover { background: rgba(232, 163, 61, 0.16); }
-}
-.btn--icon-chrome { color: var(--chrome); border-color: var(--chrome-soft); }
-.btn--icon-chrome:hover { background: var(--chrome-soft); border-color: var(--chrome); }
 .btn--sm { padding: 6px 11px; font-size: 11.5px; }
 .permform { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 /* Columna "Acciones" de Colaboradores: agrupa el botón Guardar de
    permisos (conectado por atributo form="..." a un <form> en la columna
    de Notificaciones, ver renderColaboradoresPage) + Activar/Desactivar,
    para que todos los botones de la fila queden juntos al final. */
-.rowactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* Los iconos de accion van SIEMPRE en una linea. Con flex-wrap: wrap y una
+   columna angosta, tres botones caian dos arriba y uno abajo, y la fila
+   crecia de alto por eso. El gap baja de 8 a 6 px para que entren, y la
+   celda que los contiene achica su padding lateral por la misma razon.
+   El ancho de la columna va en px y no en % (ver los colgroup): con
+   table-layout: fixed el porcentaje manda estricto, asi que una columna de
+   botones necesita el ancho que ocupan y no una fraccion de la tabla. */
+.rowactions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+td:has(> .rowactions) { padding-left: 12px; padding-right: 12px; }
+/* Los iconos de la ultima columna se apoyan en el borde derecho de la
+   celda, que es el borde de la tabla: asi quedan alineados entre filas por
+   mas que la columna cambie de ancho, y el ojo los encuentra siempre en el
+   mismo sitio al recorrer hacia abajo.
+   El selector es td:last-child a proposito y no una clase: la celda
+   "Asignado a" de Tickets tambien usa .rowactions, pero lleva el nombre del
+   asesor adelante y no es la ultima — ahi el texto tiene que empezar a la
+   izquierda como el resto de la tabla. */
+td:last-child > .rowactions { justify-content: flex-end; }
+/* El encabezado acompana a sus botones. Es una clase y no th:last-child
+   porque hay tablas que terminan en texto (Resumen en Tickets antes de
+   sumarle Conversacion) y ahi el titulo a la derecha no tendria sentido. */
+th.th--end { text-align: right; }
 .permcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
@@ -1413,7 +1603,12 @@ td .emptystate { padding: 34px 20px; }
 .flowtools { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--panel-inset); }
 .flowtools__label { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; margin-bottom: 9px; }
 .flowtools__label svg { width: 12px; height: 12px; }
-dialog.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
+/* color explicito y no heredado: un <dialog> vive en el top layer y el
+   navegador le asigna CanvasText, que NO hereda del body. Mientras el tema
+   salia de prefers-color-scheme coincidian por casualidad; al poder forzar
+   "Oscuro" con el sistema en claro, CanvasText seguia siendo negro y los
+   titulos del modal quedaban negros sobre el panel oscuro. */
+dialog.modal { background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 /* Avatar grande y clickeable del Perfil (a diferencia del <input type=file>
    crudo de antes): el círculo entero es el disparador, el archivo real
@@ -1431,6 +1626,37 @@ const CLIENT_SCRIPT = `
 (function () {
   "use strict";
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- cuentas para transferencia (Configuracion > Cobros) ---------- */
+  (function () {
+    var contenedor = document.querySelector("[data-transfer-rows]");
+    var plantilla = document.querySelector("[data-transfer-template]");
+    if (!contenedor || !plantilla) return;
+
+    var añadir = document.querySelector("[data-transfer-add]");
+    if (añadir) {
+      añadir.addEventListener("click", function () {
+        /* __i__ es el marcador de la plantilla del servidor: sin
+           reemplazarlo, todas las filas nuevas compartirian el mismo id y
+           los <label for> apuntarian al primer campo de la lista. */
+        var indice = contenedor.querySelectorAll("[data-transfer-row]").length;
+        var html = plantilla.innerHTML.split("__i__").join("nueva" + indice);
+        contenedor.insertAdjacentHTML("beforeend", html);
+        var ultima = contenedor.lastElementChild;
+        var primerCampo = ultima ? ultima.querySelector("input") : null;
+        if (primerCampo) primerCampo.focus();
+      });
+    }
+
+    contenedor.addEventListener("click", function (event) {
+      var btn = event.target.closest("[data-transfer-remove]");
+      if (!btn) return;
+      /* Quitar no borra nada por si solo: la lista se reescribe entera al
+         guardar, asi que una fila quitada desaparece cuando se guarda. */
+      var fila = btn.closest("[data-transfer-row]");
+      if (fila) fila.remove();
+    });
+  })();
 
   /* ---------- notificaciones flotantes ---------- */
   (function () {
@@ -1675,41 +1901,45 @@ const CLIENT_SCRIPT = `
     })(contados[d]);
   }
 
-  /* ---------- apariencia: sistema / claro / oscuro ----------
+  /* ---------- apariencia: claro / oscuro ----------
      La preferencia vive en localStorage y no en el perfil del admin: es una
-     elección del dispositivo, no de la cuenta (el mismo admin puede querer
-     claro en el escritorio y oscuro en el celular). El valor lo aplica
-     THEME_BOOT_SCRIPT en el <head>; acá solo se refleja el estado en los
-     botones y se maneja el cambio. */
-  var themeOptions = document.querySelectorAll("[data-theme-option]");
-  if (themeOptions.length) {
+     eleccion del dispositivo, no de la cuenta (el mismo admin puede querer
+     claro en el escritorio y oscuro en el celular). El valor inicial lo
+     aplica THEME_BOOT_SCRIPT en el <head>; aca solo se refleja el estado y
+     se maneja el cambio.
+
+     Son dos estados y no tres: la opcion "Sistema" se retiro a pedido. La
+     consecuencia es que el panel deja de seguir al sistema operativo una
+     vez que alguien toca el switch -- en la primera visita todavia arranca
+     por prefers-color-scheme, y de ahi en mas manda lo elegido. */
+  var themeToggle = document.querySelector("[data-theme-toggle]");
+  if (themeToggle) {
     var THEME_KEY = "panel-theme";
     var applyTheme = function (value) {
-      if (value === "dark" || value === "light") {
-        document.documentElement.setAttribute("data-theme", value);
-        try { localStorage.setItem(THEME_KEY, value); } catch (e) {}
-      } else {
-        document.documentElement.removeAttribute("data-theme");
-        try { localStorage.removeItem(THEME_KEY); } catch (e) {}
-      }
-      for (var j = 0; j < themeOptions.length; j++) {
-        var opt = themeOptions[j];
-        var esActiva = opt.getAttribute("data-theme-option") === (value || "system");
-        opt.setAttribute("aria-pressed", esActiva ? "true" : "false");
-      }
+      var dark = value === "dark";
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) {}
+      themeToggle.setAttribute("aria-checked", dark ? "true" : "false");
     };
     var guardado = null;
     try { guardado = localStorage.getItem(THEME_KEY); } catch (e) {}
-    applyTheme(guardado === "dark" || guardado === "light" ? guardado : null);
-    for (var i = 0; i < themeOptions.length; i++) {
-      themeOptions[i].addEventListener("click", function (ev) {
-        // El menú de cuenta se cierra al hacer clic fuera; acá interesa que
-        // siga abierto para poder comparar las tres opciones de un vistazo.
-        ev.stopPropagation();
-        var elegido = ev.currentTarget.getAttribute("data-theme-option");
-        applyTheme(elegido === "system" ? null : elegido);
-      });
-    }
+    /* Sin nada guardado el switch tiene que mostrar el estado real, que en
+       la primera visita lo puso el sistema: si arrancara siempre en "claro"
+       mentiria sobre lo que se esta viendo. */
+    var inicial =
+      guardado === "dark" || guardado === "light"
+        ? guardado
+        : window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+    themeToggle.setAttribute("aria-checked", inicial === "dark" ? "true" : "false");
+    document.documentElement.setAttribute("data-theme", inicial);
+    themeToggle.addEventListener("click", function (ev) {
+      // El menu de cuenta se cierra al hacer clic fuera; aca interesa que
+      // siga abierto para ver el cambio aplicado sin volver a abrirlo.
+      ev.stopPropagation();
+      applyTheme(themeToggle.getAttribute("aria-checked") === "true" ? "light" : "dark");
+    });
   }
 
   /* ---------- riel: colapsar y redimensionar (persistido en localStorage) ---------- */
@@ -3281,14 +3511,14 @@ export async function renderConversacionesPage(
       // vivir en la caja del ticket.
       if (detalle.handoff_status === "queued") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--ignition" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
         </form>`;
       } else if (detalle.handoff_status === "en_atencion") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
         </form>
         <form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
         </form>`;
       }
     }
@@ -3572,7 +3802,7 @@ export async function renderLeadsPage(
         <td>${escapeHtml(row.city ?? "—")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td><div class="rowactions">
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
           <button type="button" data-open-dialog="${detailDialogId}" class="btn btn--ghost btn--icon" aria-label="Ver información del cliente" title="Ver información del cliente">${ICON_USER}</button>
         </div></td>
       </tr>
@@ -3605,7 +3835,7 @@ export async function renderLeadsPage(
         </colgroup>
         <thead><tr>
           <th>Cliente</th><th>Clasificación</th><th>Bot</th><th>Estado</th>
-          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th>Acciones</th>
+          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
@@ -3994,14 +4224,14 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
       let actionsHtml = "";
       if (row.status === "queued") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--ignition" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
         </form>`;
       } else if (row.status === "en_atencion") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
         </form>
         <form method="POST" action="/admin/conversaciones/${row.id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
         </form>`;
       }
       // El filtro del enlace debe reflejar dónde va a aparecer realmente
@@ -4017,7 +4247,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
         <td><div class="rowactions">${row.assigned_to_name ? `<span>${escapeHtml(row.assigned_to_name)}</span>` : `<span class="hint">Sin asignar</span>`}${actionsHtml}</div></td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td>${escapeHtml(row.summary ?? "")}</td>
-        <td><a class="btn btn--ghost btn--icon" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></td>
+        <td><div class="rowactions"><a class="btn btn--ghost btn--icon act--chrome" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></div></td>
       </tr>`;
     })
     .join("\n");
@@ -4047,7 +4277,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
       <table data-resizable-table="tickets">
         <colgroup>
           <col style="width:14%"><col style="width:13%"><col style="width:9%">
-          <col style="width:21%"><col style="width:10%"><col style="width:27%"><col style="width:56px">
+          <col style="width:21%"><col style="width:10%"><col style="width:24%"><col style="width:9%">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="cliente">Cliente</th>
@@ -4056,7 +4286,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
           <th class="sortable" data-sort-key="asignado">Asignado a</th>
           <th class="sortable" data-sort-key="creado">Creado</th>
           <th>Resumen</th>
-          <th></th>
+          <th class="th--end">Conversación</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>
@@ -4501,6 +4731,16 @@ const WEBHOOK_PATH: Record<Provider, string> = {
 
 function webhookUrlFor(provider: Provider): string {
   return `${new URL(env.publicWebhookUrl).origin}${WEBHOOK_PATH[provider]}`;
+}
+
+/**
+ * URL del webhook de Wompi. Mismo origen que los de canal (ver
+ * `webhookUrlFor`): `PUBLIC_WEBHOOK_URL` ya es la URL pública real de este
+ * proceso, así que las tres se arman igual y no hay una variable de entorno
+ * por integración.
+ */
+function wompiWebhookUrl(): string {
+  return `${new URL(env.publicWebhookUrl).origin}/webhooks/wompi`;
 }
 
 /** Campos de credenciales por proveedor — cada uno pide cosas distintas. */
@@ -5163,9 +5403,9 @@ export async function renderProductosPage(
         <td class="mono ${product.totalStock === 0 ? "stock-cero" : ""}">${product.totalStock}</td>
         <td class="dblclick-cell"><input type="text" name="description" form="${rapidoFormId}" value="${escapeHtml(product.description ?? "")}"></td>
         <td><div class="rowactions">
-          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <tr class="expandrow" id="${expandId}"><td colspan="7"><div class="variantgrid">${variantChips}</div></td></tr>
@@ -5207,7 +5447,7 @@ export async function renderProductosPage(
       <table data-resizable-table="productos">
         <colgroup>
           <col style="width:7%"><col style="width:24%"><col style="width:13%">
-          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:8%">
+          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:130px">
         </colgroup>
         <thead><tr>
           <th>Foto</th>
@@ -5216,7 +5456,7 @@ export async function renderProductosPage(
           <th class="sortable" data-sort-key="price">Precio</th>
           <th class="sortable" data-sort-key="stock">Stock</th>
           <th class="sortable" data-sort-key="description">Descripción</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -5692,7 +5932,8 @@ export async function renderPedidosPage(
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
-              o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier,
+              o.delivery_address, o.delivery_id_document, o.delivery_full_name, o.delivery_municipality, o.delivery_city,
+              o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason,
               c.external_id, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
@@ -5704,7 +5945,7 @@ export async function renderPedidosPage(
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier, c.external_id, c.name
+       GROUP BY o.id, c.external_id, c.name
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -5712,68 +5953,157 @@ export async function renderPedidosPage(
 
   const tableRows = rows
     .map((row) => {
-      const items = row.items
-        .map((item) => `<li>${item.quantity}× ${escapeHtml(item.name)} (${formatCOP(item.unit_price)})</li>`)
-        .join("");
-      const entrega =
-        row.delivery_address || row.delivery_id_document
-          ? `<p class="hint">Entrega a: ${escapeHtml(row.delivery_address ?? "-")} · Cédula ${escapeHtml(row.delivery_id_document ?? "-")}</p>`
-          : "";
+      const estado = derivarEstado(row.status, row.payment_status);
+      const itemsId = `items-${row.id}`;
+      const direccionDialogId = `direccion-${row.id}`;
+      const guiaDialogId = `guia-${row.id}`;
+
       const search = [
         row.public_order_number,
         row.customer_name,
         row.external_id,
-        row.status,
+        estado.label,
         row.payment_method,
         row.delivery_method,
+        row.tracking_number,
         ...row.items.map((item) => item.name),
       ]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
-      const pago =
-        row.payment_method === "pago_en_linea"
-          ? `${escapeHtml(row.payment_method)} (${escapeHtml(row.payment_status)})`
-          : escapeHtml(row.payment_method);
 
-      const guiaDialogId = `guia-${row.id}`;
-      let guia: string;
-      if (row.tracking_number) {
-        guia = `<p>${escapeHtml(row.tracking_number)}</p><p class="hint">${escapeHtml(row.carrier ?? "-")}</p>`;
-      } else if (row.delivery_method === "domicilio") {
-        guia = `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost">Registrar guía</button>
-        <dialog id="${guiaDialogId}" class="modal">
-          <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
-          <form method="POST" action="/admin/pedidos/${row.id}/guia">
-            <div class="field">
-              <label for="${guiaDialogId}-tracking">Número de guía</label>
-              <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
-            </div>
-            <div class="field">
-              <label for="${guiaDialogId}-carrier">Transportadora</label>
-              <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
-            </div>
-            <div class="formfoot">
-              <button type="submit" class="btn btn--primary">Registrar guía</button>
-              <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
-            </div>
-          </form>
-        </dialog>`;
-      } else {
-        guia = `<p class="hint">-</p>`;
+      const items = row.items
+        .map(
+          (item) =>
+            `<div class="variantchip">
+               <span class="variantchip__attrs">${item.quantity}× ${escapeHtml(item.name)}</span>
+               <span class="variantchip__price">${formatCOP(item.unit_price)}</span>
+             </div>`,
+        )
+        .join("");
+
+      // Los items dejan de ser una columna gorda de texto envuelto y pasan
+      // a la fila expandible que Productos ya usa para sus variantes: en una
+      // tabla de pedidos lo que se recorre es estado y plata, y el detalle
+      // se abre solo cuando se busca un pedido concreto. El disparador va
+      // pegado al número de pedido —expandir ES abrir ese pedido— y no en
+      // una columna propia: diez columnas no entraban sin scroll horizontal.
+      const numeroCell = `<button type="button" class="expandtoggle" data-expand-toggle="${itemsId}" aria-expanded="false" aria-label="Ver los ${row.items.length} items">${ICON_CHEVRON}</button><span class="mono">${escapeHtml(row.public_order_number)}</span>`;
+
+      // La dirección sale de la celda de Items —donde estaba apretada— y
+      // pasa a la columna de Entrega, detrás de un botón: son cinco campos
+      // que no entran en una celda y que solo hacen falta al despachar.
+      const tieneDireccion = Boolean(
+        row.delivery_address || row.delivery_full_name || row.delivery_id_document,
+      );
+      // El propio chip abre la dirección: el botón "Ver dirección" al lado
+      // repetía en palabras lo que el chip ya nombraba, y en una celda de
+      // 19% de ancho eso costaba una línea entera. Sin dirección cargada el
+      // chip vuelve a ser un chip — no hay nada que abrir.
+      const entregaChip =
+        row.delivery_method === "domicilio"
+          ? tieneDireccion
+            ? `<button type="button" data-open-dialog="${direccionDialogId}" class="chip chip--chrome chip--action" title="Ver la dirección de entrega">Domicilio</button>`
+            : `<span class="chip chip--chrome">Domicilio</span>`
+          : `<span class="chip chip--muted">Recoge en tienda</span>`;
+      const entregaFalta =
+        row.delivery_method === "domicilio" && !tieneDireccion
+          ? `<p class="hint">Sin dirección cargada</p>`
+          : "";
+
+      const direccionDialog = tieneDireccion
+        ? `<dialog id="${direccionDialogId}" class="modal">
+             <div class="blockhead"><h2>Entrega — ${escapeHtml(row.public_order_number)}</h2></div>
+             <dl class="datalist">
+               <dt>Recibe</dt><dd>${escapeHtml(row.delivery_full_name ?? "—")}</dd>
+               <dt>Documento</dt><dd class="mono">${escapeHtml(row.delivery_id_document ?? "—")}</dd>
+               <dt>Dirección</dt><dd>${escapeHtml(row.delivery_address ?? "—")}</dd>
+               <dt>Ciudad</dt><dd>${escapeHtml(row.delivery_city ?? "—")}</dd>
+               <dt>Municipio</dt><dd>${escapeHtml(row.delivery_municipality ?? "—")}</dd>
+             </dl>
+             <div class="formfoot"><button type="button" data-close-dialog="${direccionDialogId}" class="btn btn--ghost">Cerrar</button></div>
+           </dialog>`
+        : "";
+
+      // El enlace de pago vive acá y no en un dialog porque el caso de uso
+      // es de un solo gesto: el cliente dice "no me llegó" y hay que
+      // copiárselo. Solo aparece mientras sirve de algo — un pedido pagado
+      // o rechazado no se paga de nuevo con ese link.
+      const linkPago =
+        row.wompi_payment_link_url && row.payment_status === "pendiente"
+          ? `<a class="paylink" href="${escapeHtml(row.wompi_payment_link_url)}" target="_blank" rel="noopener noreferrer">Enlace de pago</a>`
+          : "";
+      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}`;
+
+      // La guía es un dato de la entrega, no una columna aparte: junta con
+      // el método y la dirección se lee como "cómo le llega esto al
+      // cliente", que es la pregunta real.
+      const guiaCell = row.tracking_number
+        ? `<p class="hint mono">${escapeHtml(row.tracking_number)} · ${escapeHtml(row.carrier ?? "—")}</p>`
+        : row.delivery_method === "domicilio" && row.status === "abierto"
+          ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm" title="Registrar la guía de envío">${ICON_GUIA} Guía</button>`
+          : "";
+
+      const guiaDialog =
+        !row.tracking_number && row.delivery_method === "domicilio" && row.status === "abierto"
+          ? `<dialog id="${guiaDialogId}" class="modal">
+               <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
+               <p class="hint">Registrar la guía marca el pedido como despachado.</p>
+               <form method="POST" action="/admin/pedidos/${row.id}/guia">
+                 <div class="field">
+                   <label for="${guiaDialogId}-tracking">Número de guía</label>
+                   <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
+                 </div>
+                 <div class="field">
+                   <label for="${guiaDialogId}-carrier">Transportadora</label>
+                   <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
+                 </div>
+                 <div class="formfoot">
+                   <button type="submit" class="btn btn--primary">Registrar guía</button>
+                   <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
+                 </div>
+               </form>
+             </dialog>`
+          : "";
+
+      // Las dos transiciones que ningún sistema puede detectar solo: que el
+      // paquete llegó y que el pedido se cae. El resto las mueve el webhook
+      // (pago) o el registro de guía (despacho).
+      // Icon-only y en `ghost`, como la columna de Acciones de Productos y
+      // Aliados. Que sean iconos sin texto es seguro acá porque las dos
+      // pasan por `data-confirm`: la advertencia vive ahí, que es donde
+      // alguien la lee antes de decidir, y no en un botón rojo repetido en
+      // cada fila —que a la tercera deja de significar "cuidado"—.
+      const acciones: string[] = [];
+      if (row.status === "despachado") {
+        acciones.push(
+          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar ${escapeHtml(row.public_order_number)} como entregado" title="Marcar entregado">${ICON_ENTREGADO}</button></form>`,
+        );
       }
+      if (row.status === "abierto" || row.status === "despachado") {
+        acciones.push(
+          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--icon act--redline" aria-label="Cancelar ${escapeHtml(row.public_order_number)}" title="Cancelar pedido">${ICON_CANCELAR}</button></form>`,
+        );
+      }
+      const accionesCell = acciones.length > 0 ? acciones.join("") : `<p class="hint">—</p>`;
 
-      return `<tr data-search="${escapeHtml(search)}">
-        <td class="mono">${escapeHtml(row.public_order_number)}</td>
+      const motivo = row.status_reason
+        ? `<p class="hint">${escapeHtml(row.status_reason)}</p>`
+        : "";
+
+      return `<tr data-search="${escapeHtml(search)}" data-filter-estado="${estado.key}" data-filter-pago="${escapeHtml(row.payment_method)}" data-filter-entrega="${escapeHtml(row.delivery_method)}" data-expand-target="${itemsId}" data-sort-numero="${escapeHtml(row.public_order_number)}" data-sort-cliente="${escapeHtml((row.customer_name ?? row.external_id).toLowerCase())}" data-sort-estado="${escapeHtml(estado.label)}" data-sort-total="${row.total}" data-sort-fecha="${new Date(row.created_at).getTime()}">
+        <td>${numeroCell}</td>
         <td>${escapeHtml(row.customer_name ?? row.external_id)}</td>
-        <td><ul class="items">${items}</ul>${entrega}</td>
-        <td>${escapeHtml(row.status)}</td>
-        <td>${pago}</td>
-        <td>${escapeHtml(row.delivery_method)}</td>
+        <td><span class="chip chip--${estado.tone}">${escapeHtml(estado.label)}</span>${motivo}</td>
+        <td>${pagoCell}</td>
+        <td><div class="deliverycell">${entregaChip}${entregaFalta}${guiaCell}</div></td>
         <td class="mono">${formatCOP(row.total)}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
-        <td>${guia}</td>
-      </tr>`;
+        <td><div class="rowactions">${accionesCell}</div></td>
+      </tr>
+      <tr class="expandrow" id="${itemsId}"><td colspan="8"><div class="variantgrid">${items}</div></td></tr>
+      ${direccionDialog}
+      ${guiaDialog}`;
     })
     .join("\n");
 
@@ -5781,31 +6111,54 @@ export async function renderPedidosPage(
     <div class="pagehead">
       <p class="eyebrow">Catálogo</p>
       <h1>Pedidos</h1>
-      <p>${rows.length} pedidos confirmados de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${rows.length} ${rows.length === 1 ? "pedido" : "pedidos"} de ${escapeHtml(brandName(tenant))}.</p>
     </div>
     ${banner}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
-        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto, estado…" aria-label="Buscar pedidos">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto o guía…" aria-label="Buscar pedidos">
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          ${ESTADOS_VISIBLES.map((e) => `<option value="${e.key}">${escapeHtml(e.label)}</option>`).join("")}
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="pago" aria-label="Filtrar por método de pago">
+          <option value="">Todos los pagos</option>
+          ${METODOS_PAGO.map((m) => `<option value="${m.key}">${escapeHtml(m.label)}</option>`).join("")}
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="entrega" aria-label="Filtrar por entrega">
+          <option value="">Toda entrega</option>
+          <option value="domicilio">Domicilio</option>
+          <option value="recoger_en_tienda">Recoge en tienda</option>
+        </select>
       </div>
       <table data-resizable-table="pedidos">
         <colgroup>
-          <col style="width:8%"><col style="width:18%"><col style="width:20%"><col style="width:9%">
-          <col style="width:12%"><col style="width:11%"><col style="width:8%"><col style="width:8%"><col style="width:6%">
+          <col style="width:11%"><col style="width:16%"><col style="width:14%"><col style="width:14%">
+          <col style="width:19%"><col style="width:9%"><col style="width:9%"><col style="width:100px">
         </colgroup>
-        <thead><tr><th>N° pedido</th><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th><th>Guía</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
+        <thead><tr>
+          <th class="sortable" data-sort-key="numero">N° pedido</th>
+          <th class="sortable" data-sort-key="cliente">Cliente</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Pago</th>
+          <th>Entrega</th>
+          <th class="sortable" data-sort-key="total">Total</th>
+          <th class="sortable" data-sort-key="fecha">Fecha</th>
+          <th class="th--end">Acciones</th>
+        </tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="8">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
         <div class="pager__controls" data-table-pager>
-        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
-        <span class="tabular" data-table-pagelabel>1 / 1</span>
-        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
         </div>
       </div>
     </div>
   `;
+
 
   return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", admin);
 }
@@ -5820,6 +6173,24 @@ export async function renderPedidosPage(
  * no se bloquea explícitamente: es una decisión operativa, no una regla
  * que valga la pena codificar de antemano.
  */
+/**
+ * Las dos transiciones que ningún sistema puede detectar solo: que el
+ * paquete llegó a manos del cliente y que el pedido se cae. El pago lo
+ * mueve el webhook de Wompi y el despacho el registro de guía; estas dos
+ * necesitan que alguien las afirme.
+ *
+ * Cancelar no revierte el pago ni libera stock: es un cambio de estado, no
+ * una devolución. Lo que se deshace con plata de por medio se resuelve
+ * fuera del panel, y fingir lo contrario acá sería peor que no ofrecerlo.
+ */
+export async function marcarPedidoEntregado(orderId: string): Promise<void> {
+  await cambiarEstadoPedido(orderId, "entregado");
+}
+
+export async function cancelarPedido(orderId: string, admin: AdminRecord): Promise<void> {
+  await cambiarEstadoPedido(orderId, "cancelado", `Cancelado desde el panel por ${admin.username}.`);
+}
+
 export async function renderAliadosPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string },
@@ -5866,9 +6237,9 @@ export async function renderAliadosPage(
         <td><a class="countbadge" href="/admin/productos?allyId=${ally.id}"><strong>${productCount}</strong> ${productCount === 1 ? "producto" : "productos"}</a></td>
         <td>${statusToggleHtml(`/admin/aliados/${ally.id}`, ally.active, `el aliado "${ally.name}"`, "Activo", "Inactivo")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <dialog id="${editarDialogId}" class="modal">
@@ -5907,14 +6278,14 @@ export async function renderAliadosPage(
       <table>
         <colgroup>
           <col style="width:28%"><col style="width:26%">
-          <col style="width:16%"><col style="width:16%"><col style="width:14%">
+          <col style="width:16%"><col style="width:16%"><col style="width:130px">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="name">Nombre</th>
           <th class="sortable" data-sort-key="contacto">Contacto</th>
           <th class="sortable" data-sort-key="productos">Productos</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -6125,9 +6496,9 @@ export async function renderCategoriasPage(
         <td>${complementTags || '<span class="hint">—</span>'}</td>
         <td>${statusToggleHtml(`/admin/categorias/${category.id}`, category.active, `la categoría "${category.name}"`, "Activa", "Inactiva")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       ${categoriaEditDialogHtml(category, categories, selectedComplements)}
@@ -6166,9 +6537,9 @@ export async function renderCategoriasPage(
       <table data-cattree>
         <colgroup>
           <col style="width:32%"><col style="width:12%">
-          <col style="width:19%"><col style="width:20%"><col style="width:17%">
+          <col style="width:19%"><col style="width:20%"><col style="width:130px">
         </colgroup>
-        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th class="th--end">Acciones</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
     </div>
@@ -6473,7 +6844,7 @@ export async function renderPromocionesPage(
         <td>${vigencia}</td>
         <td>${statusToggleHtml(`/admin/promociones/${promo.id}`, promo.active, `la promoción "${promo.label ?? promo.id}"`, "Activa", "Inactiva")}</td>
         <td><div class="rowactions">
-          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
+          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
         </div></td>
       </tr>
       ${editable ? promocionDialogHtml(editarDialogId, `/admin/promociones/${promo.id}`, `Editar ${promo.label ?? "promoción"}`, "Guardar cambios", promo, allies, categories, products) : ""}`;
@@ -6516,7 +6887,7 @@ export async function renderPromocionesPage(
           <th>Segmentos</th>
           <th>Vigencia</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_PROMOCIONES, "Sin promociones todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -6771,10 +7142,10 @@ export async function renderColaboradoresPage(
       // debe verse igual en las tres.
       const guardarPermisosBtn = isMasterRow
         ? ""
-        : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
+        : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
 
       const editarDialogId = `editar-colaborador-${row.id}`;
-      const editarBtn = `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar a ${escapeHtml(row.username)}" title="Editar datos">${ICON_EDIT}</button>`;
+      const editarBtn = `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar a ${escapeHtml(row.username)}" title="Editar datos">${ICON_EDIT}</button>`;
 
       // El switch reemplaza al par "chip de estado + botón Desactivar", que
       // decía lo mismo dos veces en dos columnas. Es el mismo control que
@@ -6841,7 +7212,7 @@ export async function renderColaboradoresPage(
       <table data-resizable-table="colaboradores">
         <colgroup>
           <col style="width:16%"><col style="width:18%"><col style="width:13%">
-          <col style="width:10%"><col style="width:12%"><col style="width:23%"><col style="width:8%">
+          <col style="width:10%"><col style="width:12%"><col style="width:23%"><col style="width:100px">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="usuario">Usuario</th>
@@ -6850,7 +7221,7 @@ export async function renderColaboradoresPage(
           <th class="sortable" data-sort-key="rol">Rol</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
           <th>Notificaciones</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -7304,6 +7675,7 @@ export async function renderConfiguracionPage(
   const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
   const reportRecipient = await getReportRecipient();
   const reportFrequencyDays = await getReportFrequencyDays();
+  const transferAccounts = await getTransferAccounts();
   const reportFrequencyPreset =
     reportFrequencyDays === 1
       ? "diario"
@@ -7574,12 +7946,111 @@ export async function renderConfiguracionPage(
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
+        <div class="connection__webhook connection__webhook--aparte">
+          <label for="wompi-webhook-url">URL de eventos (pegala en el dashboard de Wompi)</label>
+          <div class="copyrow">
+            <code id="wompi-webhook-url" class="mono">${escapeHtml(wompiWebhookUrl())}</code>
+            <button type="button" class="btn" data-copy="${escapeHtml(wompiWebhookUrl())}">Copiar</button>
+          </div>
+          <p class="hint">
+            En Wompi: <strong>Configuración → Eventos</strong>, pegá esta URL y suscribí
+            <code>transaction.updated</code>. Con eso los pedidos pagados se confirman solos
+            y los rechazados quedan marcados sin que nadie los revise a mano.
+            ${
+              maskedEventsSecret
+                ? ""
+                : "<strong>Falta cargar el secreto de eventos arriba</strong> — sin él se rechazan los avisos que manda Wompi, porque no se puede verificar que vengan de ellos."
+            }
+          </p>
+        </div>
+      </div>
+    </section>
+    <section class="block" aria-label="Cuentas para transferencia">
+      <div class="blockhead">
+        <h2>Cuentas para transferencia</h2>
+        <span class="hint">${transferAccounts.filter((a) => a.active).length} activa(s)</span>
+      </div>
+      <div class="panel connection">
+        <p class="hint">Cuando un cliente elige pagar por transferencia, el asistente le manda estos datos automáticamente. ${
+          transferAccounts.some((a) => a.active)
+            ? "Se mandan todas las cuentas activas, en este orden."
+            : "<strong>Sin ninguna cuenta activa el asistente no puede dar datos de pago</strong> y escala la conversación a un asesor."
+        }</p>
+        <form method="POST" action="/admin/configuracion/transferencias">
+          <div data-transfer-rows>
+            ${transferAccounts.map((account, i) => transferAccountFieldsHtml(account, i)).join("")}
+          </div>
+          <div class="formfoot">
+            <button type="button" class="btn btn--add" data-transfer-add><span class="btn--add__plus">+</span> Agregar cuenta</button>
+            <button type="submit" class="btn btn--primary">Guardar cuentas</button>
+          </div>
+        </form>
       </div>
     </section>
     </div>
+    <template data-transfer-template>${transferAccountFieldsHtml(
+      { entity: "", accountType: "", accountNumber: "", holderName: "", holderDocument: "", active: true },
+      -1,
+    )}</template>
   `;
 
   return layout("Configuración", tenant, body, "configuracion", admin);
+}
+
+/**
+ * Guarda las cuentas para transferencia. El formulario manda un array por
+ * campo y se recomponen por posición — `entity[0]` va con `accountNumber[0]`.
+ * Fastify entrega un string cuando hay una sola fila y un array cuando hay
+ * varias, de ahí el `normalizar`.
+ *
+ * Se descartan las filas sin entidad ni número: una fila recién agregada y
+ * dejada vacía no debería guardarse, y borrarla es exactamente eso — vaciar
+ * los campos o quitarla, que dan el mismo resultado.
+ */
+export async function guardarCuentasTransferencia(input: {
+  entity?: string | string[];
+  accountType?: string | string[];
+  accountNumber?: string | string[];
+  holderName?: string | string[];
+  holderDocument?: string | string[];
+  active?: string | string[];
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const normalizar = (value: string | string[] | undefined): string[] =>
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+  const entities = normalizar(input.entity);
+  const types = normalizar(input.accountType);
+  const numbers = normalizar(input.accountNumber);
+  const holders = normalizar(input.holderName);
+  const documents = normalizar(input.holderDocument);
+  const actives = normalizar(input.active);
+
+  const cuentas: TransferAccount[] = [];
+  for (let i = 0; i < entities.length; i++) {
+    const entity = (entities[i] ?? "").trim();
+    const accountNumber = (numbers[i] ?? "").trim();
+    if (entity === "" && accountNumber === "") {
+      continue;
+    }
+    if (entity === "" || accountNumber === "") {
+      return { ok: false, error: "Cada cuenta necesita al menos entidad y número." };
+    }
+    const holderName = (holders[i] ?? "").trim();
+    if (holderName === "") {
+      return { ok: false, error: `Falta el titular de la cuenta de ${entity}.` };
+    }
+    cuentas.push({
+      entity,
+      accountType: (types[i] ?? "").trim(),
+      accountNumber,
+      holderName,
+      holderDocument: (documents[i] ?? "").trim(),
+      active: actives[i] === "1",
+    });
+  }
+
+  await saveTransferAccounts(cuentas);
+  return { ok: true };
 }
 
 export async function pausarBot(): Promise<void> {

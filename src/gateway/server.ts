@@ -12,6 +12,7 @@ import {
   activarColaborador,
   activarPromocion,
   cambiarContrasenaPropia,
+  cancelarPedido,
   confirmarImportacionCsv,
   crearAliado,
   crearCategoria,
@@ -31,6 +32,7 @@ import {
   guardarAliado,
   guardarCategoria,
   guardarCobros,
+  guardarCuentasTransferencia,
   guardarComportamiento,
   guardarCredencialesConexion,
   guardarInfoLead,
@@ -43,6 +45,7 @@ import {
   guardarReviewLink,
   guardarVozMarca,
   marcarConexionPrimary,
+  marcarPedidoEntregado,
   pausarBot,
   previsualizarImportacionCsv,
   reactivarBot,
@@ -509,6 +512,31 @@ export async function buildServer() {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  // Transiciones manuales de un pedido. Van bajo /admin (sesión exigida por
+  // el hook) pero no bajo el gate de master: despachar y cerrar pedidos es
+  // trabajo de cualquier colaborador con acceso al panel.
+  app.post("/admin/configuracion/transferencias", async (request, reply) => {
+    const result = await guardarCuentasTransferencia(
+      request.body as Record<string, string | string[]>,
+    );
+    const redirectUrl = result.ok
+      ? "/admin/configuracion?guardado=1#cobros"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}#cobros`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/pedidos/:orderId/entregado", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    await marcarPedidoEntregado(orderId);
+    return reply.status(303).redirect("/admin/pedidos?guardado=1");
+  });
+
+  app.post("/admin/pedidos/:orderId/cancelar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    await cancelarPedido(orderId, request.admin!);
+    return reply.status(303).redirect("/admin/pedidos?guardado=1");
   });
 
   app.post("/admin/colaboradores", async (request, reply) => {

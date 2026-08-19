@@ -46,9 +46,16 @@ export async function registrarGuia(orderId: string, input: RegistrarGuiaInput):
     }
     const isFirstTime = order.shipped_at === null;
 
+    // Registrar la guía ES el despacho: hasta ahora se marcaba `shipped_at`
+    // pero `status` se quedaba en 'abierto', así que el pedido despachado no
+    // se distinguía del que todavía no salió. El estado se mueve acá y no en
+    // una acción aparte para que no haya forma de tener guía sin despachar.
+    // 'entregado' y 'cancelado' siguen siendo decisión de un humano.
     await client.query(
       `UPDATE orders
-       SET tracking_number = $2, carrier = $3, shipped_at = COALESCE(shipped_at, now())
+       SET tracking_number = $2, carrier = $3, shipped_at = COALESCE(shipped_at, now()),
+           status = CASE WHEN status = 'abierto' THEN 'despachado' ELSE status END,
+           status_changed_at = CASE WHEN status = 'abierto' THEN now() ELSE status_changed_at END
        WHERE id = $1`,
       [orderId, trackingNumber, carrier],
     );
