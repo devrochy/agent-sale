@@ -6,6 +6,10 @@ Referencia: [MASTER_PLAN_V2.md](../../MASTER_PLAN_V2.md#fase-16--estado-de-pedid
 
 Cierra el ciclo de vida del pedido después de creado: número público de seguimiento, cierre automático de pendientes sin pago a los 5 días, y registro/notificación de guía de envío — reutilizando la infraestructura de pagos y jobs ya construida en la Fase 12.4.
 
+## Ampliación posterior
+
+- [estados-y-transferencias.md](./estados-y-transferencias.md) — el pedido gana estados reales (`despachado`, `entregado`, `cancelado`) sobre dos ejes que se derivan en uno visible; el webhook de Wompi deja de descartar los rechazos; el enlace de pago se guarda; y el asistente manda los datos de transferencia **sin que pasen por el LLM**, con las cuentas configurables desde el panel.
+
 ## Relación con v1
 
 - **Extiende** `orders.payment_status` (ADR-024, `migrations/0030_orders_payment_status.cjs`) — el estado ya existe (`pendiente`/`pagado`), esta fase lo hace visible en el panel y le agrega número público + logística, no cambia su semántica.

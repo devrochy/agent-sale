@@ -41,3 +41,19 @@ export async function resolveAdminSession(token: string): Promise<{ adminId: str
 export async function deleteAdminSession(token: string): Promise<void> {
   await pool.query(`DELETE FROM admin_sessions WHERE token = $1`, [token]);
 }
+
+/**
+ * Cierra TODAS las sesiones de un admin. Se llama al cambiar la contraseña
+ * (ver `updateAdminPassword`): si alguien pidió el cambio porque sospecha
+ * que otro entró a su cuenta, dejarle viva la cookie al intruso vaciaría de
+ * sentido el cambio. Recibe el `client` de la transacción que está
+ * reescribiendo `admins.password_hash` para que las dos cosas pasen juntas
+ * o no pasen — de ahí que ésta sea la única función del módulo que no usa
+ * el pool crudo.
+ */
+export async function deleteAdminSessionsForAdmin(
+  client: { query: (sql: string, params: unknown[]) => Promise<unknown> },
+  adminId: string,
+): Promise<void> {
+  await client.query(`DELETE FROM admin_sessions WHERE admin_id = $1`, [adminId]);
+}

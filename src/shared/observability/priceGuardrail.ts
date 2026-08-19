@@ -43,10 +43,18 @@ export function extractMonetaryValues(output: unknown): number[] {
 }
 
 /**
- * Recolecta los `number` bajo la clave `stock` (vocabulario real de
- * `consultarInventario.ts`) — misma técnica que `extractMonetaryValues`,
- * para el guardrail de stock (ver `verifyStockGuardrail`, Fase 12.1,
- * "Blindaje anti-invento" extendido a disponibilidad, no solo precio).
+ * Recolecta los `number` bajo la clave `stock` — misma técnica que
+ * `extractMonetaryValues`, para el guardrail de stock (ver
+ * `verifyStockGuardrail`, Fase 12.1, "Blindaje anti-invento" extendido a
+ * disponibilidad).
+ *
+ * Hoy no encuentra nada a propósito: `consultarInventario` dejó de devolver
+ * `stock` y ahora informa `disponible` (ver
+ * docs/fase-21-mensajes-asistente/catalogo-en-conversacion.md). Eso deja la
+ * lista de cantidades conocidas vacía, y con ella cualquier "quedan N" que
+ * el LLM escriba falla la verificación — que es exactamente lo que se
+ * quiere. La función se conserva porque el mecanismo sigue siendo válido si
+ * alguna tool volviera a exponer cantidades.
  */
 export function extractStockValues(output: unknown): number[] {
   const values: number[] = [];

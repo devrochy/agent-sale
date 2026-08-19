@@ -11,6 +11,8 @@ import {
   activarCategoria,
   activarColaborador,
   activarPromocion,
+  cambiarContrasenaPropia,
+  cancelarPedido,
   confirmarImportacionCsv,
   crearAliado,
   crearCategoria,
@@ -24,11 +26,13 @@ import {
   desactivarCategoria,
   desactivarColaborador,
   desactivarPromocion,
+  editarColaborador,
   enviarMensajeHumano,
   exportLeadsCsv,
   guardarAliado,
   guardarCategoria,
   guardarCobros,
+  guardarCuentasTransferencia,
   guardarComportamiento,
   guardarCredencialesConexion,
   guardarInfoLead,
@@ -41,6 +45,7 @@ import {
   guardarReviewLink,
   guardarVozMarca,
   marcarConexionPrimary,
+  marcarPedidoEntregado,
   pausarBot,
   previsualizarImportacionCsv,
   reactivarBot,
@@ -60,8 +65,12 @@ import {
   renderPerfilPage,
   renderProductosPage,
   renderPromocionesPage,
+  renderRecuperarContrasenaPage,
+  renderRestablecerContrasenaPage,
   renderTicketsPage,
   resolverTicket,
+  restablecerContrasenaConToken,
+  solicitarRecuperacionContrasena,
   setConexionActiva,
   tomarTicket,
 } from "../admin/adminPanel.js";
@@ -152,7 +161,15 @@ export async function buildServer() {
   });
 
   app.get("/login", async (request, reply) => {
-    const html = await renderLoginPage();
+    // `?contrasena=cambiada` llega desde los dos caminos que reescriben la
+    // contraseña: el enlace de recuperación y el cambio desde el Perfil.
+    // Los dos cierran la sesión, así que el aviso tiene que salir acá y no
+    // en la página desde donde se hizo el cambio.
+    const { contrasena } = request.query as { contrasena?: string };
+    const html = await renderLoginPage(
+      undefined,
+      contrasena === "cambiada" ? "Contraseña actualizada. Entrá con la nueva." : undefined,
+    );
     if (!html) {
       return reply.status(404).send();
     }
@@ -187,6 +204,81 @@ export async function buildServer() {
         maxAge: 7 * 24 * 60 * 60,
       });
       return reply.status(303).redirect("/admin");
+    },
+  );
+
+  // Recuperación de contraseña (ver
+  // docs/fase-11-panel-admin-dashboard/contrasena.md). Igual que
+  // `/login`/`/logout`, viven fuera de `/admin` y por eso el hook de auth
+  // no las toca: son justamente las rutas para quien no puede autenticarse.
+  app.get("/recuperar-contrasena", async (request, reply) => {
+    const html = await renderRecuperarContrasenaPage(request.query as { enviado?: string });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  // 3 por minuto: cada pedido válido gasta un mensaje de WhatsApp al
+  // teléfono de un admin. Sin este techo, el formulario público es un
+  // botón para inundar de mensajes a alguien que no pidió nada.
+  app.post(
+    "/recuperar-contrasena",
+    { config: { rateLimit: { max: 3, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { identifier } = request.body as { identifier?: string };
+      if (identifier) {
+        await solicitarRecuperacionContrasena(identifier);
+      }
+      // Siempre el mismo destino, exista o no la cuenta — ver
+      // `solicitarRecuperacionContrasena`.
+      return reply.status(303).redirect("/recuperar-contrasena?enviado=1");
+    },
+  );
+
+  app.get("/restablecer-contrasena", async (request, reply) => {
+    const html = await renderRestablecerContrasenaPage(
+      request.query as { token?: string; error?: string },
+    );
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post(
+    "/restablecer-contrasena",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { token, password, confirmacion } = request.body as {
+        token?: string;
+        password?: string;
+        confirmacion?: string;
+      };
+      if (!token || !password) {
+        return reply.status(303).redirect("/recuperar-contrasena");
+      }
+      const result = await restablecerContrasenaConToken({
+        token,
+        password,
+        confirmacion: confirmacion ?? "",
+      });
+      if (result.ok) {
+        // La cookie de esta sesión —si la había— ya no vale: cambiar la
+        // contraseña borra todas las sesiones del admin.
+        reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+        return reply.status(303).redirect("/login?contrasena=cambiada");
+      }
+      // El token sigue vigente cuando el error fue de la contraseña escrita
+      // (corta, o las dos no coinciden): se vuelve al mismo formulario. Si
+      // el enlace ya no sirve, no hay formulario al que volver.
+      return reply
+        .status(303)
+        .redirect(
+          result.tokenVigente
+            ? `/restablecer-contrasena?token=${encodeURIComponent(token)}&error=${encodeURIComponent(result.error)}`
+            : "/restablecer-contrasena",
+        );
     },
   );
 
@@ -422,6 +514,31 @@ export async function buildServer() {
     return reply.type("text/html").send(html);
   });
 
+  // Transiciones manuales de un pedido. Van bajo /admin (sesión exigida por
+  // el hook) pero no bajo el gate de master: despachar y cerrar pedidos es
+  // trabajo de cualquier colaborador con acceso al panel.
+  app.post("/admin/configuracion/transferencias", async (request, reply) => {
+    const result = await guardarCuentasTransferencia(
+      request.body as Record<string, string | string[]>,
+    );
+    const redirectUrl = result.ok
+      ? "/admin/configuracion?guardado=1#cobros"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}#cobros`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/pedidos/:orderId/entregado", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    await marcarPedidoEntregado(orderId);
+    return reply.status(303).redirect("/admin/pedidos?guardado=1");
+  });
+
+  app.post("/admin/pedidos/:orderId/cancelar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    await cancelarPedido(orderId, request.admin!);
+    return reply.status(303).redirect("/admin/pedidos?guardado=1");
+  });
+
   app.post("/admin/colaboradores", async (request, reply) => {
     const { username, email, password, role, phonePrefix, phoneNumber } = request.body as {
       username?: string;
@@ -435,6 +552,31 @@ export async function buildServer() {
       username: username ?? "",
       email: email ?? "",
       password: password ?? "",
+      role: role ?? "",
+      phonePrefix: phonePrefix ?? "",
+      phoneNumber: phoneNumber ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/colaboradores?guardado=1"
+      : `/admin/colaboradores?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  // Editar los datos de OTRA cuenta. El preHandler de arriba ya exigió
+  // master; `editarColaborador` se encarga de la única regla que depende de
+  // quién edita a quién (un master no se baja el rol a sí mismo).
+  app.post("/admin/colaboradores/:adminId", async (request, reply) => {
+    const { adminId } = request.params as { adminId: string };
+    const { username, email, role, phonePrefix, phoneNumber } = request.body as {
+      username?: string;
+      email?: string;
+      role?: string;
+      phonePrefix?: string;
+      phoneNumber?: string;
+    };
+    const result = await editarColaborador(request.admin!, adminId, {
+      username: username ?? "",
+      email: email ?? "",
       role: role ?? "",
       phonePrefix: phonePrefix ?? "",
       phoneNumber: phoneNumber ?? "",
@@ -472,8 +614,12 @@ export async function buildServer() {
   // colaborador — a propósito por fuera del preHandler de arriba, que solo
   // gatea `/admin/colaboradores`.
   app.get("/admin/perfil", async (request, reply) => {
-    const { error, guardado } = request.query as { error?: string; guardado?: string };
-    const html = await renderPerfilPage(request.admin!, { error, guardado });
+    const { error, guardado, errorContrasena } = request.query as {
+      error?: string;
+      guardado?: string;
+      errorContrasena?: string;
+    };
+    const html = await renderPerfilPage(request.admin!, { error, guardado, errorContrasena });
     if (!html) {
       return reply.status(404).send();
     }
@@ -501,24 +647,68 @@ export async function buildServer() {
     return reply.status(303).redirect(redirectUrl);
   });
 
+  // Cambio de contraseña con sesión iniciada. Va bajo `/admin`, así que el
+  // hook de auth ya garantizó la sesión; la contraseña actual se pide igual
+  // dentro de `cambiarContrasenaPropia` (ver por qué, allá).
+  app.post(
+    "/admin/perfil/contrasena",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { actual, password, confirmacion } = request.body as {
+        actual?: string;
+        password?: string;
+        confirmacion?: string;
+      };
+      const result = await cambiarContrasenaPropia(request.admin!, {
+        actual: actual ?? "",
+        password: password ?? "",
+        confirmacion: confirmacion ?? "",
+      });
+      if (!result.ok) {
+        return reply
+          .status(303)
+          .redirect(`/admin/perfil?errorContrasena=${encodeURIComponent(result.error)}`);
+      }
+      // La sesión propia acaba de morir junto con las demás — sin limpiar la
+      // cookie, el redirect a /login rebotaría contra una cookie que ya no
+      // resuelve y el usuario vería el login sin entender por qué.
+      reply.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+      return reply.status(303).redirect("/login?contrasena=cambiada");
+    },
+  );
+
   // Chequeo de disponibilidad en vivo (Fase 13 v2): cualquier admin
   // autenticado, no solo master — lo usa tanto el alta de un colaborador
   // como la edición del propio Perfil, a propósito por fuera del prefijo
   // `/admin/colaboradores` que el preHandler de arriba gatea a master.
   app.get("/admin/username-disponible", async (request, reply) => {
-    const { username, excludeSelf } = request.query as { username?: string; excludeSelf?: string };
+    const { username, excludeSelf, excludeAdminId } = request.query as {
+      username?: string;
+      excludeSelf?: string;
+      excludeAdminId?: string;
+    };
     if (!username) {
       return reply.send({ taken: false });
     }
-    // `excludeSelf=1` solo lo manda el form de Perfil (ver CLIENT_SCRIPT) —
-    // ahí sí hay que excluir al propio admin logueado, porque está
-    // reafirmando su username actual, no reservando uno nuevo. Desde el
-    // alta de un colaborador (Colaboradores) no se manda: no hay que
-    // excluir a nadie.
-    const taken = await isUsernameTaken(
-      username.trim().toLowerCase(),
-      excludeSelf === "1" ? request.admin!.id : null,
-    );
+    // Tres casos, y cada uno excluye a alguien distinto:
+    //
+    // - Alta de un colaborador: no se excluye a nadie, el usuario tiene que
+    //   estar libre contra toda la tabla.
+    // - Perfil propio (`excludeSelf=1`): se excluye al admin logueado, que
+    //   está reafirmando su usuario actual y no reservando uno nuevo.
+    // - Edición de otra cuenta desde Colaboradores (`excludeAdminId`): se
+    //   excluye a la cuenta editada, por la misma razón. Solo se honra para
+    //   un master, que es el único que puede abrir esa pantalla — si no,
+    //   cualquier admin podría pedir la respuesta "excluyendo" a un tercero.
+    //   El peor caso igual sería un booleano, pero no hay motivo para
+    //   dejarlo abierto.
+    const excludeId =
+      excludeAdminId && request.admin!.role === "master"
+        ? excludeAdminId
+        : excludeSelf === "1"
+          ? request.admin!.id
+          : null;
+    const taken = await isUsernameTaken(username.trim().toLowerCase(), excludeId);
     return reply.send({ taken });
   });
 

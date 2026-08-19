@@ -21,9 +21,10 @@ vi.mock("../../../src/gateway/sendMessage.js", () => ({
 }));
 
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
+import { createAdminSession } from "../../../src/admin/auth/adminSessionDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
-import { sendToConversation } from "../../../src/gateway/sendMessage.js";
+import { sendToConversation, sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
 import {
   invalidateConnectionsCache,
   saveConnection,
@@ -37,6 +38,15 @@ const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_U
 const ADMIN_USERNAME = "colaboradora-master";
 const ADMIN_EMAIL = "colaboradora@formotos-test.com";
 const ADMIN_PASSWORD = "clave-de-prueba-segura";
+
+// Admin aparte para los tests de contraseña: cambiar la clave cierra todas
+// las sesiones de esa cuenta (ver updateAdminPassword), así que hacerlo
+// sobre el master de arriba invalidaría `sessionCookie` y voltearía el
+// resto del archivo.
+const RECUPERA_USERNAME = "olvidadiza";
+const RECUPERA_EMAIL = "olvidadiza@formotos-test.com";
+const RECUPERA_PASSWORD = "clave-vieja-de-prueba";
+const RECUPERA_PHONE = "whatsapp:+573001112233";
 
 /** Extrae "nombre=valor" del header Set-Cookie, descartando Path/HttpOnly/etc, para reusar en el header Cookie de los requests siguientes. */
 function cookieValueFrom(setCookieHeader: string | string[] | undefined): string {
@@ -63,6 +73,24 @@ let conversacionAbierta: string;
 let conversacionEscalada: string;
 let conversacionCerrada: string;
 let sessionCookie: string;
+let recuperaAdminId: string;
+// La contraseña de esa cuenta cambia a lo largo del describe de contraseña
+// —ese es justamente el punto—, así que los tests siguientes usan esta
+// variable y no la constante inicial.
+let passwordActualDeRecupera = RECUPERA_PASSWORD;
+
+/**
+ * Sesión para el admin de los tests de contraseña, abierta contra
+ * `admin_sessions` en vez de por `POST /login`: el login tiene su propio
+ * techo de 10 por minuto (ver server.ts) y este archivo ya lo roza. Lo que
+ * estos tests miran es qué pasa con la sesión al cambiar la contraseña, no
+ * cómo se creó.
+ */
+async function loginComoRecupera(): Promise<string> {
+  const token = await createAdminSession(recuperaAdminId);
+  return `agent_sale_admin_session=${token}`;
+}
+
 const customerIds: string[] = [];
 const conversationIds: string[] = [];
 // Colaboradores creados a lo largo del describe "colaboradores" — el
@@ -75,6 +103,11 @@ const adminEmails = [
   "para-desactivar@formotos-test.com",
   "con-permisos@formotos-test.com",
   "colab-conexiones@formotos.test",
+  "telefono.visible@formotos-test.com",
+  "editada@formotos-test.com",
+  "cambia.rol@formotos-test.com",
+  "con.avatar@formotos-test.com",
+  RECUPERA_EMAIL,
 ];
 const app = await buildServer();
 
@@ -247,9 +280,13 @@ beforeAll(async () => {
      VALUES ($1, $2, 250000, 250000) RETURNING id`,
     [conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
+  // Con datos de entrega: un pedido a domicilio real los tiene, y sin
+  // ellos la columna Entrega no puede ofrecer "Ver dirección".
   await adminPool.query(
-    `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total)
-     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'admin-test-order-1', 250000)`,
+    `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, delivery_method, idempotency_key, total,
+                         delivery_address, delivery_full_name, delivery_id_document, delivery_city)
+     VALUES ($1, $2, $3, 'transferencia', 'domicilio', 'admin-test-order-1', 250000,
+             'Calle 10 # 20-30', 'Cliente De Prueba', '1020304050', 'Manizales')`,
     [quotePedido.rows[0]!.id, conversationPedido.rows[0]!.id, customerPedido.rows[0]!.id],
   );
 
@@ -258,6 +295,14 @@ beforeAll(async () => {
   // (esos se prueban en tests/unit de src/admin/auth/).
   const passwordHash = await hashPassword(ADMIN_PASSWORD);
   await createAdmin(ADMIN_USERNAME, ADMIN_EMAIL, passwordHash, "master", null);
+
+  recuperaAdminId = await createAdmin(
+    RECUPERA_USERNAME,
+    RECUPERA_EMAIL,
+    await hashPassword(RECUPERA_PASSWORD),
+    "colaborador",
+    RECUPERA_PHONE,
+  );
 
   await app.ready();
 
@@ -314,6 +359,171 @@ afterAll(async () => {
 });
 
 describe("panel admin", () => {
+  describe("apariencia (tema claro/oscuro)", () => {
+    it("el menú de cuenta trae un switch de dos estados", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      // role="switch" y no tres botones: la opción "Sistema" se retiró.
+      expect(response.body).toContain("data-theme-toggle");
+      expect(response.body).toContain('role="switch"');
+      expect(response.body).not.toContain("data-theme-option");
+    });
+
+    it("los botones de acción toman color según lo que hacen, solo en hover", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // Cancelar en rojo, marcar entregado en verde — y neutros en reposo,
+      // que es lo que evita que una columna de colores repetidos deje de
+      // significar nada.
+      expect(response.body).toMatch(/class="btn btn--ghost btn--icon act--redline"[^>]*Cancelar/);
+
+      // "Marcar entregado" solo existe en un pedido despachado, y el del
+      // fixture está abierto; el verde de confirmar se verifica sobre
+      // "Guardar cambios", que es la misma intención.
+      const aliados = await app.inject({
+        method: "GET",
+        url: "/admin/aliados",
+        headers: { cookie: sessionCookie },
+      });
+      expect(aliados.body).toMatch(/class="btn btn--ghost btn--icon act--go"[^>]*Guardar cambios/);
+      expect(aliados.body).toMatch(/class="btn btn--ghost btn--icon act--ignition"[^>]*Editar/);
+      // El color solo aparece bajo :hover / :focus-visible, nunca en la
+      // regla base de la clase.
+      expect(response.body).toContain(".btn--ghost.act--redline:hover");
+      expect(response.body).toContain(".btn--ghost.act--redline:focus-visible");
+      expect(response.body).not.toMatch(/\.act--redline \{/);
+    });
+
+    it("los iconos de acción no se envuelven a una segunda línea", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/productos",
+        headers: { cookie: sessionCookie },
+      });
+      // Con flex-wrap: wrap y una columna angosta, los tres botones de
+      // Productos caían dos arriba y uno abajo, y la fila crecía de alto.
+      expect(response.body).toContain("flex-wrap: nowrap");
+      expect(response.body).not.toMatch(/\.rowactions \{[^}]*flex-wrap: wrap/);
+      // El ancho de esa columna va en px: con table-layout: fixed un
+      // porcentaje manda estricto, y una columna de botones necesita el
+      // ancho que ocupan, no una fracción de la tabla.
+      expect(response.body).toMatch(/<col style="width:\d+px">/);
+    });
+
+    it("los iconos de la última columna se apoyan en el borde derecho", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/productos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("td:last-child > .rowactions { justify-content: flex-end; }");
+      // El encabezado acompaña a sus botones, con clase y no con
+      // th:last-child: hay tablas que terminan en texto.
+      expect(response.body).toContain('<th class="th--end">Acciones</th>');
+      expect(response.body).toContain("th.th--end { text-align: right; }");
+    });
+
+    it("la celda mixta de Tickets no se alinea a la derecha", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // "Asignado a" también usa .rowactions, pero lleva el nombre del
+      // asesor adelante y no es la última celda: ahí el texto tiene que
+      // empezar a la izquierda como el resto de la tabla. Lo que lo
+      // garantiza es el td:last-child del selector, no una excepción.
+      expect(response.body).not.toContain('<th class="th--end">Asignado a</th>');
+      expect(response.body).toContain('<th class="th--end">Conversación</th>');
+    });
+
+    it("ninguna columna de Tickets queda sin encabezado", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // Era la única columna sin título del panel. Se llama "Conversación"
+      // y no "Acción" porque las acciones del ticket —tomar, resolver,
+      // reasignar— viven en la columna "Asignado a".
+      expect(response.body).toMatch(/<th[^>]*>Conversación<\/th>/);
+      expect(response.body).not.toContain("<th></th>");
+    });
+
+    it("no quedan dos sistemas de color para lo mismo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // Tickets tenía su propio btn--icon-go/amber/chrome, que pintaba
+      // siempre. Se unificó al de hover para que el panel entero se
+      // comporte igual.
+      expect(response.body).not.toContain("btn--icon-go");
+      expect(response.body).not.toContain("btn--icon-amber");
+      expect(response.body).not.toContain("btn--icon-chrome");
+    });
+
+    it("el modal declara su color, que no hereda del body", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      // Un <dialog> vive en el top layer y el navegador le asigna
+      // CanvasText. Mientras el tema salía de prefers-color-scheme
+      // coincidían por casualidad; forzando "Oscuro" con el sistema en
+      // claro, los títulos del modal salían negros sobre el panel oscuro.
+      expect(response.body).toMatch(/dialog\.modal \{[^}]*color: var\(--ink\)/);
+    });
+
+    it("aplica el tema guardado antes de pintar, para que no haya parpadeo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      const head = response.body.slice(0, response.body.indexOf("</head>"));
+      // El script tiene que ir en el <head> y antes del <style>: si esperara
+      // al final del body, el panel pintaría claro y saltaría a oscuro.
+      expect(head).toContain('localStorage.getItem("panel-theme")');
+      expect(head.indexOf('localStorage.getItem("panel-theme")')).toBeLessThan(head.indexOf("<style>"));
+    });
+
+    it("la paleta oscura responde tanto al sistema como a la elección explícita", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      // La vía por `prefers-color-scheme` se mantiene aunque el script
+      // siempre fije `data-theme`: es lo único que queda si el JS no corre.
+      expect(response.body).toContain(':root:not([data-theme="light"])');
+      expect(response.body).toContain(':root[data-theme="dark"]');
+    });
+
+    it("sin preferencia guardada el tema arranca por el del sistema", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin",
+        headers: { cookie: sessionCookie },
+      });
+      const head = response.body.slice(0, response.body.indexOf("</head>"));
+      // Con dos estados el switch tiene que reflejar algo real desde la
+      // primera visita: si arrancara siempre en "claro" mentiría sobre lo
+      // que se está viendo en un equipo configurado en oscuro.
+      expect(head).toContain("prefers-color-scheme: dark");
+      expect(head).toContain('setAttribute("data-theme"');
+    });
+  });
+
   it("redirige a /login sin sesión", async () => {
     const response = await app.inject({ method: "GET", url: "/admin" });
     expect(response.statusCode).toBe(303);
@@ -367,6 +577,157 @@ describe("panel admin", () => {
     const afterLogout = await app.inject({ method: "GET", url: "/admin", headers: { cookie } });
     expect(afterLogout.statusCode).toBe(303);
     expect(afterLogout.headers.location).toBe("/login");
+  });
+
+  describe("contraseña — cambio y recuperación", () => {
+    /** Saca el token del enlace que viajó en el WhatsApp — es la única vez que existe en claro. */
+    function tokenDelUltimoWhatsApp(): string {
+      const mock = vi.mocked(sendWhatsAppMessage);
+      const ultima = mock.mock.calls.at(-1);
+      if (!ultima) {
+        throw new Error("No se mandó ningún WhatsApp");
+      }
+      const match = /restablecer-contrasena\?token=([\w-]+)/.exec(ultima[1] as string);
+      if (!match) {
+        throw new Error(`El mensaje no trae enlace de restablecimiento: ${ultima[1]}`);
+      }
+      return match[1]!;
+    }
+
+    it("el login ofrece el camino de recuperación", async () => {
+      const response = await app.inject({ method: "GET", url: "/login" });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("/recuperar-contrasena");
+    });
+
+    it("un identificador que no existe recibe el mismo acuse y no dispara ningún mensaje", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const response = await app.inject({
+        method: "POST",
+        url: "/recuperar-contrasena",
+        payload: new URLSearchParams({ identifier: "no-existe@formotos-test.com" }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      // Mismo destino que el caso exitoso: si difiriera, este formulario
+      // público diría qué cuentas existen.
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/recuperar-contrasena?enviado=1");
+      expect(vi.mocked(sendWhatsAppMessage)).not.toHaveBeenCalled();
+    });
+
+    it("el enlace llega por WhatsApp, sirve una vez y deja entrar con la contraseña nueva", async () => {
+      vi.mocked(sendWhatsAppMessage).mockClear();
+      const pedido = await app.inject({
+        method: "POST",
+        url: "/recuperar-contrasena",
+        payload: new URLSearchParams({ identifier: RECUPERA_USERNAME }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(pedido.statusCode).toBe(303);
+      expect(vi.mocked(sendWhatsAppMessage)).toHaveBeenCalledOnce();
+      expect(vi.mocked(sendWhatsAppMessage).mock.calls[0]![0]).toBe(RECUPERA_PHONE);
+
+      const token = tokenDelUltimoWhatsApp();
+
+      const formulario = await app.inject({
+        method: "GET",
+        url: `/restablecer-contrasena?token=${token}`,
+      });
+      expect(formulario.statusCode).toBe(200);
+      expect(formulario.body).toContain('name="password"');
+
+      const nueva = "clave-nueva-de-prueba";
+      const cambio = await app.inject({
+        method: "POST",
+        url: "/restablecer-contrasena",
+        payload: new URLSearchParams({ token, password: nueva, confirmacion: nueva }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(cambio.statusCode).toBe(303);
+      expect(cambio.headers.location).toBe("/login?contrasena=cambiada");
+
+      // El mismo enlace, otra vez: ya no dibuja formulario.
+      const reuso = await app.inject({
+        method: "GET",
+        url: `/restablecer-contrasena?token=${token}`,
+      });
+      expect(reuso.body).not.toContain('name="password"');
+      expect(reuso.body).toContain("Este enlace ya no sirve");
+
+      const conLaVieja = await app.inject({
+        method: "POST",
+        url: "/login",
+        payload: new URLSearchParams({
+          identifier: RECUPERA_EMAIL,
+          password: RECUPERA_PASSWORD,
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(conLaVieja.statusCode).toBe(401);
+
+      const conLaNueva = await app.inject({
+        method: "POST",
+        url: "/login",
+        payload: new URLSearchParams({ identifier: RECUPERA_EMAIL, password: nueva }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(conLaNueva.statusCode).toBe(303);
+      expect(conLaNueva.headers.location).toBe("/admin");
+      passwordActualDeRecupera = nueva;
+    });
+
+    it("un token inventado no abre el formulario", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/restablecer-contrasena?token=token-que-nunca-se-emitio",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain('name="password"');
+    });
+
+    it("el Perfil pide la contraseña actual para cambiarla", async () => {
+      const cookie = await loginComoRecupera();
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/perfil/contrasena",
+        payload: new URLSearchParams({
+          actual: "no-es-la-actual",
+          password: "otra-clave-cualquiera",
+          confirmacion: "otra-clave-cualquiera",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("errorContrasena=");
+      expect(decodeURIComponent(response.headers.location as string)).toContain(
+        "contraseña actual no es correcta",
+      );
+      // Y la sesión sigue viva: un intento fallido no puede cerrar sesiones.
+      const perfil = await app.inject({ method: "GET", url: "/admin/perfil", headers: { cookie } });
+      expect(perfil.statusCode).toBe(200);
+    });
+
+    it("cambiar la contraseña desde el Perfil cierra la sesión desde la que se cambió", async () => {
+      const cookie = await loginComoRecupera();
+      const nueva = "clave-final-de-prueba";
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/perfil/contrasena",
+        payload: new URLSearchParams({
+          actual: passwordActualDeRecupera,
+          password: nueva,
+          confirmacion: nueva,
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/login?contrasena=cambiada");
+      passwordActualDeRecupera = nueva;
+
+      const despues = await app.inject({ method: "GET", url: "/admin/perfil", headers: { cookie } });
+      expect(despues.statusCode).toBe(303);
+      expect(despues.headers.location).toBe("/login");
+    });
   });
 
   it("muestra el catálogo con los productos existentes", async () => {
@@ -1276,6 +1637,53 @@ describe("panel admin", () => {
     });
   });
 
+  describe("configuración — pestañas", () => {
+    it("agrupa las siete secciones en cinco pestañas, con una sola visible", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      for (const tab of ["agente", "voz", "modelo", "reportes", "cobros"]) {
+        expect(response.body).toContain(`data-cfg-tab="${tab}"`);
+        expect(response.body).toContain(`data-cfg-panel="${tab}"`);
+      }
+      // Solo "agente" llega visible: los otros cuatro con hidden, para que
+      // sin JS no se vean los cinco paneles apilados.
+      const ocultos = response.body.match(/data-cfg-panel="[a-z]+" role="tabpanel" aria-label="[^"]+" hidden/g);
+      expect(ocultos).toHaveLength(4);
+    });
+
+    it("cada pestaña muestra el estado real de su área", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // El estado sale de la configuración de verdad, no de un texto fijo:
+      // es lo que convierte la barra en un diagnóstico útil.
+      expect(response.body).toMatch(/cfgtab__state[^>]*>(Activo|Pausado)</);
+      expect(response.body).toMatch(/cfgtab__state[^>]*>(Conectado|Sin configurar)</);
+    });
+
+    it("los campos de Voz de marca declaran el tope de 500 caracteres", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // El tope ya se validaba al guardar; sin maxlength el usuario solo se
+      // enteraba cuando el formulario le rebotaba.
+      const vozMarca = response.body.slice(
+        response.body.indexOf('data-cfg-panel="voz"'),
+        response.body.indexOf('data-cfg-panel="modelo"'),
+      );
+      expect(vozMarca).toContain('maxlength="500"');
+      expect(vozMarca).toContain("data-counted");
+    });
+  });
+
   describe("configuración — voz de marca (Fase 20, ADR-030)", () => {
     it("guarda los campos configurados y los precarga en el formulario", async () => {
       const response = await app.inject({
@@ -1338,6 +1746,212 @@ describe("panel admin", () => {
     });
   });
 
+  describe("pedidos — estados, filtros y entrega", () => {
+    it("la tabla trae filtros por estado, pago y entrega", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-filter-key="estado"');
+      expect(response.body).toContain('data-filter-key="pago"');
+      expect(response.body).toContain('data-filter-key="entrega"');
+      // Los filtros no sirven si las filas no traen contra qué comparar.
+      expect(response.body).toMatch(/data-filter-estado="[a-z_]+"/);
+      expect(response.body).toMatch(/data-filter-pago="[a-z_]+"/);
+    });
+
+    it("el estado sale del par status + payment_status, no de una columna cruda", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // El pedido del fixture es 'abierto' + 'pagado' -> "Pagado".
+      expect(response.body).toContain("Pagado");
+      // Y nunca se muestra el valor crudo de la columna.
+      expect(response.body).not.toContain(">abierto<");
+    });
+
+    it("el chip de Domicilio es el que abre la dirección, sin botón aparte", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // Es un <button> real y no un span con onclick: se alcanza con
+      // teclado y se anuncia como control.
+      expect(response.body).toMatch(
+        /<button[^>]*data-open-dialog="direccion-[^"]*"[^>]*class="chip chip--chrome chip--action"/,
+      );
+      expect(response.body).toContain("<dl class=\"datalist\">");
+      // El botón de texto al lado repetía lo que el chip ya nombraba.
+      expect(response.body).not.toContain("Ver dirección");
+      // Y antes de eso, la dirección se imprimía apretada en los items.
+      expect(response.body).not.toContain("Entrega a:");
+    });
+
+    it("los métodos de pago se muestran con su nombre, no con la clave de la tool", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("Transferencia");
+      // `efectivo_contraentrega` se lee como una variable en una tabla.
+      expect(response.body).not.toContain(">efectivo_contraentrega<");
+    });
+  });
+
+  describe("cuentas para transferencia", () => {
+    it("guarda las cuentas y descarta las filas vacías", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transferencias",
+        payload: new URLSearchParams([
+          ["entity", "Nequi"],
+          ["accountType", ""],
+          ["accountNumber", "3001234567"],
+          ["holderName", "ForMotos SAS"],
+          ["holderDocument", "900123456-7"],
+          ["active", "1"],
+          // Fila agregada y dejada en blanco: no debería guardarse.
+          ["entity", ""],
+          ["accountType", ""],
+          ["accountNumber", ""],
+          ["holderName", ""],
+          ["holderDocument", ""],
+          ["active", "1"],
+        ]).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{ transfer_accounts: unknown[] }>(
+        `SELECT transfer_accounts FROM settings WHERE id = $1`,
+        [settingsId],
+      );
+      expect(fila.rows[0]!.transfer_accounts).toHaveLength(1);
+      expect(fila.rows[0]!.transfer_accounts[0]).toMatchObject({
+        entity: "Nequi",
+        accountNumber: "3001234567",
+        active: true,
+      });
+    });
+
+    it("una cuenta a medio llenar no se guarda en silencio", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transferencias",
+        payload: new URLSearchParams([
+          ["entity", "Bancolombia"],
+          ["accountType", "Ahorros"],
+          ["accountNumber", ""],
+          ["holderName", "ForMotos"],
+          ["holderDocument", ""],
+          ["active", "1"],
+        ]).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      // Guardar media cuenta deja al asistente mandando datos incompletos,
+      // que es peor que rechazar el formulario.
+      expect(decodeURIComponent(response.headers.location as string)).toContain(
+        "entidad y número",
+      );
+    });
+
+    it("Cobros muestra la URL de eventos de Wompi, y es la ruta que el servidor escucha", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      // Sin este dato, configurar Wompi exigía adivinar la ruta o buscarla
+      // en el código: la sección pedía llave y secreto pero no decía a
+      // dónde apuntar el webhook.
+      expect(response.body).toContain("/webhooks/wompi");
+      expect(response.body).toContain("transaction.updated");
+      // Y la ruta anunciada tiene que ser una que el servidor atienda de
+      // verdad — un 404 acá se descubriría recién con el primer pago real.
+      const webhook = await app.inject({
+        method: "POST",
+        url: "/webhooks/wompi",
+        headers: { "content-type": "application/json" },
+        payload: {},
+      });
+      expect(webhook.statusCode).not.toBe(404);
+    });
+
+    it("el estado viaja en un select, no en un checkbox", async () => {
+      // Un checkbox desmarcado no se envía: `active` llegaría más corto que
+      // el resto de los arrays y las filas se desfasarían entre sí.
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/configuracion",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('name="active"');
+      expect(response.body).not.toContain('type="checkbox" name="active"');
+    });
+  });
+
+  describe("notificaciones flotantes", () => {
+    it("una confirmación sale como toast y ya no como banner en el flujo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores?guardado=1",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('<div class="toaststack"');
+      expect(response.body).toContain('class="toast toast--ok"');
+      // El banner empujaba el contenido hacia abajo; el toast flota.
+      expect(response.body).not.toContain('class="banner banner--ok"');
+    });
+
+    it("un error sale como toast y se anuncia como alerta", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/aliados?error=Ya%20existe%20un%20aliado%20con%20ese%20nombre.",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('class="toast toast--error"');
+      // role="alert" interrumpe al lector de pantalla; la confirmación usa
+      // role="status", que espera su turno.
+      expect(response.body).toContain('class="toast toast--error" role="alert"');
+      expect(response.body).toContain("Ya existe un aliado con ese nombre.");
+      expect(response.body).not.toContain('class="banner banner--error"');
+    });
+
+    it("lo que describe un estado de la pantalla sigue siendo banner, no toast", async () => {
+      // El admin de estos tests no tiene teléfono cargado, así que el Perfil
+      // le muestra el aviso de que no va a poder recuperar la contraseña.
+      // Ese aviso NO es el resultado de una acción: describe cómo está la
+      // cuenta y no puede irse solo a los cinco segundos.
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/perfil",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain('class="banner banner--warn"');
+      expect(response.body).toContain("no tiene teléfono cargado");
+      expect(response.body).not.toContain('<div class="toaststack"');
+    });
+
+    it("el Perfil junta sus dos notificaciones en un solo stack", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/perfil?errorContrasena=La%20contrase%C3%B1a%20actual%20no%20es%20correcta.",
+        headers: { cookie: sessionCookie },
+      });
+      // Dos stacks se superpondrían en la misma esquina de la pantalla.
+      expect(response.body.match(/<div class="toaststack"/g)?.length).toBe(1);
+      expect(response.body).toContain("La contraseña actual no es correcta.");
+    });
+  });
+
   describe("colaboradores", () => {
     it("un master ve la lista de colaboradores existentes", async () => {
       const response = await app.inject({
@@ -1348,6 +1962,209 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain(ADMIN_EMAIL);
       expect(response.body).toContain("Master");
+    });
+
+    it("la tabla trae la misma barra de herramientas que el resto del panel", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      // Era la única tabla del panel sin el motor de búsqueda/filtro/paginado.
+      expect(response.body).toContain("data-table-search");
+      expect(response.body).toContain('data-filter-key="rol"');
+      expect(response.body).toContain('data-filter-key="estado"');
+      // Los filtros no sirven de nada si las filas no traen contra qué comparar.
+      expect(response.body).toMatch(/data-filter-rol="(master|colaborador)"/);
+      expect(response.body).toMatch(/data-filter-estado="(activo|inactivo)"/);
+      // El botón de alta, con el mismo tratamiento que "Nuevo producto".
+      expect(response.body).toContain("Nuevo colaborador");
+      expect(response.body).toContain("btn--add");
+    });
+
+    it("desactivar a alguien pide confirmación, y el texto habla de acceso y no de catálogo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores",
+        headers: { cookie: sessionCookie },
+      });
+      // La red de seguridad que faltaba: sacarle el acceso a una persona
+      // era un clic sin confirmación mientras que desactivar un aliado sí
+      // preguntaba.
+      expect(response.body).toContain("Pierde el acceso al panel");
+      // El mensaje por defecto de toggleSwitchHtml está escrito para el
+      // catálogo y sobre una persona es directamente falso.
+      expect(response.body).not.toContain("Deja de estar disponible para el asistente");
+    });
+
+    it("el teléfono se muestra como número y no como el identificador de Twilio", async () => {
+      const conTelefono = "telefono.visible@formotos-test.com";
+      await createAdmin(
+        "telvisible",
+        conTelefono,
+        await hashPassword("clave-de-prueba-telefono"),
+        "colaborador",
+        "whatsapp:+573184935933",
+      );
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/colaboradores",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("+57 318 493 5933");
+      // Sin agrupar dejaba un dígito suelto al final ("593 3"), que se lee
+      // como error de tipeo.
+      expect(response.body).not.toContain("+57 318 493 593 3");
+      // `whatsapp:` es de Twilio, no del usuario. Sigue en la base; no en pantalla.
+      expect(response.body).not.toContain("whatsapp:+573184935933");
+    });
+
+    it("un master edita los datos de otra cuenta, incluido el teléfono que faltaba", async () => {
+      const editableEmail = "editable@formotos-test.com";
+      const adminId = await createAdmin(
+        "editable",
+        editableEmail,
+        await hashPassword("clave-de-prueba-editable"),
+        "colaborador",
+        null,
+      );
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${adminId}`,
+        payload: new URLSearchParams({
+          username: "editable",
+          email: "editada@formotos-test.com",
+          role: "colaborador",
+          phonePrefix: "57",
+          phoneNumber: "3009998877",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/colaboradores?guardado=1");
+
+      const fila = await adminPool.query<{ email: string; phone: string | null }>(
+        `SELECT email, phone FROM admins WHERE id = $1`,
+        [adminId],
+      );
+      expect(fila.rows[0]!.email).toBe("editada@formotos-test.com");
+      // Cargarle el teléfono a otro es la razón concreta por la que esto
+      // hacía falta: sin él esa cuenta no puede recuperar su contraseña, y
+      // el único que podía cargarlo era su propio dueño desde el Perfil.
+      expect(fila.rows[0]!.phone).toBe("whatsapp:+573009998877");
+    });
+
+    it("cambiar el rol de otra cuenta sí se puede; quitarse el propio master no", async () => {
+      const rolEmail = "cambia.rol@formotos-test.com";
+      const adminId = await createAdmin(
+        "cambiarol",
+        rolEmail,
+        await hashPassword("clave-de-prueba-rol"),
+        "colaborador",
+        null,
+      );
+
+      const promocion = await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${adminId}`,
+        payload: new URLSearchParams({
+          username: "cambiarol",
+          email: rolEmail,
+          role: "master",
+          phonePrefix: "57",
+          phoneNumber: "",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(promocion.headers.location).toBe("/admin/colaboradores?guardado=1");
+      const rol = await adminPool.query<{ role: string }>(`SELECT role FROM admins WHERE id = $1`, [
+        adminId,
+      ]);
+      expect(rol.rows[0]!.role).toBe("master");
+
+      // El master logueado bajándose a sí mismo perdería el acceso a esta
+      // pantalla en el mismo submit, sin forma de volver a subirse.
+      const propioId = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE email = $1`,
+        [ADMIN_EMAIL],
+      );
+      const autodegradacion = await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${propioId.rows[0]!.id}`,
+        payload: new URLSearchParams({
+          username: ADMIN_USERNAME,
+          email: ADMIN_EMAIL,
+          role: "colaborador",
+          phonePrefix: "57",
+          phoneNumber: "",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+      expect(decodeURIComponent(autodegradacion.headers.location as string)).toContain(
+        "No podés quitarte a vos mismo el rol master",
+      );
+      const propioRol = await adminPool.query<{ role: string }>(
+        `SELECT role FROM admins WHERE email = $1`,
+        [ADMIN_EMAIL],
+      );
+      expect(propioRol.rows[0]!.role).toBe("master");
+    });
+
+    it("editar no borra el avatar de la cuenta editada", async () => {
+      const avatarEmail = "con.avatar@formotos-test.com";
+      const adminId = await createAdmin(
+        "conavatar",
+        avatarEmail,
+        await hashPassword("clave-de-prueba-avatar"),
+        "colaborador",
+        null,
+      );
+      const avatar = "data:image/png;base64,iVBORw0KGgo=";
+      await adminPool.query(`UPDATE admins SET avatar_data = $1 WHERE id = $2`, [avatar, adminId]);
+
+      await app.inject({
+        method: "POST",
+        url: `/admin/colaboradores/${adminId}`,
+        payload: new URLSearchParams({
+          username: "conavatar",
+          email: avatarEmail,
+          role: "colaborador",
+          phonePrefix: "57",
+          phoneNumber: "",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: sessionCookie },
+      });
+
+      // El formulario de edición no tiene campo de avatar, y
+      // `updateAdminProfile` reemplaza los cuatro campos: sin reenviarlo,
+      // guardar los datos de alguien le borraba la foto.
+      const fila = await adminPool.query<{ avatar_data: string | null }>(
+        `SELECT avatar_data FROM admins WHERE id = $1`,
+        [adminId],
+      );
+      expect(fila.rows[0]!.avatar_data).toBe(avatar);
+    });
+
+    it("el chequeo de usuario en vivo no reporta como ocupado el usuario de la cuenta que se edita", async () => {
+      const propioId = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE email = $1`,
+        [ADMIN_EMAIL],
+      );
+      const sinExcluir = await app.inject({
+        method: "GET",
+        url: `/admin/username-disponible?username=${ADMIN_USERNAME}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(sinExcluir.json()).toEqual({ taken: true });
+
+      const excluyendo = await app.inject({
+        method: "GET",
+        url: `/admin/username-disponible?username=${ADMIN_USERNAME}&excludeAdminId=${propioId.rows[0]!.id}`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(excluyendo.json()).toEqual({ taken: false });
     });
 
     it("crea un colaborador nuevo, que puede loguearse pero no ver Colaboradores", async () => {

@@ -2,18 +2,32 @@ import type { PoolClient } from "pg";
 import { escapeHtml, renderMessageBody, type MessageRow } from "../advisor/handoffView.js";
 import {
   createAdmin,
+  findAdminByUsernameOrEmail,
+  getAdminById,
   isAdminRole,
   listAdmins,
   setAdminActive,
+  updateAdminPassword,
   updateAdminPermissions,
   updateAdminProfile,
+  updateAdminRole,
   type AdminPermissions,
   type AdminRecord,
 } from "./auth/adminsDirectory.js";
-import { hashPassword } from "./auth/passwordHash.js";
+import { hashPassword, verifyPassword } from "./auth/passwordHash.js";
+import {
+  consumePasswordResetToken,
+  createPasswordResetToken,
+  resolvePasswordResetToken,
+} from "./auth/passwordReset.js";
+import {
+  derivarEstado,
+  ESTADOS_VISIBLES,
+  cambiarEstadoPedido,
+} from "../domains/commerce/estadoPedido.js";
 import { env } from "../config/env.js";
 import { outboundAdapterFor } from "../gateway/channels/registry.js";
-import { sendToConversation } from "../gateway/sendMessage.js";
+import { sendToConversation, sendWhatsAppMessage } from "../gateway/sendMessage.js";
 import {
   getConnection,
   listConnections,
@@ -29,6 +43,11 @@ import {
 import { appendMessage } from "../orchestrator/memory.js";
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { logger } from "../shared/observability/logger.js";
+import {
+  getTransferAccounts,
+  saveTransferAccounts,
+  type TransferAccount,
+} from "../shared/db/settingsDirectory.js";
 import {
   createAlly,
   listAllies,
@@ -196,9 +215,31 @@ interface PedidoRow {
   customer_name: string | null;
   delivery_address: string | null;
   delivery_id_document: string | null;
+  delivery_full_name: string | null;
+  delivery_municipality: string | null;
+  delivery_city: string | null;
   tracking_number: string | null;
   carrier: string | null;
+  wompi_payment_link_url: string | null;
+  status_reason: string | null;
   items: OrderItemJson[];
+}
+
+/**
+ * Los métodos de pago se guardan con el valor que usa la tool
+ * (`efectivo_contraentrega`), que en una tabla se lee como una variable.
+ * Acá viven sus nombres y su orden para el filtro — un solo lugar, para que
+ * la etiqueta de la celda y la opción del `<select>` no se separen.
+ */
+const METODOS_PAGO: { key: string; label: string }[] = [
+  { key: "transferencia", label: "Transferencia" },
+  { key: "pago_en_linea", label: "Pago en línea" },
+  { key: "efectivo_contraentrega", label: "Efectivo contra entrega" },
+  { key: "tarjeta", label: "Tarjeta al recibir" },
+];
+
+function etiquetaMetodoPago(key: string): string {
+  return METODOS_PAGO.find((m) => m.key === key)?.label ?? key;
 }
 
 function formatCOP(value: string | number): string {
@@ -253,6 +294,70 @@ function brandName(settings: SettingsSummary): string {
 /** Icono + título + explicación en voz del panel, no una frase gris suelta — ver Fase 11 (mejora informada por el panel de referencia externo). */
 function emptyState(icon: string, title: string, desc: string): string {
   return `<div class="emptystate"><span class="emptystate__icon">${icon}</span><p class="emptystate__title">${escapeHtml(title)}</p><p class="emptystate__desc">${escapeHtml(desc)}</p></div>`;
+}
+
+/**
+ * Pestaña de Configuración. Lleva el estado real del área debajo del nombre
+ * (ver docs/fase-11-panel-admin-dashboard/configuracion-por-pestanas.md): la
+ * barra funciona como diagnóstico, no solo como navegación — se ve qué falta
+ * configurar sin entrar a las cinco pestañas una por una.
+ */
+/**
+ * Una cuenta para transferencia dentro del formulario de Cobros. Los campos
+ * viajan como arrays (`entity[]`, `accountNumber[]`…) y se recomponen por
+ * posición al guardar: es la forma más simple de un formulario de N filas
+ * sin estado en el servidor ni un endpoint por fila, y la lista se reescribe
+ * entera igual (ver saveTransferAccounts).
+ *
+ * `index` solo alimenta los `id`/`for`; la plantilla que clona el navegador
+ * pasa -1 y el script le asigna el índice real al insertarla.
+ *
+ * El estado va en un `<select>` y no en un checkbox por la alineación: un
+ * checkbox desmarcado no se envía, así que `active[]` llegaría más corto
+ * que el resto y las filas se desfasarían. Un select siempre manda valor.
+ */
+function transferAccountFieldsHtml(account: TransferAccount, index: number): string {
+  const uid = index >= 0 ? String(index) : "__i__";
+  return `<div class="transferrow" data-transfer-row>
+    <div class="transferrow__grid">
+      <div class="field">
+        <label for="tr-${uid}-entity">Entidad</label>
+        <input type="text" id="tr-${uid}-entity" name="entity" required placeholder="Nequi, Bancolombia, Daviplata…" value="${escapeHtml(account.entity)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-type">Tipo de cuenta</label>
+        <input type="text" id="tr-${uid}-type" name="accountType" placeholder="Ahorros, Corriente… (opcional)" value="${escapeHtml(account.accountType)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-number">Número</label>
+        <input type="text" id="tr-${uid}-number" name="accountNumber" required inputmode="numeric" value="${escapeHtml(account.accountNumber)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-holder">Titular</label>
+        <input type="text" id="tr-${uid}-holder" name="holderName" required value="${escapeHtml(account.holderName)}">
+      </div>
+      <div class="field">
+        <label for="tr-${uid}-doc">Documento del titular</label>
+        <input type="text" id="tr-${uid}-doc" name="holderDocument" placeholder="Cédula o NIT" value="${escapeHtml(account.holderDocument)}">
+      </div>
+    </div>
+    <div class="transferrow__foot">
+      <label class="sr-only" for="tr-${uid}-active">Estado de la cuenta</label>
+      <select id="tr-${uid}-active" class="tablefilter" name="active">
+        <option value="1" ${account.active ? "selected" : ""}>Activa — se le manda al cliente</option>
+        <option value="0" ${account.active ? "" : "selected"}>Inactiva</option>
+      </select>
+      <button type="button" class="btn btn--ghost btn--sm" data-transfer-remove>Quitar</button>
+    </div>
+  </div>`;
+}
+
+function cfgTab(id: string, nombre: string, estado: string, tono: "on" | "off" | "neutral"): string {
+  const activa = id === "agente";
+  return `<button type="button" class="cfgtab${activa ? " cfgtab--active" : ""}" role="tab" data-cfg-tab="${escapeHtml(id)}" aria-selected="${activa ? "true" : "false"}">
+    <span class="cfgtab__name">${escapeHtml(nombre)}</span>
+    <span class="cfgtab__state cfgtab__state--${tono}">${escapeHtml(estado)}</span>
+  </button>`;
 }
 
 /** Tarjeta seleccionable (radio + label, sin JS) para Configuración → Voz y estilo — reemplaza los <select> por el patrón táctil del panel de referencia externo, adaptado a los iconos y color de acento propios de este panel. */
@@ -382,11 +487,34 @@ const ICON_EDIT =
 const ICON_SAVE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4"/></svg>';
 
+/* Iconos de las notificaciones flotantes. Dentro de un círculo, para que se
+   lean como un estado y no como un botón — el resto de los iconos del panel
+   son acciones que se pueden tocar. */
+const ICON_TOAST_OK =
+  '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="7.2"/><path d="M5.8 9.2 8 11.4l4.2-4.6"/></svg>';
+
+const ICON_TOAST_ERROR =
+  '<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="7.2"/><path d="M9 5.4v4.2"/><path d="M9 12.3v.3"/></svg>';
+
+/** Caja de envío — acompaña a la palabra "Guía" en Pedidos. Un icono solo ahí sería ambiguo: no se sabría si abre la guía o la crea. */
+const ICON_GUIA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5.2 8 2.4l5.5 2.8v5.6L8 13.6l-5.5-2.8z"/><path d="M2.5 5.2 8 8l5.5-2.8"/><path d="M8 8v5.6"/></svg>';
+
+/** Check en círculo — "marcar entregado". Distinto de ICON_SAVE (check suelto), que en el panel significa "guardar esta edición". */
+const ICON_ENTREGADO =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M5.4 8.2 7.3 10l3.4-3.8"/></svg>';
+
+const ICON_CANCELAR =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M6 6l4 4M10 6l-4 4"/></svg>';
+
+const ICON_SOL =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.1"/><path d="M8 1.4v1.5M8 13.1v1.5M14.6 8h-1.5M2.9 8H1.4M12.7 3.3l-1 1M4.3 11.7l-1 1M12.7 12.7l-1-1M4.3 4.3l-1-1"/></svg>';
+
+const ICON_LUNA =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.4 9.8A5.6 5.6 0 0 1 6.2 2.6a5.7 5.7 0 1 0 7.2 7.2Z"/></svg>';
+
 const ICON_LOGOUT =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 2.6H3.4a1 1 0 0 0-1 1v8.8a1 1 0 0 0 1 1h2.8"/><path d="M10.4 5.2 13.6 8l-3.2 2.8"/><path d="M13.4 8H6"/></svg>';
-
-const ICON_PLUS =
-  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
 
 /** Flecha hacia una bandeja — "subir archivo" (botón "Importar CSV" de Productos). */
 const ICON_IMPORT =
@@ -467,6 +595,14 @@ async function navRail(
   const railProfile = `<div class="railprofile-wrap">
     <button type="button" class="railprofile navitem${perfilActive ? " navitem--active" : ""}" data-profile-menu-toggle aria-haspopup="menu" aria-expanded="false" title="Cuenta">${avatar}<span class="navitem__label">${escapeHtml(admin.username)}</span></button>
     <div class="railprofile-menu" data-profile-menu role="menu">
+      <div class="themepick">
+        <span class="themepick__label">Apariencia</span>
+        <button type="button" class="themetoggle" data-theme-toggle role="switch" aria-checked="false" aria-label="Modo oscuro">
+          <span class="themetoggle__icon themetoggle__icon--sun" aria-hidden="true">${ICON_SOL}</span>
+          <span class="themetoggle__track"><span class="themetoggle__knob"></span></span>
+          <span class="themetoggle__icon themetoggle__icon--moon" aria-hidden="true">${ICON_LUNA}</span>
+        </button>
+      </div>
       <a class="railprofile-menu__item" href="/admin/perfil" role="menuitem">${ICON_EDIT}Editar perfil</a>
       <form method="POST" action="/logout" role="none">
         <button type="submit" class="railprofile-menu__item railprofile-menu__item--danger" role="menuitem">${ICON_LOGOUT}Cerrar sesión</button>
@@ -534,6 +670,62 @@ async function navRail(
   </aside>`;
 }
 
+/**
+ * Notificaciones flotantes (ver
+ * docs/fase-11-panel-admin-dashboard/notificaciones.md).
+ *
+ * Reemplazan al `.banner` para **el resultado de una acción**: guardar,
+ * crear, fallar una validación. `.banner` sigue existiendo para lo que
+ * describe un estado permanente de la pantalla —el aviso de que una cuenta
+ * no tiene teléfono, el candado de Configuración—, que no puede irse solo a
+ * los cinco segundos ni esconderse detrás de un botón de cerrar.
+ *
+ * El stack va al final del `body` de cada página. Su posición en el DOM no
+ * importa (es `position: fixed`), pero sí que haya **uno solo**: dos stacks
+ * se superpondrían en la misma esquina.
+ */
+function toastStackHtml(items: { kind: "ok" | "error"; text: string }[]): string {
+  const visibles = items.filter((item) => item.text !== "");
+  if (visibles.length === 0) {
+    return "";
+  }
+  const toasts = visibles
+    .map((item) => {
+      // role="alert" para los errores y role="status" para el resto: los dos
+      // se anuncian al cargar la página (que es cuando existen, porque el
+      // servidor los pinta tras el redirect), pero el error interrumpe lo
+      // que el lector de pantalla esté leyendo y la confirmación espera.
+      const role = item.kind === "error" ? "alert" : "status";
+      const icon = item.kind === "error" ? ICON_TOAST_ERROR : ICON_TOAST_OK;
+      return `<div class="toast toast--${item.kind}" role="${role}" data-toast data-toast-kind="${item.kind}">
+        <span class="toast__icon" aria-hidden="true">${icon}</span>
+        <span class="toast__text">${item.text}</span>
+        <button type="button" class="toast__close" data-toast-close aria-label="Cerrar notificación">×</button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="toaststack" data-toaststack>${toasts}</div>`;
+}
+
+/**
+ * El caso que se repetía en las diez páginas del panel: `?error=…` pinta el
+ * mensaje que mandó el servidor, `?guardado=1` pinta una confirmación fija.
+ * Estaba copiado en cada `render*Page` con la única variación del texto de
+ * éxito, así que ese texto es el parámetro.
+ */
+function queryToastsHtml(
+  query: { error?: string; guardado?: string },
+  mensajeOk = "Cambios guardados.",
+): string {
+  if (query.error) {
+    return toastStackHtml([{ kind: "error", text: escapeHtml(query.error) }]);
+  }
+  if (query.guardado) {
+    return toastStackHtml([{ kind: "ok", text: mensajeOk }]);
+  }
+  return "";
+}
+
 async function layout(
   title: string,
   settings: SettingsSummary | null,
@@ -553,6 +745,7 @@ async function layout(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="${FONT_LINK_HREF}" rel="stylesheet">
+  <script>${THEME_BOOT_SCRIPT}</script>
   <style>
 ${STYLE_BLOCK}
   </style>
@@ -577,6 +770,32 @@ ${STYLE_BLOCK}
 </html>`;
 }
 
+/**
+ * Paleta del tema oscuro. Vive aparte porque se usa dos veces en
+ * STYLE_BLOCK: bajo `prefers-color-scheme` (el sistema manda mientras el
+ * usuario no elija) y bajo `[data-theme="dark"]` (elección explícita).
+ */
+const DARK_PALETTE = `    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; --panel-inset: #21262E;
+    --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
+    --ignition: #E8A33D; --ignition-glow: #FFC875; --ignition-soft: rgba(232,163,61,0.14); --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
+    --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
+    --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
+    --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
+    --ig: #F06AA0; --ig-soft: rgba(225,48,108,0.18);
+    --fb: #5AA9FF; --fb-soft: rgba(0,132,255,0.18);
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);`;
+
+/**
+ * Va inline en el <head>, antes del CSS: si esperara a CLIENT_SCRIPT (final
+ * del body) el panel pintaría claro y saltaría a oscuro a la vista del
+ * usuario en cada carga. Es la única razón por la que este script no vive
+ * con el resto.
+ *
+ * Sin preferencia guardada no toca nada y manda `prefers-color-scheme`, que
+ * es el comportamiento que el panel ya tenía.
+ */
+const THEME_BOOT_SCRIPT = `(function(){var t=null;try{t=localStorage.getItem("panel-theme");}catch(e){}if(t!=="dark"&&t!=="light"){t=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);})();`;
+
 const STYLE_BLOCK = `
 :root {
   color-scheme: light dark;
@@ -591,6 +810,7 @@ const STYLE_BLOCK = `
   --ink-faint: #889198;
   --ignition: #9C6108;
   --ignition-glow: #C9820F;
+  --ignition-soft: rgba(156, 97, 8, 0.1);
   --chrome: #0F6B7A;
   --chrome-soft: rgba(15, 107, 122, 0.12);
   --redline: #B4362A;
@@ -614,18 +834,18 @@ const STYLE_BLOCK = `
   --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
 }
+/* Los mismos valores se aplican por dos caminos —la preferencia del sistema
+   y la elección explícita del usuario (data-theme)—, así que viven en una
+   sola constante: duplicar la paleta a mano es garantía de que un día se
+   toque un color en un sitio y no en el otro. El :not([data-theme="light"])
+   es lo que deja que "Claro" gane sobre un sistema operativo en oscuro. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; --panel-inset: #21262E;
-    --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
-    --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
-    --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
-    --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
-    --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
-    --ig: #F06AA0; --ig-soft: rgba(225,48,108,0.18);
-    --fb: #5AA9FF; --fb-soft: rgba(0,132,255,0.18);
-    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 32px rgba(0,0,0,0.35);
+  :root:not([data-theme="light"]) {
+${DARK_PALETTE}
   }
+}
+:root[data-theme="dark"] {
+${DARK_PALETTE}
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
@@ -705,6 +925,28 @@ body.rail-collapsed .rail__toggle svg { transform: rotate(180deg); }
 .railprofile-menu__item svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--ink-faint); }
 .railprofile-menu__item--danger { color: var(--redline); }
 .railprofile-menu__item--danger svg { color: var(--redline); }
+/* Selector de apariencia (Sistema / Claro / Oscuro) — ver
+   docs/fase-11-panel-admin-dashboard/apariencia-tema.md. Segmentado y no
+   toggle: "Sistema" tiene que seguir siendo alcanzable después de haber
+   elegido a mano, o el usuario pierde el seguimiento automático para
+   siempre. */
+.themepick { padding: 4px 10px 8px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.themepick__label { display: block; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px; }
+/* Switch de dos estados. Sol y luna a los lados en vez de las palabras
+   "Claro"/"Oscuro": el par es universal y no necesita traduccion, y el que
+   esta apagado se atenua, asi que el estado se lee sin mirar la perilla. */
+.themetoggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 4px 2px; border: 0; background: none; cursor: pointer; color: var(--ink-muted); }
+.themetoggle__icon { display: inline-flex; opacity: 0.4; transition: opacity 140ms ease; }
+.themetoggle__icon svg { width: 14px; height: 14px; display: block; }
+.themetoggle[aria-checked="false"] .themetoggle__icon--sun,
+.themetoggle[aria-checked="true"] .themetoggle__icon--moon { opacity: 1; color: var(--ignition); }
+.themetoggle__track { flex: 1; height: 18px; max-width: 38px; border-radius: 10px; position: relative; background: var(--panel-inset); border: 1px solid var(--border); transition: background 140ms ease; }
+.themetoggle__knob { position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-faint); transition: transform 160ms cubic-bezier(.2,.8,.2,1), background 140ms ease; }
+.themetoggle[aria-checked="true"] .themetoggle__knob { transform: translateX(18px); background: var(--ignition); }
+.themetoggle:focus-visible { outline: 2px solid var(--ignition); outline-offset: 2px; border-radius: 7px; }
+@media (prefers-reduced-motion: reduce) { .themetoggle__knob { transition: none; } }
+.themepick__opt:hover { color: var(--ink); }
+.themepick__opt[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
 body.rail-collapsed .navitem__label,
 body.rail-collapsed .brand__role,
 body.rail-collapsed .navgroup__label { display: none; }
@@ -805,6 +1047,30 @@ section.block { margin-bottom: 34px; }
 .chip--muted { color: var(--ink-faint); background: var(--panel-inset); }
 .chip--inactive { color: var(--redline); background: var(--panel-inset); }
 .chip--chrome { color: var(--chrome); background: var(--chrome-soft); }
+/* Chip que abre algo (la direccion de entrega en Pedidos). Es un <button>
+   real y no un span con onclick: se alcanza con teclado y se anuncia como
+   control.
+
+   NO lleva font:inherit: eso pisaba el font-size de .chip y lo dejaba
+   mas grande que el chip de Estado en la misma fila, que era el desbalance
+   que se veia. Solo se agrega lo que un <button> no hereda del UA.
+
+   La affordance es un borde del mismo color a media opacidad, no un
+   subrayado: mantiene el radio simetrico de los demas chips y no le suma
+   altura por un solo lado. Un chip identico al de al lado que ademas hace
+   algo seria una trampa; uno con borde se lee como control sin dejar de
+   pertenecer a la familia. */
+.chip--action { cursor: pointer; font-family: inherit; line-height: inherit; border: 1px solid currentColor; padding: 1px 6px; }
+.chip--action:hover { filter: brightness(0.94); }
+.chip--action:focus-visible { outline: 2px solid var(--ignition); outline-offset: 2px; }
+
+/* Celda de Entrega: el tipo de entrega arriba y lo que se puede hacer o
+   saber de ella abajo. En una sola linea, un chip de 18px al lado de un
+   boton de 30px no se alinea con ningun gap — no son la misma clase de
+   cosa. Apilados, el chip queda a la misma escala que el de Estado y la
+   accion tiene su propio renglon. */
+.deliverycell { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.deliverycell .hint { margin: 0; }
 .chip--violet { color: var(--violet); background: var(--violet-soft); }
 .chip--whatsapp { color: var(--wa); background: var(--wa-soft); }
 .chip--instagram { color: var(--ig); background: var(--ig-soft); }
@@ -869,6 +1135,29 @@ table.resizing { cursor: col-resize; user-select: none; }
 .toolpill__count { font-family: var(--font-mono); font-weight: 700; color: var(--ignition); }
 .flowfoot { margin-top: 14px; font-size: 12px; color: var(--ink-faint); font-family: var(--font-mono); }
 .connection { padding: 22px 24px; max-width: 640px; }
+.connection + .connection { margin-top: 22px; }
+/* Ficha de datos de entrega — pares etiqueta/valor dentro del dialog de
+   Pedidos. Grid de dos columnas y no un <table> porque no son filas
+   comparables entre si, son campos de un mismo registro. */
+/* Fila de cuenta para transferencia (Configuracion -> Cobros). Grid propio
+   y no .cfggrid porque son cinco campos cortos que se leen juntos, no una
+   columna de formulario. */
+.transferrow { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; background: var(--surface-2); }
+.transferrow__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 16px; }
+.transferrow__grid .field { margin: 0; }
+.transferrow__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.datalist { display: grid; grid-template-columns: auto 1fr; gap: 8px 18px; margin: 4px 0 0; font-size: 13px; }
+.datalist dt { color: var(--ink-faint); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; align-self: center; }
+.datalist dd { margin: 0; color: var(--ink); }
+/* Enlace de pago en la celda: bloque propio bajo el metodo, para que no
+   compita con el a la misma altura y se pueda tocar comodo. */
+.paylink { display: inline-block; margin-top: 4px; font-size: 12px; font-family: var(--font-mono); color: var(--ignition); text-decoration: none; border-bottom: 1px solid currentColor; }
+.paylink:hover { opacity: 0.75; }
+/* Enlace de pie de las paginas de credenciales (login, recuperar): no es una
+   accion del formulario, asi que no va en .formfoot ni compite con el boton. */
+.authlink { margin: 18px 0 0; text-align: center; font-size: 13px; }
+.authlink a { color: var(--ink-faint); text-decoration: none; border-bottom: 1px solid var(--border); padding-bottom: 1px; }
+.authlink a:hover { color: var(--ink); border-bottom-color: currentColor; }
 .connection__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
 .connection__head h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; }
 .connection__badge { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
@@ -878,19 +1167,71 @@ table.resizing { cursor: col-resize; user-select: none; }
 .connection__meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .connection__meta dt { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 4px; }
 .connection__meta dd { margin: 0; font-size: 13.5px; }
+/* En Cobros el bloque de la URL de eventos va DESPUES del formulario de
+   credenciales, y sin separacion se leia como un campo mas del form. La
+   linea lo separa de lo que se guarda: la URL no se guarda, se copia. */
+.connection__webhook--aparte { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
 .connection__webhook label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
 .copyrow { display: flex; align-items: center; gap: 10px; }
 .copyrow code { flex: 1; background: var(--panel-inset); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; font-size: 12.5px; overflow-x: auto; white-space: nowrap; }
 .connection__missing { margin: 16px 0 0; padding: 10px 14px; border-radius: 8px; background: var(--redline-soft); color: var(--redline); font-size: 12.5px; }
 .block--narrow { max-width: 640px; }
+
+/* Configuración por pestañas — ver
+   docs/fase-11-panel-admin-dashboard/configuracion-por-pestanas.md.
+   Cada pestaña lleva debajo del nombre el estado real de su área, así que la
+   barra hace de tablero: se ve qué falta configurar sin entrar a mirar. */
+.cfgtabs { display: flex; gap: 2px; margin: 0 0 26px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.cfgtabs::-webkit-scrollbar { display: none; }
+.cfgtab { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; padding: 10px 16px 11px; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; background: transparent; text-align: left; cursor: pointer; }
+.cfgtab:hover { background: var(--panel-inset); }
+.cfgtab__name { font-family: var(--font-display); font-size: 13px; font-weight: 600; letter-spacing: 0.01em; color: var(--ink-muted); }
+.cfgtab__state { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); }
+.cfgtab__state--on { color: var(--go); }
+.cfgtab__state--off { color: var(--ink-faint); }
+.cfgtab__state--neutral { color: var(--chrome); }
+.cfgtab--active { border-bottom-color: var(--ignition); }
+.cfgtab--active .cfgtab__name { color: var(--ink); }
+.cfgpanel[hidden] { display: none; }
+/* El encabezado sigue el ancho de la columna del formulario: sin esto, la
+   etiqueta de la derecha ("BYOK — Wompi") se despega hasta el borde de la
+   pantalla y deja de leerse como parte de su bloque. */
+.cfgpanel .blockhead { max-width: 640px; }
+/* El aside no compite con el formulario: sube a su lado solo cuando hay
+   ancho de sobra, y debajo en pantallas angostas. */
+.cfggrid { display: grid; grid-template-columns: minmax(0, 640px); gap: 20px; align-items: start; }
+@media (min-width: 1180px) { .cfggrid { grid-template-columns: minmax(0, 640px) minmax(240px, 300px); } }
+.cfgaside { padding: 18px 20px; border: 1px solid var(--border); border-left: 2px solid var(--chrome); border-radius: 10px; background: var(--panel-inset); }
+/* Acompaña el scroll del formulario en vez de quedarse arriba dejando un
+   hueco largo: el contexto sigue siendo útil mientras se escribe abajo. */
+@media (min-width: 1180px) { .cfgaside { position: sticky; top: 24px; } }
+.cfgaside h3 { margin: 0 0 10px; font-family: var(--font-display); font-size: 13px; font-weight: 600; color: var(--ink); }
+.cfgaside p { margin: 0 0 10px; font-size: 13px; line-height: 1.55; color: var(--ink-muted); }
+.cfgaside p:last-child { margin-bottom: 0; }
+.cfgaside__note { padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--ink-faint); }
+/* Agrupación de campos: cinco campos seguidos sin jerarquía se leen como una
+   lista de trámites; en tres grupos se lee como tres preguntas. */
+.fieldset { padding-bottom: 4px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
+.fieldset:last-of-type { border-bottom: none; margin-bottom: 0; }
+.fieldset__title { margin: 0 0 14px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); }
+.counter { float: right; font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--ink-faint); }
+.counter--limite { color: var(--redline); }
+
 .field { margin-bottom: 20px; }
 .field:last-of-type { margin-bottom: 0; }
 .field label { display: block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; font-weight: 600; }
-.field select, .field input[type="password"], .field input[type="text"], .field input[type="email"], .field input[type="number"], .field input[type="date"] {
+/* Los textarea nunca habían tenido estilo: se veían con el aspecto por
+   defecto del navegador (fuente monoespaciada, ancho por atributo cols) en medio de
+   un panel cuidado — el único sitio donde se usan es Voz de marca, que es
+   justo la pantalla que se veía peor. */
+.field select, .field textarea, .field input[type="password"], .field input[type="text"], .field input[type="email"], .field input[type="number"], .field input[type="date"] {
   width: 100%; max-width: 440px; font: inherit; font-size: 13.5px; background: var(--panel-inset);
   border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; color: var(--ink);
   transition: border-color 140ms ease, background 140ms ease;
 }
+.field textarea { max-width: 100%; resize: vertical; min-height: 76px; line-height: 1.55; }
+.field textarea:hover { border-color: var(--border-strong); }
+.field textarea:focus-visible { border-color: var(--chrome); background: var(--panel); }
 .field select {
   appearance: none; -webkit-appearance: none; padding-right: 36px; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%23889198' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -1076,6 +1417,31 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--primary:hover { filter: brightness(1.08); border-color: var(--chrome); background: var(--chrome); }
 .btn--ghost { background: transparent; }
 .btn--ghost:hover { background: var(--panel-inset); }
+
+/* Color de la accion, revelado al pasar por encima.
+   En reposo los iconos son neutros a proposito: una columna de botones de
+   colores repetidos en cada fila es ruido y deja de significar nada. El
+   color aparece cuando importa, que es el instante antes del clic.
+
+   Se nombran por token y no por accion (act--go, no act--guardar), igual
+   que chip--go o banner--warn: la clase dice que tono usa, y donde se usa
+   cada tono es la convencion de abajo.
+
+     act--go        confirma o completa       guardar, entregado, resuelto
+     act--redline   cancela o destruye        cancelar pedido
+     act--ignition  modifica o toma control   editar, tomar ticket
+     act--violet    crea algo aparte          crear promocion
+     act--chrome    lleva a otro lado         reasignar al asistente, ver conversacion
+
+   Va tambien en :focus-visible: quien navega con teclado necesita la misma
+   pista que quien usa el mouse. */
+.btn--ghost.act--go:hover, .btn--ghost.act--go:focus-visible { color: var(--go); border-color: var(--go); background: var(--go-soft); }
+.btn--ghost.act--redline:hover, .btn--ghost.act--redline:focus-visible { color: var(--redline); border-color: var(--redline); background: var(--redline-soft); }
+.btn--ghost.act--ignition:hover, .btn--ghost.act--ignition:focus-visible { color: var(--ignition); border-color: var(--ignition); background: var(--ignition-soft); }
+.btn--ghost.act--violet:hover, .btn--ghost.act--violet:focus-visible { color: var(--violet); border-color: var(--violet); background: var(--violet-soft); }
+.btn--ghost.act--chrome:hover, .btn--ghost.act--chrome:focus-visible { color: var(--chrome); border-color: var(--chrome); background: var(--chrome-soft); }
+.btn--ghost[class*="act--"] { transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
+@media (prefers-reduced-motion: reduce) { .btn--ghost[class*="act--"] { transition: none; } }
 /* Color = la acción que el botón va a ejecutar, no el estado actual (ver
    estadoForm en renderColaboradoresPage) — mismo lenguaje de --go/--redline
    que ya usan los chips Activo/Inactivo. */
@@ -1085,31 +1451,76 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--go:hover { filter: brightness(1.08); }
 .btn--icon { width: 34px; height: 34px; padding: 0; justify-content: center; flex-shrink: 0; }
 .btn--icon svg { width: 15px; height: 15px; }
-/* Botones icono de acción sobre tickets (Fase 18): minimalistas — color
-   solo en el icono/borde en reposo, se rellenan suave al pasar el mouse. */
-.btn--icon-go { color: var(--go); border-color: var(--go-soft); }
-.btn--icon-go:hover { background: var(--go-soft); border-color: var(--go); }
-.btn--icon-amber { color: var(--ignition); border-color: rgba(156, 97, 8, 0.22); }
-.btn--icon-amber:hover { background: rgba(156, 97, 8, 0.12); border-color: var(--ignition); }
-@media (prefers-color-scheme: dark) {
-  .btn--icon-amber { border-color: rgba(232, 163, 61, 0.28); }
-  .btn--icon-amber:hover { background: rgba(232, 163, 61, 0.16); }
-}
-.btn--icon-chrome { color: var(--chrome); border-color: var(--chrome-soft); }
-.btn--icon-chrome:hover { background: var(--chrome-soft); border-color: var(--chrome); }
 .btn--sm { padding: 6px 11px; font-size: 11.5px; }
 .permform { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 /* Columna "Acciones" de Colaboradores: agrupa el botón Guardar de
    permisos (conectado por atributo form="..." a un <form> en la columna
    de Notificaciones, ver renderColaboradoresPage) + Activar/Desactivar,
    para que todos los botones de la fila queden juntos al final. */
-.rowactions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* Los iconos de accion van SIEMPRE en una linea. Con flex-wrap: wrap y una
+   columna angosta, tres botones caian dos arriba y uno abajo, y la fila
+   crecia de alto por eso. El gap baja de 8 a 6 px para que entren, y la
+   celda que los contiene achica su padding lateral por la misma razon.
+   El ancho de la columna va en px y no en % (ver los colgroup): con
+   table-layout: fixed el porcentaje manda estricto, asi que una columna de
+   botones necesita el ancho que ocupan y no una fraccion de la tabla. */
+.rowactions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+td:has(> .rowactions) { padding-left: 12px; padding-right: 12px; }
+/* Los iconos de la ultima columna se apoyan en el borde derecho de la
+   celda, que es el borde de la tabla: asi quedan alineados entre filas por
+   mas que la columna cambie de ancho, y el ojo los encuentra siempre en el
+   mismo sitio al recorrer hacia abajo.
+   El selector es td:last-child a proposito y no una clase: la celda
+   "Asignado a" de Tickets tambien usa .rowactions, pero lleva el nombre del
+   asesor adelante y no es la ultima — ahi el texto tiene que empezar a la
+   izquierda como el resto de la tabla. */
+td:last-child > .rowactions { justify-content: flex-end; }
+/* El encabezado acompana a sus botones. Es una clase y no th:last-child
+   porque hay tablas que terminan en texto (Resumen en Tickets antes de
+   sumarle Conversacion) y ahi el titulo a la derecha no tendria sentido. */
+th.th--end { text-align: right; }
 .permcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
 .banner--error { background: var(--redline-soft); color: var(--redline); }
 .banner--warn { background: rgba(156, 97, 8, 0.12); color: var(--ignition); }
-@media (prefers-color-scheme: dark) { .banner--warn { background: rgba(232, 163, 61, 0.16); } }
+/* Este banner ajusta su fondo por regla y no por token, asi que necesita
+   los dos caminos del tema a mano — ver apariencia-tema.md. Sin el segundo,
+   "Oscuro" forzado sobre un sistema claro lo dejaba con el fondo claro. */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .banner--warn { background: rgba(232, 163, 61, 0.16); } }
+:root[data-theme="dark"] .banner--warn { background: rgba(232, 163, 61, 0.16); }
+
+/* Notificaciones flotantes (ver notificaciones.md). Reemplazan al .banner
+   para el RESULTADO de una accion; .banner sigue vivo para lo que describe
+   un estado permanente de la pantalla, que no puede irse solo.
+
+   El stack no recibe clicks (pointer-events: none) para no tapar lo que
+   haya debajo en la esquina; cada toast si los recibe, para poder cerrarlo. */
+.toaststack { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; pointer-events: none; width: min(400px, calc(100vw - 40px)); }
+.toast { pointer-events: auto; width: 100%; display: flex; align-items: flex-start; gap: 11px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 10px 28px rgba(16, 20, 26, 0.16), 0 2px 6px rgba(16, 20, 26, 0.08); font-size: 13px; line-height: 1.45; }
+.toast__icon { flex: none; width: 18px; height: 18px; margin-top: 1px; }
+.toast__icon svg { width: 100%; height: 100%; display: block; }
+.toast__text { flex: 1; color: var(--ink); }
+/* El borde de color es la unica senal cromatica: el fondo se queda neutro
+   para que el texto de un error largo siga siendo comodo de leer. */
+.toast--ok { border-left: 3px solid var(--go); }
+.toast--ok .toast__icon { color: var(--go); }
+.toast--error { border-left: 3px solid var(--redline); }
+.toast--error .toast__icon { color: var(--redline); }
+.toast__close { flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; border-radius: 6px; color: var(--ink-faint); cursor: pointer; font-size: 15px; line-height: 1; }
+.toast__close:hover { background: var(--surface-2); color: var(--ink); }
+.toast { animation: toast-in 260ms cubic-bezier(.2,.8,.2,1) both; }
+.toast--leaving { animation: toast-out 180ms ease-in both; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(16px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(16px); } }
+@media (prefers-reduced-motion: reduce) {
+  .toast, .toast--leaving { animation: none; }
+}
+@media (max-width: 640px) {
+  /* En pantallas angostas la esquina no alcanza: ocupa el ancho y se apoya
+     abajo, donde esta el pulgar. */
+  .toaststack { left: 12px; right: 12px; bottom: 12px; width: auto; }
+}
 .tenantlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .tenantlist a { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-weight: 600; box-shadow: var(--shadow); }
 .tenantlist a:hover { border-color: var(--border-strong); }
@@ -1192,7 +1603,12 @@ td .emptystate { padding: 34px 20px; }
 .flowtools { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--panel-inset); }
 .flowtools__label { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; margin-bottom: 9px; }
 .flowtools__label svg { width: 12px; height: 12px; }
-dialog.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
+/* color explicito y no heredado: un <dialog> vive en el top layer y el
+   navegador le asigna CanvasText, que NO hereda del body. Mientras el tema
+   salia de prefers-color-scheme coincidian por casualidad; al poder forzar
+   "Oscuro" con el sistema en claro, CanvasText seguia siendo negro y los
+   titulos del modal quedaban negros sobre el panel oscuro. */
+dialog.modal { background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px 24px; max-width: 440px; width: calc(100% - 40px); }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.4); }
 /* Avatar grande y clickeable del Perfil (a diferencia del <input type=file>
    crudo de antes): el círculo entero es el disparador, el archivo real
@@ -1210,6 +1626,88 @@ const CLIENT_SCRIPT = `
 (function () {
   "use strict";
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- cuentas para transferencia (Configuracion > Cobros) ---------- */
+  (function () {
+    var contenedor = document.querySelector("[data-transfer-rows]");
+    var plantilla = document.querySelector("[data-transfer-template]");
+    if (!contenedor || !plantilla) return;
+
+    var añadir = document.querySelector("[data-transfer-add]");
+    if (añadir) {
+      añadir.addEventListener("click", function () {
+        /* __i__ es el marcador de la plantilla del servidor: sin
+           reemplazarlo, todas las filas nuevas compartirian el mismo id y
+           los <label for> apuntarian al primer campo de la lista. */
+        var indice = contenedor.querySelectorAll("[data-transfer-row]").length;
+        var html = plantilla.innerHTML.split("__i__").join("nueva" + indice);
+        contenedor.insertAdjacentHTML("beforeend", html);
+        var ultima = contenedor.lastElementChild;
+        var primerCampo = ultima ? ultima.querySelector("input") : null;
+        if (primerCampo) primerCampo.focus();
+      });
+    }
+
+    contenedor.addEventListener("click", function (event) {
+      var btn = event.target.closest("[data-transfer-remove]");
+      if (!btn) return;
+      /* Quitar no borra nada por si solo: la lista se reescribe entera al
+         guardar, asi que una fila quitada desaparece cuando se guarda. */
+      var fila = btn.closest("[data-transfer-row]");
+      if (fila) fila.remove();
+    });
+  })();
+
+  /* ---------- notificaciones flotantes ---------- */
+  (function () {
+    var stack = document.querySelector("[data-toaststack]");
+    if (!stack) return;
+
+    function cerrar(toast) {
+      if (!toast || toast.dataset.cerrando) return;
+      toast.dataset.cerrando = "1";
+      if (reduced) { toast.remove(); return; }
+      toast.classList.add("toast--leaving");
+      function quitar() { toast.remove(); }
+      toast.addEventListener("animationend", quitar, { once: true });
+      /* Respaldo: las animaciones CSS se pausan mientras la pestana no se
+         pinta, asi que animationend puede no llegar nunca -- con la pestana
+         en segundo plano el toast se quedaba en el DOM con la clase de
+         salida puesta. El timeout si corre igual. */
+      setTimeout(quitar, 400);
+    }
+
+    stack.addEventListener("click", function (event) {
+      var btn = event.target.closest("[data-toast-close]");
+      if (btn) cerrar(btn.closest("[data-toast]"));
+    });
+
+    Array.prototype.forEach.call(stack.querySelectorAll("[data-toast]"), function (toast) {
+      /* Solo las confirmaciones se van solas. Un error hay que poder leerlo
+         dos veces -- varios son largos ("Nombre de usuario invalido: 5 a 32
+         caracteres...") y quien lo provoco esta mirando el formulario, no la
+         esquina. Se cierra a mano. */
+      if (toast.getAttribute("data-toast-kind") !== "ok") return;
+      var timer = setTimeout(function () { cerrar(toast); }, 5000);
+      /* Con el puntero encima no corre el reloj: si alguien fue a leerlo, no
+         se le escapa a mitad de frase. */
+      toast.addEventListener("mouseenter", function () { clearTimeout(timer); });
+    });
+
+    /* La URL queda con ?guardado=1 despues del redirect, asi que recargar
+       repetia la notificacion de algo hecho hace rato. Se limpian solo las
+       claves de notificacion -- los filtros reales de la pagina (?allyId,
+       ?categoryId) y el hash de la pestana activa se conservan. */
+    if (window.history && window.history.replaceState) {
+      var url = new URL(window.location.href);
+      var claves = ["guardado", "error", "errorContrasena", "creados", "actualizados", "errores"];
+      var limpio = false;
+      claves.forEach(function (clave) {
+        if (url.searchParams.has(clave)) { url.searchParams.delete(clave); limpio = true; }
+      });
+      if (limpio) window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    }
+  })();
 
   function easeOutBack(t) {
     var c1 = 1.4, c3 = c1 + 1;
@@ -1342,6 +1840,106 @@ const CLIENT_SCRIPT = `
       document.getElementById("chartLine").style.transition = "none";
       document.getElementById("chartLine").style.strokeDashoffset = "0";
     }
+  }
+
+  /* ---------- configuración: pestañas ----------
+     La pestaña activa se recuerda en sessionStorage porque cada formulario
+     de Configuración postea y el servidor redirige a /admin/configuracion:
+     sin esto, guardar Cobros devolvía al usuario a la primera pestaña. El
+     hash mantiene los enlaces directos compartibles. */
+  var cfgTabs = document.querySelectorAll("[data-cfg-tab]");
+  if (cfgTabs.length) {
+    var CFG_KEY = "panel-config-tab";
+    var mostrarTab = function (id) {
+      var existe = false;
+      for (var a = 0; a < cfgTabs.length; a++) {
+        var esta = cfgTabs[a].getAttribute("data-cfg-tab") === id;
+        if (esta) existe = true;
+        cfgTabs[a].classList.toggle("cfgtab--active", esta);
+        cfgTabs[a].setAttribute("aria-selected", esta ? "true" : "false");
+      }
+      if (!existe) return false;
+      var paneles = document.querySelectorAll("[data-cfg-panel]");
+      for (var b = 0; b < paneles.length; b++) {
+        paneles[b].hidden = paneles[b].getAttribute("data-cfg-panel") !== id;
+      }
+      try { sessionStorage.setItem(CFG_KEY, id); } catch (e) {}
+      return true;
+    };
+    var inicial = (location.hash || "").replace("#", "");
+    if (!inicial) {
+      try { inicial = sessionStorage.getItem(CFG_KEY) || ""; } catch (e) {}
+    }
+    if (inicial) mostrarTab(inicial);
+    for (var c = 0; c < cfgTabs.length; c++) {
+      cfgTabs[c].addEventListener("click", function (ev) {
+        var id = ev.currentTarget.getAttribute("data-cfg-tab");
+        if (mostrarTab(id)) history.replaceState(null, "", "#" + id);
+      });
+    }
+  }
+
+  /* ---------- configuración: contador de caracteres ----------
+     El tope de 500 por campo de Voz de marca existía desde el principio, pero
+     solo se descubría al guardar y ver el error. Mostrarlo mientras se
+     escribe convierte un rechazo en un aviso. */
+  var contados = document.querySelectorAll("[data-counted]");
+  for (var d = 0; d < contados.length; d++) {
+    (function (campo) {
+      var salida = document.querySelector('[data-counter-for="' + campo.id + '"]');
+      if (!salida) return;
+      var tope = parseInt(campo.getAttribute("maxlength") || "500", 10);
+      var pintar = function () {
+        var largo = campo.value.length;
+        // Con el campo vacío el contador sobra: no informa de nada y compite
+        // con el label por la atención.
+        salida.textContent = largo === 0 ? "" : largo + "/" + tope;
+        salida.classList.toggle("counter--limite", largo >= tope);
+      };
+      campo.addEventListener("input", pintar);
+      pintar();
+    })(contados[d]);
+  }
+
+  /* ---------- apariencia: claro / oscuro ----------
+     La preferencia vive en localStorage y no en el perfil del admin: es una
+     eleccion del dispositivo, no de la cuenta (el mismo admin puede querer
+     claro en el escritorio y oscuro en el celular). El valor inicial lo
+     aplica THEME_BOOT_SCRIPT en el <head>; aca solo se refleja el estado y
+     se maneja el cambio.
+
+     Son dos estados y no tres: la opcion "Sistema" se retiro a pedido. La
+     consecuencia es que el panel deja de seguir al sistema operativo una
+     vez que alguien toca el switch -- en la primera visita todavia arranca
+     por prefers-color-scheme, y de ahi en mas manda lo elegido. */
+  var themeToggle = document.querySelector("[data-theme-toggle]");
+  if (themeToggle) {
+    var THEME_KEY = "panel-theme";
+    var applyTheme = function (value) {
+      var dark = value === "dark";
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+      try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) {}
+      themeToggle.setAttribute("aria-checked", dark ? "true" : "false");
+    };
+    var guardado = null;
+    try { guardado = localStorage.getItem(THEME_KEY); } catch (e) {}
+    /* Sin nada guardado el switch tiene que mostrar el estado real, que en
+       la primera visita lo puso el sistema: si arrancara siempre en "claro"
+       mentiria sobre lo que se esta viendo. */
+    var inicial =
+      guardado === "dark" || guardado === "light"
+        ? guardado
+        : window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+    themeToggle.setAttribute("aria-checked", inicial === "dark" ? "true" : "false");
+    document.documentElement.setAttribute("data-theme", inicial);
+    themeToggle.addEventListener("click", function (ev) {
+      // El menu de cuenta se cierra al hacer clic fuera; aca interesa que
+      // siga abierto para ver el cambio aplicado sin volver a abrirlo.
+      ev.stopPropagation();
+      applyTheme(themeToggle.getAttribute("aria-checked") === "true" ? "light" : "dark");
+    });
   }
 
   /* ---------- riel: colapsar y redimensionar (persistido en localStorage) ---------- */
@@ -2175,8 +2773,15 @@ const CLIENT_SCRIPT = `
         var value = input.value.trim().toLowerCase();
         var myToken = ++checkToken;
         setState("empty", "Comprobando disponibilidad…");
+        // Dos formas de excluir: data-exclude-self en el Perfil (el propio
+        // admin logueado reafirmando su usuario) y data-exclude-admin al
+        // editar a OTRA cuenta desde Colaboradores. Sin la segunda, abrir el
+        // dialogo de alguien y salir del campo reportaba su propio usuario
+        // actual como "en uso".
         var excludeSelf = input.hasAttribute("data-exclude-self") ? "&excludeSelf=1" : "";
-        fetch("/admin/username-disponible?username=" + encodeURIComponent(value) + excludeSelf)
+        var excludeAdmin = input.getAttribute("data-exclude-admin");
+        var exclude = excludeAdmin ? "&excludeAdminId=" + encodeURIComponent(excludeAdmin) : excludeSelf;
+        fetch("/admin/username-disponible?username=" + encodeURIComponent(value) + exclude)
           .then(function (res) { return res.json(); })
           .then(function (data) {
             if (myToken !== checkToken) return;
@@ -2207,7 +2812,7 @@ const CLIENT_SCRIPT = `
  * protegido por el hook de auth de server.ts, que redirige acá si no hay
  * sesión.
  */
-export async function renderLoginPage(error?: string): Promise<string | null> {
+export async function renderLoginPage(error?: string, notice?: string): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
@@ -2215,7 +2820,9 @@ export async function renderLoginPage(error?: string): Promise<string | null> {
 
   const errorBanner = error
     ? `<div class="banner banner--error">${escapeHtml(error)}</div>`
-    : "";
+    : notice
+      ? `<div class="banner banner--ok">${escapeHtml(notice)}</div>`
+      : "";
 
   const body = `
     <div class="pagehead">
@@ -2236,9 +2843,241 @@ export async function renderLoginPage(error?: string): Promise<string | null> {
         </div>
         <div class="formfoot"><button type="submit" class="btn btn--primary">${ICON_IGNITION}Entrar</button></div>
       </form>
+      <p class="authlink"><a href="/recuperar-contrasena">¿Olvidaste tu contraseña?</a></p>
     </div>
   `;
   return layout(`${brandName(tenant)} — Iniciar sesión`, null, body);
+}
+
+/**
+ * Paso 1 de la recuperación (ver
+ * docs/fase-11-panel-admin-dashboard/contrasena.md): pedir el enlace. Con
+ * `enviado` muestra el acuse en vez del formulario — el acuse es el mismo
+ * exista o no la cuenta, así que esta página nunca sabe a quién le habló.
+ */
+export async function renderRecuperarContrasenaPage(query: {
+  enviado?: string;
+}): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const contenido = query.enviado
+    ? `
+      <div class="panel connection">
+        <div class="banner banner--ok">Listo. Si esa cuenta existe y tiene un teléfono cargado, ya le llegó un WhatsApp con el enlace.</div>
+        <p class="hint">El enlace vence en 30 minutos y sirve una sola vez. Si no llega nada, revisá con un administrador master que la cuenta tenga teléfono.</p>
+        <div class="formfoot"><a class="btn" href="/login">Volver a iniciar sesión</a></div>
+      </div>
+    `
+    : `
+      <div class="panel connection">
+        <form method="POST" action="/recuperar-contrasena">
+          <div class="field">
+            <label for="recuperar-identifier">Usuario o correo</label>
+            <input type="text" id="recuperar-identifier" name="identifier" required autofocus autocomplete="username">
+            <p class="hint">Te mandamos un enlace por WhatsApp al teléfono de esa cuenta.</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Enviarme el enlace</button></div>
+        </form>
+        <p class="authlink"><a href="/login">Volver a iniciar sesión</a></p>
+      </div>
+    `;
+
+  const body = `
+    <div class="pagehead">
+      <div class="loginmark" aria-hidden="true">${ICON_IGNITION}</div>
+      <p class="eyebrow">${escapeHtml(brandName(tenant))}</p>
+      <h1>Recuperar contraseña</h1>
+    </div>
+    ${contenido}
+  `;
+  return layout(`${brandName(tenant)} — Recuperar contraseña`, null, body);
+}
+
+/**
+ * Arma el enlace sobre el origen de `PUBLIC_WEBHOOK_URL`, que ya es la URL
+ * pública real de este mismo proceso — mismo criterio que
+ * `buildAdvisorLink` en escalarHumano.ts, y una variable de entorno menos.
+ *
+ * Deliberadamente NO se arma con el header `Host` del pedido: quien dispara
+ * este envío es un anónimo desde el formulario público, y con el Host bajo
+ * su control podría hacer que al admin le llegue un enlace a un dominio
+ * suyo, con el token adentro.
+ */
+function buildPasswordResetLink(token: string): string {
+  return `${new URL(env.publicWebhookUrl).origin}/restablecer-contrasena?token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Emite y manda el enlace, y **no devuelve nada que distinga los casos**.
+ * Que el identificador no exista, que la cuenta esté desactivada o que no
+ * tenga teléfono cargado terminan igual que el éxito: si no, este
+ * formulario público sería un oráculo para averiguar qué usuarios existen.
+ *
+ * Los fallos sí quedan en el log del servidor, que es donde un admin puede
+ * mirarlos sin ser el atacante.
+ */
+export async function solicitarRecuperacionContrasena(identifier: string): Promise<void> {
+  const normalized = identifier.trim().toLowerCase();
+  if (!normalized) {
+    return;
+  }
+  const resetLogger = logger.child({ event: "admin.recuperar_contrasena" });
+  try {
+    const admin = await findAdminByUsernameOrEmail(normalized);
+    if (!admin || !admin.active || !admin.phone) {
+      resetLogger.info(
+        { encontrado: Boolean(admin), activo: admin?.active ?? false, conTelefono: Boolean(admin?.phone) },
+        "Pedido de recuperación sin destinatario — no se manda nada",
+      );
+      return;
+    }
+    const token = await createPasswordResetToken(admin.id);
+    const settings = await getSettings();
+    const marca = settings ? brandName(settings) : "el panel";
+    await sendWhatsAppMessage(
+      admin.phone,
+      `🔐 Restablecer contraseña — ${marca}\n\n` +
+        `Hola ${admin.username}. Abrí este enlace para elegir una contraseña nueva:\n${buildPasswordResetLink(token)}\n\n` +
+        `Vence en 30 minutos y sirve una sola vez. Si no fuiste vos, ignorá este mensaje: tu contraseña sigue igual.`,
+    );
+    resetLogger.info({ adminId: admin.id }, "Enlace de recuperación enviado");
+  } catch (error) {
+    // Best-effort, mismo criterio que las notificaciones proactivas de
+    // escalarHumano.ts: si WhatsApp falla, el formulario igual responde el
+    // acuse neutro. Reventar acá le confirmaría al de afuera que la cuenta
+    // existe, que es justo lo que este flujo no puede decir.
+    resetLogger.warn({ error }, "No se pudo completar el pedido de recuperación");
+  }
+}
+
+/**
+ * Paso 2: el formulario de contraseña nueva, detrás del token. Se valida
+ * el token antes de dibujar nada — mostrar los campos y recién al enviar
+ * decir "el enlace venció" hace escribir dos veces una contraseña para
+ * nada.
+ */
+export async function renderRestablecerContrasenaPage(query: {
+  token?: string;
+  error?: string;
+}): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const token = query.token ?? "";
+  const valido = token ? await resolvePasswordResetToken(token) : null;
+
+  const contenido = valido
+    ? `
+      <div class="panel connection">
+        ${query.error ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>` : ""}
+        <form method="POST" action="/restablecer-contrasena">
+          <input type="hidden" name="token" value="${escapeHtml(token)}">
+          <div class="field">
+            <label for="restablecer-password">Contraseña nueva</label>
+            <input type="password" id="restablecer-password" name="password" required minlength="8" autofocus autocomplete="new-password">
+            <p class="hint">Mínimo 8 caracteres.</p>
+          </div>
+          <div class="field">
+            <label for="restablecer-confirmacion">Repetila</label>
+            <input type="password" id="restablecer-confirmacion" name="confirmacion" required minlength="8" autocomplete="new-password">
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar contraseña</button></div>
+        </form>
+      </div>
+    `
+    : `
+      <div class="panel connection">
+        <div class="banner banner--error">Este enlace ya no sirve: venció, ya se usó, o no es válido.</div>
+        <p class="hint">Los enlaces duran 30 minutos y sirven una sola vez. Pedí uno nuevo y usalo apenas llegue.</p>
+        <div class="formfoot"><a class="btn btn--primary" href="/recuperar-contrasena">Pedir otro enlace</a></div>
+      </div>
+    `;
+
+  const body = `
+    <div class="pagehead">
+      <div class="loginmark" aria-hidden="true">${ICON_IGNITION}</div>
+      <p class="eyebrow">${escapeHtml(brandName(tenant))}</p>
+      <h1>Elegí tu contraseña</h1>
+    </div>
+    ${contenido}
+  `;
+  return layout(`${brandName(tenant)} — Elegí tu contraseña`, null, body);
+}
+
+/** Único lugar donde se decide qué contraseña se acepta — lo comparten el alta de colaborador, el cambio desde el Perfil y el restablecimiento por enlace. */
+function validarContrasenaNueva(password: string, confirmacion: string): string | null {
+  if (password.length < 8) {
+    return "La contraseña debe tener al menos 8 caracteres.";
+  }
+  if (password !== confirmacion) {
+    return "Las dos contraseñas no coinciden.";
+  }
+  return null;
+}
+
+/**
+ * Paso 3: consumir el token y reescribir la contraseña. El orden importa —
+ * primero se consume (que es lo que resuelve el doble envío, ver
+ * `consumePasswordResetToken`) y recién después se cambia. Al revés, dos
+ * envíos simultáneos podrían cambiarla dos veces.
+ *
+ * `updateAdminPassword` cierra además todas las sesiones del admin: quien
+ * llegó acá por haber perdido la contraseña bien puede haberla perdido
+ * porque alguien más la tiene.
+ */
+export async function restablecerContrasenaConToken(input: {
+  token: string;
+  password: string;
+  confirmacion: string;
+}): Promise<{ ok: true } | { ok: false; error: string; tokenVigente: boolean }> {
+  const errorValidacion = validarContrasenaNueva(input.password, input.confirmacion);
+  if (errorValidacion) {
+    // El token no se toca: el error es de la contraseña escrita, no del
+    // enlace, y quemarlo obligaría a pedir otro por un typo.
+    return { ok: false, error: errorValidacion, tokenVigente: true };
+  }
+  const consumed = await consumePasswordResetToken(input.token);
+  if (!consumed) {
+    return { ok: false, error: "Este enlace ya no sirve.", tokenVigente: false };
+  }
+  const admin = await getAdminById(consumed.adminId);
+  if (!admin || !admin.active) {
+    return { ok: false, error: "Esta cuenta ya no está activa.", tokenVigente: false };
+  }
+  await updateAdminPassword(consumed.adminId, await hashPassword(input.password));
+  logger.info({ event: "admin.contrasena_restablecida", adminId: consumed.adminId }, "Contraseña restablecida por enlace");
+  return { ok: true };
+}
+
+/**
+ * Cambio de contraseña con sesión iniciada, desde el Perfil. Pide la
+ * actual: la cookie sola no alcanza para reescribir la credencial de la
+ * cuenta, porque un navegador prestado o abierto es exactamente el caso
+ * contra el que sirve pedirla.
+ */
+export async function cambiarContrasenaPropia(
+  admin: AdminRecord,
+  input: { actual: string; password: string; confirmacion: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const errorValidacion = validarContrasenaNueva(input.password, input.confirmacion);
+  if (errorValidacion) {
+    return { ok: false, error: errorValidacion };
+  }
+  const stored = await findAdminByUsernameOrEmail(admin.username);
+  if (!stored || !(await verifyPassword(input.actual, stored.passwordHash))) {
+    return { ok: false, error: "La contraseña actual no es correcta." };
+  }
+  if (input.actual === input.password) {
+    return { ok: false, error: "La contraseña nueva tiene que ser distinta de la actual." };
+  }
+  await updateAdminPassword(admin.id, await hashPassword(input.password));
+  logger.info({ event: "admin.contrasena_cambiada", adminId: admin.id }, "Contraseña cambiada desde el Perfil");
+  return { ok: true };
 }
 
 interface OverviewKpiRow {
@@ -2672,14 +3511,14 @@ export async function renderConversacionesPage(
       // vivir en la caja del ticket.
       if (detalle.handoff_status === "queued") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--ignition" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
         </form>`;
       } else if (detalle.handoff_status === "en_atencion") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
         </form>
         <form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
         </form>`;
       }
     }
@@ -2930,7 +3769,7 @@ export async function renderLeadsPage(
   if (!tenant) {
     return null;
   }
-  const banner = query.guardado ? `<div class="banner banner--ok">Cambios guardados.</div>` : "";
+  const banner = queryToastsHtml(query);
   const [rows, allies, categories, products] = await Promise.all([
     fetchLeads(),
     listAllies(),
@@ -2963,7 +3802,7 @@ export async function renderLeadsPage(
         <td>${escapeHtml(row.city ?? "—")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td><div class="rowactions">
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
           <button type="button" data-open-dialog="${detailDialogId}" class="btn btn--ghost btn--icon" aria-label="Ver información del cliente" title="Ver información del cliente">${ICON_USER}</button>
         </div></td>
       </tr>
@@ -2996,7 +3835,7 @@ export async function renderLeadsPage(
         </colgroup>
         <thead><tr>
           <th>Cliente</th><th>Clasificación</th><th>Bot</th><th>Estado</th>
-          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th>Acciones</th>
+          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
@@ -3385,14 +4224,14 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
       let actionsHtml = "";
       if (row.status === "queued") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--ignition" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
         </form>`;
       } else if (row.status === "en_atencion") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
         </form>
         <form method="POST" action="/admin/conversaciones/${row.id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
         </form>`;
       }
       // El filtro del enlace debe reflejar dónde va a aparecer realmente
@@ -3408,7 +4247,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
         <td><div class="rowactions">${row.assigned_to_name ? `<span>${escapeHtml(row.assigned_to_name)}</span>` : `<span class="hint">Sin asignar</span>`}${actionsHtml}</div></td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td>${escapeHtml(row.summary ?? "")}</td>
-        <td><a class="btn btn--ghost btn--icon" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></td>
+        <td><div class="rowactions"><a class="btn btn--ghost btn--icon act--chrome" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></div></td>
       </tr>`;
     })
     .join("\n");
@@ -3438,7 +4277,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
       <table data-resizable-table="tickets">
         <colgroup>
           <col style="width:14%"><col style="width:13%"><col style="width:9%">
-          <col style="width:21%"><col style="width:10%"><col style="width:27%"><col style="width:56px">
+          <col style="width:21%"><col style="width:10%"><col style="width:24%"><col style="width:9%">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="cliente">Cliente</th>
@@ -3447,7 +4286,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
           <th class="sortable" data-sort-key="asignado">Asignado a</th>
           <th class="sortable" data-sort-key="creado">Creado</th>
           <th>Resumen</th>
-          <th></th>
+          <th class="th--end">Conversación</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>
@@ -3894,6 +4733,16 @@ function webhookUrlFor(provider: Provider): string {
   return `${new URL(env.publicWebhookUrl).origin}${WEBHOOK_PATH[provider]}`;
 }
 
+/**
+ * URL del webhook de Wompi. Mismo origen que los de canal (ver
+ * `webhookUrlFor`): `PUBLIC_WEBHOOK_URL` ya es la URL pública real de este
+ * proceso, así que las tres se arman igual y no hay una variable de entorno
+ * por integración.
+ */
+function wompiWebhookUrl(): string {
+  return `${new URL(env.publicWebhookUrl).origin}/webhooks/wompi`;
+}
+
 /** Campos de credenciales por proveedor — cada uno pide cosas distintas. */
 function credentialFieldsHtml(connection: ConnectionSummary): string {
   const id = escapeHtml(connection.id);
@@ -4134,11 +4983,7 @@ export async function renderConexionesPage(
   const activas = connections.filter((c) => c.active).length;
   const esUnica = activas === 1;
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.</div>`
-      : "";
+  const banner = queryToastsHtml(query, "Credenciales verificadas y guardadas. Ya están en uso, sin reiniciar.");
 
   // Por canal y no por proveedor (Etapa C2): tener WhatsApp por Meta ya no
   // implica tener Instagram, y con el chequeo viejo el alta de Instagram
@@ -4390,6 +5235,12 @@ function toggleSwitchHtml(
   active: boolean,
   subjectLabel: string,
   redirectQuery?: string,
+  // Los mensajes por defecto hablan de catálogo ("deja de estar disponible
+  // para el asistente"), que es donde nació este control. Colaboradores lo
+  // reusa sobre personas, y ahí ese texto es directamente falso: lo que
+  // pierde un colaborador desactivado es el acceso al panel. Antes de
+  // inventar un segundo componente, se deja decir la consecuencia real.
+  confirmMessages?: { desactivar: string; activar: string },
 ): string {
   const nextAction = active ? "desactivar" : "activar";
   // El switch reemplazó un botón de texto explícito ("Desactivar") por un
@@ -4397,8 +5248,9 @@ function toggleSwitchHtml(
   // recupera esa fricción intencional antes de un cambio de estado real,
   // mostrando la modal compartida #confirm-dialog (ver layout()/
   // CLIENT_SCRIPT) en vez de un window.confirm() nativo fuera de estilo.
-  const confirmMsg =
-    nextAction === "desactivar"
+  const confirmMsg = confirmMessages
+    ? confirmMessages[nextAction]
+    : nextAction === "desactivar"
       ? `¿Desactivar ${subjectLabel}? Deja de estar disponible para el asistente.`
       : `¿Activar ${subjectLabel} de nuevo?`;
   // redirectQuery (Conversaciones): sin esto, activar/desactivar el bot
@@ -4434,9 +5286,10 @@ function statusToggleHtml(
   subjectLabel: string,
   activeLabel: string,
   inactiveLabel: string,
+  confirmMessages?: { desactivar: string; activar: string },
 ): string {
   return `<div class="statustoggle">
-    ${toggleSwitchHtml(actionUrlBase, active, subjectLabel)}
+    ${toggleSwitchHtml(actionUrlBase, active, subjectLabel, undefined, confirmMessages)}
     <span class="statustoggle__label${active ? "" : " statustoggle__label--off"}">${active ? activeLabel : inactiveLabel}</span>
   </div>`;
 }
@@ -4465,16 +5318,25 @@ export async function renderProductosPage(
   ]);
   const productDetails = await Promise.all(products.map((p) => getProductDetail(p.id)));
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : query.creados !== undefined
-        ? `<div class="banner ${query.errores && query.errores !== "0" ? "banner--error" : "banner--ok"}">
-             Carga por CSV — creados: ${escapeHtml(query.creados)} · actualizados: ${escapeHtml(query.actualizados ?? "0")} · con error: ${escapeHtml(query.errores ?? "0")}
-             ${query.errores && query.errores !== "0" ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron." : ""}
-           </div>`
-        : "";
+  // La carga por CSV no entra en `queryToastsHtml`: su resultado no es
+  // "salió bien" o "salió mal" sino un recuento, y con filas con error se
+  // trata como error aunque otras hayan entrado — es el caso en el que hay
+  // algo que revisar. Ese es además el único toast que conviene que no se
+  // cierre solo: el recuento es el registro de lo que pasó.
+  const cargaConErrores = Boolean(query.errores && query.errores !== "0");
+  const banner =
+    query.creados !== undefined
+      ? toastStackHtml([
+          {
+            kind: cargaConErrores ? "error" : "ok",
+            text:
+              `Carga por CSV — creados: ${escapeHtml(query.creados)} · actualizados: ${escapeHtml(query.actualizados ?? "0")} · con error: ${escapeHtml(query.errores ?? "0")}` +
+              (cargaConErrores
+                ? " — revisá que cada fila tenga sku/name/price/stock válidos; las filas con error no se cargaron."
+                : ""),
+          },
+        ])
+      : queryToastsHtml(query);
 
   const filterNotice =
     query.allyId || query.categoryId
@@ -4541,9 +5403,9 @@ export async function renderProductosPage(
         <td class="mono ${product.totalStock === 0 ? "stock-cero" : ""}">${product.totalStock}</td>
         <td class="dblclick-cell"><input type="text" name="description" form="${rapidoFormId}" value="${escapeHtml(product.description ?? "")}"></td>
         <td><div class="rowactions">
-          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <tr class="expandrow" id="${expandId}"><td colspan="7"><div class="variantgrid">${variantChips}</div></td></tr>
@@ -4585,7 +5447,7 @@ export async function renderProductosPage(
       <table data-resizable-table="productos">
         <colgroup>
           <col style="width:7%"><col style="width:24%"><col style="width:13%">
-          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:8%">
+          <col style="width:12%"><col style="width:9%"><col style="width:27%"><col style="width:130px">
         </colgroup>
         <thead><tr>
           <th>Foto</th>
@@ -4594,7 +5456,7 @@ export async function renderProductosPage(
           <th class="sortable" data-sort-key="price">Precio</th>
           <th class="sortable" data-sort-key="stock">Stock</th>
           <th class="sortable" data-sort-key="description">Descripción</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -5065,16 +5927,13 @@ export async function renderPedidosPage(
     return null;
   }
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Guía registrada.</div>`
-      : "";
+  const banner = queryToastsHtml(query, "Guía registrada.");
 
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
-              o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier,
+              o.delivery_address, o.delivery_id_document, o.delivery_full_name, o.delivery_municipality, o.delivery_city,
+              o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason,
               c.external_id, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
@@ -5086,7 +5945,7 @@ export async function renderPedidosPage(
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at, o.delivery_address, o.delivery_id_document, o.tracking_number, o.carrier, c.external_id, c.name
+       GROUP BY o.id, c.external_id, c.name
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -5094,68 +5953,157 @@ export async function renderPedidosPage(
 
   const tableRows = rows
     .map((row) => {
-      const items = row.items
-        .map((item) => `<li>${item.quantity}× ${escapeHtml(item.name)} (${formatCOP(item.unit_price)})</li>`)
-        .join("");
-      const entrega =
-        row.delivery_address || row.delivery_id_document
-          ? `<p class="hint">Entrega a: ${escapeHtml(row.delivery_address ?? "-")} · Cédula ${escapeHtml(row.delivery_id_document ?? "-")}</p>`
-          : "";
+      const estado = derivarEstado(row.status, row.payment_status);
+      const itemsId = `items-${row.id}`;
+      const direccionDialogId = `direccion-${row.id}`;
+      const guiaDialogId = `guia-${row.id}`;
+
       const search = [
         row.public_order_number,
         row.customer_name,
         row.external_id,
-        row.status,
+        estado.label,
         row.payment_method,
         row.delivery_method,
+        row.tracking_number,
         ...row.items.map((item) => item.name),
       ]
         .filter((v): v is string => Boolean(v))
         .join(" ")
         .toLowerCase();
-      const pago =
-        row.payment_method === "pago_en_linea"
-          ? `${escapeHtml(row.payment_method)} (${escapeHtml(row.payment_status)})`
-          : escapeHtml(row.payment_method);
 
-      const guiaDialogId = `guia-${row.id}`;
-      let guia: string;
-      if (row.tracking_number) {
-        guia = `<p>${escapeHtml(row.tracking_number)}</p><p class="hint">${escapeHtml(row.carrier ?? "-")}</p>`;
-      } else if (row.delivery_method === "domicilio") {
-        guia = `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost">Registrar guía</button>
-        <dialog id="${guiaDialogId}" class="modal">
-          <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
-          <form method="POST" action="/admin/pedidos/${row.id}/guia">
-            <div class="field">
-              <label for="${guiaDialogId}-tracking">Número de guía</label>
-              <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
-            </div>
-            <div class="field">
-              <label for="${guiaDialogId}-carrier">Transportadora</label>
-              <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
-            </div>
-            <div class="formfoot">
-              <button type="submit" class="btn btn--primary">Registrar guía</button>
-              <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
-            </div>
-          </form>
-        </dialog>`;
-      } else {
-        guia = `<p class="hint">-</p>`;
+      const items = row.items
+        .map(
+          (item) =>
+            `<div class="variantchip">
+               <span class="variantchip__attrs">${item.quantity}× ${escapeHtml(item.name)}</span>
+               <span class="variantchip__price">${formatCOP(item.unit_price)}</span>
+             </div>`,
+        )
+        .join("");
+
+      // Los items dejan de ser una columna gorda de texto envuelto y pasan
+      // a la fila expandible que Productos ya usa para sus variantes: en una
+      // tabla de pedidos lo que se recorre es estado y plata, y el detalle
+      // se abre solo cuando se busca un pedido concreto. El disparador va
+      // pegado al número de pedido —expandir ES abrir ese pedido— y no en
+      // una columna propia: diez columnas no entraban sin scroll horizontal.
+      const numeroCell = `<button type="button" class="expandtoggle" data-expand-toggle="${itemsId}" aria-expanded="false" aria-label="Ver los ${row.items.length} items">${ICON_CHEVRON}</button><span class="mono">${escapeHtml(row.public_order_number)}</span>`;
+
+      // La dirección sale de la celda de Items —donde estaba apretada— y
+      // pasa a la columna de Entrega, detrás de un botón: son cinco campos
+      // que no entran en una celda y que solo hacen falta al despachar.
+      const tieneDireccion = Boolean(
+        row.delivery_address || row.delivery_full_name || row.delivery_id_document,
+      );
+      // El propio chip abre la dirección: el botón "Ver dirección" al lado
+      // repetía en palabras lo que el chip ya nombraba, y en una celda de
+      // 19% de ancho eso costaba una línea entera. Sin dirección cargada el
+      // chip vuelve a ser un chip — no hay nada que abrir.
+      const entregaChip =
+        row.delivery_method === "domicilio"
+          ? tieneDireccion
+            ? `<button type="button" data-open-dialog="${direccionDialogId}" class="chip chip--chrome chip--action" title="Ver la dirección de entrega">Domicilio</button>`
+            : `<span class="chip chip--chrome">Domicilio</span>`
+          : `<span class="chip chip--muted">Recoge en tienda</span>`;
+      const entregaFalta =
+        row.delivery_method === "domicilio" && !tieneDireccion
+          ? `<p class="hint">Sin dirección cargada</p>`
+          : "";
+
+      const direccionDialog = tieneDireccion
+        ? `<dialog id="${direccionDialogId}" class="modal">
+             <div class="blockhead"><h2>Entrega — ${escapeHtml(row.public_order_number)}</h2></div>
+             <dl class="datalist">
+               <dt>Recibe</dt><dd>${escapeHtml(row.delivery_full_name ?? "—")}</dd>
+               <dt>Documento</dt><dd class="mono">${escapeHtml(row.delivery_id_document ?? "—")}</dd>
+               <dt>Dirección</dt><dd>${escapeHtml(row.delivery_address ?? "—")}</dd>
+               <dt>Ciudad</dt><dd>${escapeHtml(row.delivery_city ?? "—")}</dd>
+               <dt>Municipio</dt><dd>${escapeHtml(row.delivery_municipality ?? "—")}</dd>
+             </dl>
+             <div class="formfoot"><button type="button" data-close-dialog="${direccionDialogId}" class="btn btn--ghost">Cerrar</button></div>
+           </dialog>`
+        : "";
+
+      // El enlace de pago vive acá y no en un dialog porque el caso de uso
+      // es de un solo gesto: el cliente dice "no me llegó" y hay que
+      // copiárselo. Solo aparece mientras sirve de algo — un pedido pagado
+      // o rechazado no se paga de nuevo con ese link.
+      const linkPago =
+        row.wompi_payment_link_url && row.payment_status === "pendiente"
+          ? `<a class="paylink" href="${escapeHtml(row.wompi_payment_link_url)}" target="_blank" rel="noopener noreferrer">Enlace de pago</a>`
+          : "";
+      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}`;
+
+      // La guía es un dato de la entrega, no una columna aparte: junta con
+      // el método y la dirección se lee como "cómo le llega esto al
+      // cliente", que es la pregunta real.
+      const guiaCell = row.tracking_number
+        ? `<p class="hint mono">${escapeHtml(row.tracking_number)} · ${escapeHtml(row.carrier ?? "—")}</p>`
+        : row.delivery_method === "domicilio" && row.status === "abierto"
+          ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm" title="Registrar la guía de envío">${ICON_GUIA} Guía</button>`
+          : "";
+
+      const guiaDialog =
+        !row.tracking_number && row.delivery_method === "domicilio" && row.status === "abierto"
+          ? `<dialog id="${guiaDialogId}" class="modal">
+               <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
+               <p class="hint">Registrar la guía marca el pedido como despachado.</p>
+               <form method="POST" action="/admin/pedidos/${row.id}/guia">
+                 <div class="field">
+                   <label for="${guiaDialogId}-tracking">Número de guía</label>
+                   <input type="text" id="${guiaDialogId}-tracking" name="trackingNumber" required>
+                 </div>
+                 <div class="field">
+                   <label for="${guiaDialogId}-carrier">Transportadora</label>
+                   <input type="text" id="${guiaDialogId}-carrier" name="carrier" required>
+                 </div>
+                 <div class="formfoot">
+                   <button type="submit" class="btn btn--primary">Registrar guía</button>
+                   <button type="button" data-close-dialog="${guiaDialogId}" class="btn btn--ghost">Cancelar</button>
+                 </div>
+               </form>
+             </dialog>`
+          : "";
+
+      // Las dos transiciones que ningún sistema puede detectar solo: que el
+      // paquete llegó y que el pedido se cae. El resto las mueve el webhook
+      // (pago) o el registro de guía (despacho).
+      // Icon-only y en `ghost`, como la columna de Acciones de Productos y
+      // Aliados. Que sean iconos sin texto es seguro acá porque las dos
+      // pasan por `data-confirm`: la advertencia vive ahí, que es donde
+      // alguien la lee antes de decidir, y no en un botón rojo repetido en
+      // cada fila —que a la tercera deja de significar "cuidado"—.
+      const acciones: string[] = [];
+      if (row.status === "despachado") {
+        acciones.push(
+          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar ${escapeHtml(row.public_order_number)} como entregado" title="Marcar entregado">${ICON_ENTREGADO}</button></form>`,
+        );
       }
+      if (row.status === "abierto" || row.status === "despachado") {
+        acciones.push(
+          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--icon act--redline" aria-label="Cancelar ${escapeHtml(row.public_order_number)}" title="Cancelar pedido">${ICON_CANCELAR}</button></form>`,
+        );
+      }
+      const accionesCell = acciones.length > 0 ? acciones.join("") : `<p class="hint">—</p>`;
 
-      return `<tr data-search="${escapeHtml(search)}">
-        <td class="mono">${escapeHtml(row.public_order_number)}</td>
+      const motivo = row.status_reason
+        ? `<p class="hint">${escapeHtml(row.status_reason)}</p>`
+        : "";
+
+      return `<tr data-search="${escapeHtml(search)}" data-filter-estado="${estado.key}" data-filter-pago="${escapeHtml(row.payment_method)}" data-filter-entrega="${escapeHtml(row.delivery_method)}" data-expand-target="${itemsId}" data-sort-numero="${escapeHtml(row.public_order_number)}" data-sort-cliente="${escapeHtml((row.customer_name ?? row.external_id).toLowerCase())}" data-sort-estado="${escapeHtml(estado.label)}" data-sort-total="${row.total}" data-sort-fecha="${new Date(row.created_at).getTime()}">
+        <td>${numeroCell}</td>
         <td>${escapeHtml(row.customer_name ?? row.external_id)}</td>
-        <td><ul class="items">${items}</ul>${entrega}</td>
-        <td>${escapeHtml(row.status)}</td>
-        <td>${pago}</td>
-        <td>${escapeHtml(row.delivery_method)}</td>
+        <td><span class="chip chip--${estado.tone}">${escapeHtml(estado.label)}</span>${motivo}</td>
+        <td>${pagoCell}</td>
+        <td><div class="deliverycell">${entregaChip}${entregaFalta}${guiaCell}</div></td>
         <td class="mono">${formatCOP(row.total)}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
-        <td>${guia}</td>
-      </tr>`;
+        <td><div class="rowactions">${accionesCell}</div></td>
+      </tr>
+      <tr class="expandrow" id="${itemsId}"><td colspan="8"><div class="variantgrid">${items}</div></td></tr>
+      ${direccionDialog}
+      ${guiaDialog}`;
     })
     .join("\n");
 
@@ -5163,31 +6111,54 @@ export async function renderPedidosPage(
     <div class="pagehead">
       <p class="eyebrow">Catálogo</p>
       <h1>Pedidos</h1>
-      <p>${rows.length} pedidos confirmados de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${rows.length} ${rows.length === 1 ? "pedido" : "pedidos"} de ${escapeHtml(brandName(tenant))}.</p>
     </div>
     ${banner}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
-        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto, estado…" aria-label="Buscar pedidos">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto o guía…" aria-label="Buscar pedidos">
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          ${ESTADOS_VISIBLES.map((e) => `<option value="${e.key}">${escapeHtml(e.label)}</option>`).join("")}
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="pago" aria-label="Filtrar por método de pago">
+          <option value="">Todos los pagos</option>
+          ${METODOS_PAGO.map((m) => `<option value="${m.key}">${escapeHtml(m.label)}</option>`).join("")}
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="entrega" aria-label="Filtrar por entrega">
+          <option value="">Toda entrega</option>
+          <option value="domicilio">Domicilio</option>
+          <option value="recoger_en_tienda">Recoge en tienda</option>
+        </select>
       </div>
       <table data-resizable-table="pedidos">
         <colgroup>
-          <col style="width:8%"><col style="width:18%"><col style="width:20%"><col style="width:9%">
-          <col style="width:12%"><col style="width:11%"><col style="width:8%"><col style="width:8%"><col style="width:6%">
+          <col style="width:11%"><col style="width:16%"><col style="width:14%"><col style="width:14%">
+          <col style="width:19%"><col style="width:9%"><col style="width:9%"><col style="width:100px">
         </colgroup>
-        <thead><tr><th>N° pedido</th><th>Cliente</th><th>Items</th><th>Estado</th><th>Pago</th><th>Entrega</th><th>Total</th><th>Fecha</th><th>Guía</th></tr></thead>
-        <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
+        <thead><tr>
+          <th class="sortable" data-sort-key="numero">N° pedido</th>
+          <th class="sortable" data-sort-key="cliente">Cliente</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Pago</th>
+          <th>Entrega</th>
+          <th class="sortable" data-sort-key="total">Total</th>
+          <th class="sortable" data-sort-key="fecha">Fecha</th>
+          <th class="th--end">Acciones</th>
+        </tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="8">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
       <div class="pager">
         <span class="hint tabular"><span data-table-count>${rows.length}</span> de ${rows.length}</span>
         <div class="pager__controls" data-table-pager>
-        <button type="button" data-table-prev aria-label="Página anterior">‹</button>
-        <span class="tabular" data-table-pagelabel>1 / 1</span>
-        <button type="button" data-table-next aria-label="Página siguiente">›</button>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
         </div>
       </div>
     </div>
   `;
+
 
   return layout(`Pedidos (${rows.length})`, tenant, body, "pedidos", admin);
 }
@@ -5202,6 +6173,24 @@ export async function renderPedidosPage(
  * no se bloquea explícitamente: es una decisión operativa, no una regla
  * que valga la pena codificar de antemano.
  */
+/**
+ * Las dos transiciones que ningún sistema puede detectar solo: que el
+ * paquete llegó a manos del cliente y que el pedido se cae. El pago lo
+ * mueve el webhook de Wompi y el despacho el registro de guía; estas dos
+ * necesitan que alguien las afirme.
+ *
+ * Cancelar no revierte el pago ni libera stock: es un cambio de estado, no
+ * una devolución. Lo que se deshace con plata de por medio se resuelve
+ * fuera del panel, y fingir lo contrario acá sería peor que no ofrecerlo.
+ */
+export async function marcarPedidoEntregado(orderId: string): Promise<void> {
+  await cambiarEstadoPedido(orderId, "entregado");
+}
+
+export async function cancelarPedido(orderId: string, admin: AdminRecord): Promise<void> {
+  await cambiarEstadoPedido(orderId, "cancelado", `Cancelado desde el panel por ${admin.username}.`);
+}
+
 export async function renderAliadosPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string },
@@ -5218,11 +6207,7 @@ export async function renderAliadosPage(
     listProductsSummary(),
   ]);
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const allyDialogFields = (dialogId: string, name: string, contactInfo: string): string => `
         <div class="field">
@@ -5252,9 +6237,9 @@ export async function renderAliadosPage(
         <td><a class="countbadge" href="/admin/productos?allyId=${ally.id}"><strong>${productCount}</strong> ${productCount === 1 ? "producto" : "productos"}</a></td>
         <td>${statusToggleHtml(`/admin/aliados/${ally.id}`, ally.active, `el aliado "${ally.name}"`, "Activo", "Inactivo")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <dialog id="${editarDialogId}" class="modal">
@@ -5293,14 +6278,14 @@ export async function renderAliadosPage(
       <table>
         <colgroup>
           <col style="width:28%"><col style="width:26%">
-          <col style="width:16%"><col style="width:16%"><col style="width:14%">
+          <col style="width:16%"><col style="width:16%"><col style="width:130px">
         </colgroup>
         <thead><tr>
           <th class="sortable" data-sort-key="name">Nombre</th>
           <th class="sortable" data-sort-key="contacto">Contacto</th>
           <th class="sortable" data-sort-key="productos">Productos</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -5469,11 +6454,7 @@ export async function renderCategoriasPage(
   }
   const childrenByParent = new Set(categories.filter((c) => c.parentId !== null).map((c) => c.parentId!));
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const treeOrder = categoryTreeOrder(categories);
   const orderedCategories = treeOrder
@@ -5515,9 +6496,9 @@ export async function renderCategoriasPage(
         <td>${complementTags || '<span class="hint">—</span>'}</td>
         <td>${statusToggleHtml(`/admin/categorias/${category.id}`, category.active, `la categoría "${category.name}"`, "Activa", "Inactiva")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       ${categoriaEditDialogHtml(category, categories, selectedComplements)}
@@ -5556,9 +6537,9 @@ export async function renderCategoriasPage(
       <table data-cattree>
         <colgroup>
           <col style="width:32%"><col style="width:12%">
-          <col style="width:19%"><col style="width:20%"><col style="width:17%">
+          <col style="width:19%"><col style="width:20%"><col style="width:130px">
         </colgroup>
-        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th class="th--end">Acciones</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
     </div>
@@ -5836,11 +6817,7 @@ export async function renderPromocionesPage(
     listAllVariantsForPicker(),
   ]);
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
   const rows = promotions
     .map((promo) => {
@@ -5867,7 +6844,7 @@ export async function renderPromocionesPage(
         <td>${vigencia}</td>
         <td>${statusToggleHtml(`/admin/promociones/${promo.id}`, promo.active, `la promoción "${promo.label ?? promo.id}"`, "Activa", "Inactiva")}</td>
         <td><div class="rowactions">
-          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
+          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
         </div></td>
       </tr>
       ${editable ? promocionDialogHtml(editarDialogId, `/admin/promociones/${promo.id}`, `Editar ${promo.label ?? "promoción"}`, "Guardar cambios", promo, allies, categories, products) : ""}`;
@@ -5910,7 +6887,7 @@ export async function renderPromocionesPage(
           <th>Segmentos</th>
           <th>Vigencia</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_PROMOCIONES, "Sin promociones todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -6012,6 +6989,81 @@ export async function desactivarPromocion(promotionId: string): Promise<void> {
  * `GET /admin/colaboradores` debe rechazar a un no-master antes
  * de llamar a esta función (ver server.ts).
  */
+/**
+ * Diálogo de edición de una cuenta, uno por fila. Mismos campos que el alta
+ * menos la contraseña (ver `editarColaborador`), con el mismo tratamiento
+ * visual, porque es el mismo formulario respondiendo las mismas preguntas.
+ *
+ * `selfMaster` es el caso que no puede ofrecerse: un master editándose a sí
+ * mismo no puede bajarse de rol. En vez de dejar el control disponible y
+ * rebotar el submit con un error, el rol se muestra como dato y viaja en un
+ * hidden — un control que siempre falla es peor que no tener control.
+ */
+function colaboradorDialogHtml(dialogId: string, row: AdminRecord, selfMaster: boolean): string {
+  const { prefix, number } = splitWhatsappPhone(row.phone);
+  const rolField = selfMaster
+    ? `<div class="field">
+         <label>Rol</label>
+         <p class="hint">Sos master. Para bajar tu propio rol tiene que hacerlo otro master — si no, te quedarías sin acceso a esta pantalla en el mismo guardado.</p>
+         <input type="hidden" name="role" value="master">
+       </div>`
+    : `<div class="field">
+         <label id="${dialogId}-role-label">Rol</label>
+         <div class="choicegrid" role="radiogroup" aria-labelledby="${dialogId}-role-label">
+           <label class="choice">
+             <input type="radio" name="role" value="colaborador" ${row.role === "colaborador" ? "checked" : ""}>
+             <span class="choice__card">
+               <span class="choice__title">Colaborador</span>
+               <span class="choice__desc">Ve el panel, recibe solo las notificaciones que le marques.</span>
+             </span>
+           </label>
+           <label class="choice">
+             <input type="radio" name="role" value="master" ${row.role === "master" ? "checked" : ""}>
+             <span class="choice__card">
+               <span class="choice__title">Master</span>
+               <span class="choice__desc">Todos los permisos, puede gestionar colaboradores.</span>
+             </span>
+           </label>
+         </div>
+       </div>`;
+
+  return `<dialog id="${dialogId}" class="modal">
+    <div class="blockhead"><h2>Editar ${escapeHtml(row.username)}</h2></div>
+    <form method="POST" action="/admin/colaboradores/${row.id}">
+      <div class="field">
+        <label for="${dialogId}-username">Usuario</label>
+        <div class="fieldcheck">
+          <input type="text" id="${dialogId}-username" name="username" required pattern="[a-z0-9._-]{5,32}" value="${escapeHtml(row.username)}" data-validate="username" data-exclude-admin="${row.id}">
+          <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
+        </div>
+        <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-email">Correo</label>
+        <div class="fieldcheck">
+          <input type="email" id="${dialogId}-email" name="email" required value="${escapeHtml(row.email)}" data-validate="email">
+          <span class="fieldcheck__light" data-fieldcheck-light aria-hidden="true"></span>
+        </div>
+        <p class="fieldcheck__msg" data-fieldcheck-msg></p>
+      </div>
+      <div class="field">
+        <label for="${dialogId}-phone-number">Teléfono (WhatsApp)</label>
+        <div class="phonerow">
+          <select id="${dialogId}-phone-prefix" name="phonePrefix" aria-label="País" autocomplete="off">${phoneCountryOptions(prefix)}</select>
+          <input type="text" id="${dialogId}-phone-number" name="phoneNumber" inputmode="numeric" placeholder="3001234567" value="${escapeHtml(number)}">
+        </div>
+        <p class="hint">${row.phone ? "Adonde le llegan las notificaciones que tenga marcadas." : "Sin teléfono, esta cuenta no puede recuperar su contraseña si la olvida."}</p>
+      </div>
+      ${rolField}
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Guardar cambios</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+    <p class="hint">La contraseña no se cambia desde acá. Si la perdió, que use "¿Olvidaste tu contraseña?" en el login — le llega un enlace por WhatsApp.</p>
+  </dialog>`;
+}
+
 export async function renderColaboradoresPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string },
@@ -6024,20 +7076,10 @@ export async function renderColaboradoresPage(
 
   const admins = await listAdmins();
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  const banner = queryToastsHtml(query);
 
-  const permisoCheckbox = (
-    adminId: string,
-    name: keyof AdminPermissions,
-    label: string,
-    checked: boolean,
-    disabled: boolean,
-  ): string =>
-    `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(label)}</label>`;
+  const permisoCheckbox = (name: keyof AdminPermissions, label: string, checked: boolean): string =>
+    `<label class="permcheck"><input type="checkbox" name="${name}" ${checked ? "checked" : ""}>${escapeHtml(label)}</label>`;
 
   const rows = admins
     .map((row) => {
@@ -6049,9 +7091,28 @@ export async function renderColaboradoresPage(
       const roleChip = isMasterRow
         ? '<span class="chip chip--amber">Master</span>'
         : '<span class="chip chip--muted">Colaborador</span>';
-      const estadoChip = row.active
-        ? '<span class="chip chip--go">Activo</span>'
-        : '<span class="chip chip--redline">Inactivo</span>';
+
+      // Buscar "master" o el teléfono tiene que encontrar a la persona, no
+      // solo su nombre de usuario — el rol viaja en el índice aunque en la
+      // fila se vea como chip.
+      //
+      // El teléfono entra dos veces: como se ve en pantalla ("+57 318 493
+      // 5933", para que sirva copiar y pegar un pedazo) y como dígitos
+      // corridos, que es como lo escribe quien lo tiene a mano. Lo que no
+      // entra es el prefijo `whatsapp:` de Twilio: nadie lo va a teclear, y
+      // dentro del índice solo genera coincidencias falsas — buscar "what"
+      // devolvería a todo el que tenga teléfono.
+      const telefonoIndexado = row.phone
+        ? `${formatWhatsappPhoneDisplay(row.phone)} ${row.phone.replace(/\D/g, "")}`
+        : "";
+      const search = [
+        row.username,
+        row.email,
+        telefonoIndexado,
+        isMasterRow ? "master" : "colaborador",
+      ]
+        .join(" ")
+        .toLowerCase();
 
       // Un master siempre tiene todos los permisos implícitos (ver
       // resolveEffectivePermissions en adminsDirectory.ts) — los checkbox
@@ -6062,37 +7123,65 @@ export async function renderColaboradoresPage(
       // juntos en la última columna (pedido explícito) sin que HTML exija
       // que el submit esté anidado dentro del <form>.
       const permisosFormId = `permisos-${row.id}`;
-      const permisosForm = `
+      // Un master las recibe todas por definición, así que sus tres
+      // checkbox salían tildados y deshabilitados: controles que parecen
+      // controles y no lo son. Se dicen con palabras y la fila queda
+      // legible — mismo criterio que la columna de Acciones, que para un
+      // master queda vacía porque efectivamente no hay ninguna.
+      const permisosForm = isMasterRow
+        ? '<span class="hint">Todas — un master las recibe siempre</span>'
+        : `
         <form id="${permisosFormId}" method="POST" action="/admin/colaboradores/${row.id}/permisos" class="permform">
-          ${permisoCheckbox(row.id, "recibeReporteDiario", "Reporte del asistente", row.permissions.recibeReporteDiario, isMasterRow)}
-          ${permisoCheckbox(row.id, "recibeTickets", "Tickets nuevos", row.permissions.recibeTickets, isMasterRow)}
-          ${permisoCheckbox(row.id, "recibeNotificacionPagos", "Pagos aprobados", row.permissions.recibeNotificacionPagos, isMasterRow)}
+          ${permisoCheckbox("recibeReporteDiario", "Reporte del asistente", row.permissions.recibeReporteDiario)}
+          ${permisoCheckbox("recibeTickets", "Tickets nuevos", row.permissions.recibeTickets)}
+          ${permisoCheckbox("recibeNotificacionPagos", "Pagos aprobados", row.permissions.recibeNotificacionPagos)}
         </form>
       `;
+      // Icono y no texto, igual que "Guardar cambios" en Aliados y
+      // Productos: es la misma acción (confirmar una edición en línea) y
+      // debe verse igual en las tres.
       const guardarPermisosBtn = isMasterRow
         ? ""
-        : `<button type="submit" form="${permisosFormId}" class="btn btn--primary btn--sm">Guardar</button>`;
+        : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
 
-      // El color del botón sigue la acción que va a EJECUTAR, no el estado
-      // actual de la fila (que ya lo dice el chip de al lado): "Desactivar"
-      // en rojo porque es la acción destructiva, "Activar" en verde porque
-      // habilita de nuevo — mismo criterio semántico que --go/--redline en
-      // el resto del tablero.
-      const estadoAction = isSelf
-        ? '<span class="hint">Vos</span>'
-        : `<form method="POST" action="/admin/colaboradores/${row.id}/${row.active ? "desactivar" : "activar"}">
-             <button type="submit" class="btn ${row.active ? "btn--danger" : "btn--go"} btn--sm">${row.active ? "Desactivar" : "Activar"}</button>
-           </form>`;
+      const editarDialogId = `editar-colaborador-${row.id}`;
+      const editarBtn = `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar a ${escapeHtml(row.username)}" title="Editar datos">${ICON_EDIT}</button>`;
 
-      return `<tr>
-        <td><div class="avatarrow">${rowAvatar}<span>${escapeHtml(row.username)}</span></div></td>
+      // El switch reemplaza al par "chip de estado + botón Desactivar", que
+      // decía lo mismo dos veces en dos columnas. Es el mismo control que
+      // Aliados, Categorías y Promociones, y trae consigo lo que acá
+      // faltaba: `data-confirm` pregunta antes de sacarle el acceso a una
+      // persona. Hasta ahora desactivar a un colaborador era un clic sin
+      // red, mientras que desactivar un aliado sí preguntaba — la asimetría
+      // estaba al revés.
+      //
+      // Nadie se desactiva a sí mismo: ahí va el estado sin control, y el
+      // "Vos" se movió al nombre, que es donde se lee como identidad y no
+      // como acción.
+      const estadoCell = isSelf
+        ? `<div class="statustoggle"><span class="statustoggle__label">Activo</span></div>`
+        : statusToggleHtml(
+            `/admin/colaboradores/${row.id}`,
+            row.active,
+            `a ${row.username}`,
+            "Activo",
+            "Inactivo",
+            {
+              desactivar: `¿Desactivar a ${row.username}? Pierde el acceso al panel y deja de recibir notificaciones. Sus tickets y mensajes quedan como están.`,
+              activar: `¿Activar a ${row.username}? Vuelve a entrar al panel con la misma contraseña.`,
+            },
+          );
+
+      return `<tr data-search="${escapeHtml(search)}" data-filter-rol="${isMasterRow ? "master" : "colaborador"}" data-filter-estado="${row.active ? "activo" : "inactivo"}" data-sort-usuario="${escapeHtml(row.username.toLowerCase())}" data-sort-correo="${escapeHtml(row.email.toLowerCase())}" data-sort-rol="${isMasterRow ? "master" : "colaborador"}" data-sort-estado="${row.active ? 1 : 0}">
+        <td><div class="avatarrow">${rowAvatar}<span>${escapeHtml(row.username)}</span>${isSelf ? '<span class="tag">Vos</span>' : ""}</div></td>
         <td>${escapeHtml(row.email)}</td>
-        <td class="mono">${row.phone ? escapeHtml(row.phone) : '<span class="hint">Sin teléfono</span>'}</td>
+        <td class="mono">${row.phone ? escapeHtml(formatWhatsappPhoneDisplay(row.phone)) : '<span class="hint">Sin teléfono</span>'}</td>
         <td>${roleChip}</td>
-        <td>${estadoChip}</td>
+        <td>${estadoCell}</td>
         <td>${permisosForm}</td>
-        <td><div class="rowactions">${guardarPermisosBtn}${estadoAction}</div></td>
-      </tr>`;
+        <td><div class="rowactions">${guardarPermisosBtn}${editarBtn}</div></td>
+      </tr>
+      ${colaboradorDialogHtml(editarDialogId, row, isSelf && isMasterRow)}`;
     })
     .join("\n");
 
@@ -6100,17 +7189,50 @@ export async function renderColaboradoresPage(
     <div class="pagehead">
       <p class="eyebrow">Equipo</p>
       <h1>Colaboradores</h1>
-      <p>Cuentas con acceso al panel de ${escapeHtml(brandName(tenant))}.</p>
+      <p>${admins.length} ${admins.length === 1 ? "cuenta" : "cuentas"} con acceso al panel de ${escapeHtml(brandName(tenant))}.</p>
     </div>
     ${banner}
-    <div class="panel tablewrap">
-      <div class="blockhead blockhead--end">
-        <button type="button" data-open-dialog="nuevo-colaborador-dialog" class="btn btn--primary btn--icon" aria-label="Agregar colaborador" title="Agregar colaborador">${ICON_PLUS}</button>
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por usuario, correo o teléfono…" aria-label="Buscar colaboradores">
+        <select class="tablefilter" data-table-filter data-filter-key="rol" aria-label="Filtrar por rol">
+          <option value="">Todos los roles</option>
+          <option value="master">Master</option>
+          <option value="colaborador">Colaborador</option>
+        </select>
+        <select class="tablefilter" data-table-filter data-filter-key="estado" aria-label="Filtrar por estado">
+          <option value="">Todos los estados</option>
+          <option value="activo">Activos</option>
+          <option value="inactivo">Inactivos</option>
+        </select>
+        <div class="tabletools__actions">
+          <button type="button" data-open-dialog="nuevo-colaborador-dialog" class="btn btn--add" aria-label="Agregar colaborador"><span class="btn--add__plus">+</span> Nuevo colaborador</button>
+        </div>
       </div>
-      <table>
-        <thead><tr><th>Usuario</th><th>Correo</th><th>Teléfono</th><th>Rol</th><th>Estado</th><th>Notificaciones</th><th>Acciones</th></tr></thead>
+      <table data-resizable-table="colaboradores">
+        <colgroup>
+          <col style="width:16%"><col style="width:18%"><col style="width:13%">
+          <col style="width:10%"><col style="width:12%"><col style="width:23%"><col style="width:100px">
+        </colgroup>
+        <thead><tr>
+          <th class="sortable" data-sort-key="usuario">Usuario</th>
+          <th class="sortable" data-sort-key="correo">Correo</th>
+          <th>Teléfono</th>
+          <th class="sortable" data-sort-key="rol">Rol</th>
+          <th class="sortable" data-sort-key="estado">Estado</th>
+          <th>Notificaciones</th>
+          <th class="th--end">Acciones</th>
+        </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
+      <div class="pager">
+        <span class="hint tabular"><span data-table-count>${admins.length}</span> de ${admins.length}</span>
+        <div class="pager__controls" data-table-pager>
+          <button type="button" data-table-prev aria-label="Página anterior">‹</button>
+          <span class="tabular" data-table-pagelabel>1 / 1</span>
+          <button type="button" data-table-next aria-label="Página siguiente">›</button>
+        </div>
+      </div>
     </div>
     <dialog id="nuevo-colaborador-dialog" class="modal">
       <div class="blockhead"><h2>Nuevo colaborador</h2></div>
@@ -6183,6 +7305,42 @@ export async function renderColaboradoresPage(
 const USERNAME_RE = /^[a-z0-9._-]{5,32}$/;
 
 /**
+ * Usuario + correo + teléfono son los mismos tres campos, con las mismas
+ * reglas, en los tres formularios que tocan una cuenta: el alta de un
+ * colaborador, la edición de un colaborador y el Perfil propio. Vivían
+ * copiados en dos de ellos; el tercero habría hecho tres copias, y con
+ * ellas la garantía de que un día se ajustara el largo del usuario en un
+ * sitio y no en los otros.
+ *
+ * Devuelve los valores ya normalizados (usuario y correo en minúsculas,
+ * teléfono armado con su prefijo) porque normalizar también es parte de la
+ * regla: `Ana.Perez` y `ana.perez` no pueden ser dos cuentas distintas.
+ */
+function validarDatosDeCuenta(input: {
+  username: string;
+  email: string;
+  phonePrefix: string;
+  phoneNumber: string;
+}): { ok: true; username: string; email: string; phone: string | null } | { ok: false; error: string } {
+  const username = input.username.trim().toLowerCase();
+  if (!USERNAME_RE.test(username)) {
+    return {
+      ok: false,
+      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
+    };
+  }
+  const email = input.email.trim().toLowerCase();
+  if (!email) {
+    return { ok: false, error: "El correo es obligatorio." };
+  }
+  const rawNumber = input.phoneNumber.trim();
+  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
+    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
+  }
+  return { ok: true, username, email, phone: buildWhatsappPhone(input.phonePrefix, rawNumber) };
+}
+
+/**
  * Mensaje específico según qué UNIQUE violó (username/email/phone, ver
  * migrations/0036 y 0037) — genérico si no fue un unique_violation (23505)
  * o no se pudo determinar cuál constraint. `context` cambia la redacción
@@ -6190,12 +7348,21 @@ const USERNAME_RE = /^[a-z0-9._-]{5,32}$/;
  * "editando el propio perfil" (guardarPerfil, ve cualquier admin) sin
  * duplicar la lógica de mapeo de constraint → mensaje.
  */
-function uniqueViolationMessage(error: unknown, context: "colaborador" | "perfil" = "colaborador"): string {
+function uniqueViolationMessage(
+  error: unknown,
+  context: "colaborador" | "perfil" | "edicion" = "colaborador",
+): string {
   const pgError = error instanceof Error ? (error as { code?: string; constraint?: string }) : undefined;
   if (pgError?.code !== "23505") {
-    return context === "perfil" ? "No se pudo guardar el perfil." : "No se pudo crear el colaborador.";
+    if (context === "perfil") {
+      return "No se pudo guardar el perfil.";
+    }
+    return context === "edicion" ? "No se pudo guardar el colaborador." : "No se pudo crear el colaborador.";
   }
-  if (context === "perfil") {
+  // Editar comparte la redacción del Perfil ("...por otra cuenta") y no la
+  // del alta ("ya existe un colaborador con..."): en los dos casos se está
+  // corrigiendo una cuenta que ya existe y el choque es contra una tercera.
+  if (context === "perfil" || context === "edicion") {
     if (pgError.constraint === "admins_username_key") {
       return "Ese nombre de usuario ya está en uso.";
     }
@@ -6223,16 +7390,9 @@ export async function crearColaborador(
     phoneNumber: string;
   },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const username = input.username.trim().toLowerCase();
-  if (!USERNAME_RE.test(username)) {
-    return {
-      ok: false,
-      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
-    };
-  }
-  const email = input.email.trim().toLowerCase();
-  if (!email) {
-    return { ok: false, error: "El correo es obligatorio." };
+  const datos = validarDatosDeCuenta(input);
+  if (!datos.ok) {
+    return datos;
   }
   if (input.password.length < 8) {
     return { ok: false, error: "La contraseña debe tener al menos 8 caracteres." };
@@ -6240,17 +7400,75 @@ export async function crearColaborador(
   if (!isAdminRole(input.role)) {
     return { ok: false, error: "Rol no válido." };
   }
-  const rawNumber = input.phoneNumber.trim();
-  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
-    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
-  }
-  const phone = buildWhatsappPhone(input.phonePrefix, rawNumber);
 
   const passwordHash = await hashPassword(input.password);
   try {
-    await createAdmin(username, email, passwordHash, input.role, phone);
+    await createAdmin(datos.username, datos.email, passwordHash, input.role, datos.phone);
   } catch (error) {
     return { ok: false, error: uniqueViolationMessage(error) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Edición de OTRA cuenta desde Colaboradores (solo master, gateado en el
+ * preHandler de server.ts). Hasta acá el panel solo permitía crear una
+ * cuenta y prenderla o apagarla: corregir un correo mal escrito o cargarle
+ * el teléfono a alguien exigía un UPDATE contra la base.
+ *
+ * El teléfono es la razón concreta por la que esto hacía falta ya: sin él
+ * una cuenta no puede recuperar su contraseña (ver contrasena.md), y el
+ * único que podía cargarlo era su propio dueño desde el Perfil — que es
+ * exactamente lo que no puede hacer quien ya se quedó afuera.
+ *
+ * La contraseña no se toca acá a propósito: que un master pueda fijar la de
+ * otro convierte Colaboradores en una puerta trasera a cualquier cuenta.
+ * Para eso está el enlace de recuperación.
+ */
+export async function editarColaborador(
+  actor: AdminRecord,
+  adminId: string,
+  input: { username: string; email: string; role: string; phonePrefix: string; phoneNumber: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const datos = validarDatosDeCuenta(input);
+  if (!datos.ok) {
+    return datos;
+  }
+  if (!isAdminRole(input.role)) {
+    return { ok: false, error: "Rol no válido." };
+  }
+
+  const objetivo = await getAdminById(adminId);
+  if (!objetivo) {
+    return { ok: false, error: "Esa cuenta ya no existe." };
+  }
+
+  // Un master que se degrada a sí mismo pierde el acceso a Colaboradores en
+  // el mismo submit: quedaría sin forma de volver a subirse, y si es el
+  // único master, el panel se queda sin nadie que pueda gestionar cuentas.
+  // Rechazarlo acá es más barato que documentar cómo salir de ese estado.
+  if (actor.id === adminId && actor.role === "master" && input.role !== "master") {
+    return {
+      ok: false,
+      error: "No podés quitarte a vos mismo el rol master — pedíselo a otro master.",
+    };
+  }
+
+  try {
+    await updateAdminProfile(adminId, {
+      username: datos.username,
+      email: datos.email,
+      phone: datos.phone,
+      // El avatar no se edita desde acá — es algo que cada uno se pone en su
+      // Perfil— pero hay que reenviarlo: `updateAdminProfile` reemplaza los
+      // cuatro campos y omitirlo lo borraría.
+      avatarData: objetivo.avatarData,
+    });
+    if (objetivo.role !== input.role) {
+      await updateAdminRole(adminId, input.role);
+    }
+  } catch (error) {
+    return { ok: false, error: uniqueViolationMessage(error, "edicion") };
   }
   return { ok: true };
 }
@@ -6263,18 +7481,21 @@ export async function crearColaborador(
  */
 export async function renderPerfilPage(
   admin: AdminRecord,
-  query: { error?: string; guardado?: string },
+  query: { error?: string; guardado?: string; errorContrasena?: string },
 ): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Cambios guardados.</div>`
-      : "";
+  // El Perfil es la única página con dos orígenes de notificación (los datos
+  // y la contraseña, que postean a rutas distintas). Van al mismo stack: dos
+  // stacks se superpondrían en la misma esquina.
+  const banner = toastStackHtml([
+    { kind: "error", text: query.error ? escapeHtml(query.error) : "" },
+    { kind: "error", text: query.errorContrasena ? escapeHtml(query.errorContrasena) : "" },
+    { kind: "ok", text: query.guardado ? "Cambios guardados." : "" },
+  ]);
 
   const avatarValue = admin.avatarData ?? "";
 
@@ -6335,6 +7556,38 @@ export async function renderPerfilPage(
         <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar cambios</button></div>
       </form>
     </div>
+    <div class="panel connection">
+      <div class="blockhead">
+        <h2>Contraseña</h2>
+        <span class="hint">se cierran todas las sesiones</span>
+      </div>
+      ${
+        // El enlace de recuperación se manda por WhatsApp y no hay otro
+        // canal (ver contrasena.md), así que una cuenta sin teléfono no
+        // tiene forma de volver si olvida la contraseña. Se avisa acá, que
+        // es donde está el campo para arreglarlo, y no en el login, que es
+        // donde ya sería tarde.
+        admin.phone
+          ? ""
+          : `<div class="banner banner--warn">Esta cuenta no tiene teléfono cargado: si olvidás la contraseña no vas a poder recuperarla sola. Cargalo arriba.</div>`
+      }
+      <form method="POST" action="/admin/perfil/contrasena">
+        <div class="field">
+          <label for="perfil-password-actual">Contraseña actual</label>
+          <input type="password" id="perfil-password-actual" name="actual" required autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="perfil-password-nueva">Contraseña nueva</label>
+          <input type="password" id="perfil-password-nueva" name="password" required minlength="8" autocomplete="new-password">
+          <p class="hint">Mínimo 8 caracteres.</p>
+        </div>
+        <div class="field">
+          <label for="perfil-password-confirmacion">Repetila</label>
+          <input type="password" id="perfil-password-confirmacion" name="confirmacion" required minlength="8" autocomplete="new-password">
+        </div>
+        <div class="formfoot"><button type="submit" class="btn">Cambiar contraseña</button></div>
+      </form>
+    </div>
   `;
 
   return layout("Perfil", tenant, body, "perfil", admin);
@@ -6350,22 +7603,10 @@ export async function guardarPerfil(
   admin: AdminRecord,
   input: { username: string; email: string; phonePrefix: string; phoneNumber: string; avatarData: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const username = input.username.trim().toLowerCase();
-  if (!USERNAME_RE.test(username)) {
-    return {
-      ok: false,
-      error: "Nombre de usuario inválido: 5 a 32 caracteres, minúsculas, números, puntos o guiones.",
-    };
+  const datos = validarDatosDeCuenta(input);
+  if (!datos.ok) {
+    return datos;
   }
-  const email = input.email.trim().toLowerCase();
-  if (!email) {
-    return { ok: false, error: "El correo es obligatorio." };
-  }
-  const rawNumber = input.phoneNumber.trim();
-  if (rawNumber !== "" && !/^\d{4,12}$/.test(rawNumber.replace(/\D/g, ""))) {
-    return { ok: false, error: "Ese número no parece válido — escribí solo los dígitos, sin el prefijo del país." };
-  }
-  const phone = buildWhatsappPhone(input.phonePrefix, rawNumber);
   const avatarData = input.avatarData === "" ? null : input.avatarData;
   if (avatarData !== null) {
     if (!avatarData.startsWith("data:image/")) {
@@ -6377,7 +7618,12 @@ export async function guardarPerfil(
   }
 
   try {
-    await updateAdminProfile(admin.id, { username, email, phone, avatarData });
+    await updateAdminProfile(admin.id, {
+      username: datos.username,
+      email: datos.email,
+      phone: datos.phone,
+      avatarData,
+    });
   } catch (error) {
     return { ok: false, error: uniqueViolationMessage(error, "perfil") };
   }
@@ -6429,6 +7675,7 @@ export async function renderConfiguracionPage(
   const brandVoiceConfig = resolveBrandVoiceConfig(await getBrandVoiceConfig());
   const reportRecipient = await getReportRecipient();
   const reportFrequencyDays = await getReportFrequencyDays();
+  const transferAccounts = await getTransferAccounts();
   const reportFrequencyPreset =
     reportFrequencyDays === 1
       ? "diario"
@@ -6459,20 +7706,48 @@ export async function renderConfiguracionPage(
     ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedKey)}</span>. Dejar el campo vacío para conservarla.`
     : "Sin key propia — se prueba con la key del sistema del proveedor, si hay una disponible.";
 
-  const banner = query.error
-    ? `<div class="banner banner--error">${escapeHtml(query.error)}</div>`
-    : query.guardado
-      ? `<div class="banner banner--ok">Guardado. La configuración ya está activa para las próximas conversaciones.</div>`
-      : "";
+  const banner = queryToastsHtml(query, "Guardado. La configuración ya está activa para las próximas conversaciones.");
+
+  // Resumen de estado de cada pestaña. La barra de pestañas dice de un
+  // vistazo qué está configurado y qué no — sin esto habría que entrar a las
+  // cinco para descubrir que Cobros lleva vacío desde el primer día.
+  const camposVozMarca = [
+    brandVoiceConfig.nombreAsistente,
+    brandVoiceConfig.mision,
+    brandVoiceConfig.vision,
+    brandVoiceConfig.valores,
+    brandVoiceConfig.nomenclatura,
+  ];
+  const vozMarcaLlenos = camposVozMarca.filter((campo) => campo.trim() !== "").length;
+  const vozMarcaResumen =
+    vozMarcaLlenos === 0
+      ? "Sin definir"
+      : vozMarcaLlenos === camposVozMarca.length
+        ? "Completa"
+        : `${vozMarcaLlenos} de ${camposVozMarca.length}`;
+  const modeloResumen = currentEntry ? currentEntry.label : "Automático";
+  const reportesResumen = !reportRecipient
+    ? "Sin destinatario"
+    : reportFrequencyPreset === "personalizado"
+      ? `Cada ${reportFrequencyDays} días`
+      : reportFrequencyPreset.charAt(0).toUpperCase() + reportFrequencyPreset.slice(1);
 
   const body = `
     <div class="pagehead">
       <p class="eyebrow">Agente</p>
       <h1>Configuración</h1>
-      <p>Control de encendido del bot y el modelo de IA que responde por ${escapeHtml(brandName(tenant))}.</p>
+      <p>Cómo se comporta el asistente, qué sabe de ${escapeHtml(brandName(tenant))} y qué avisos manda.</p>
     </div>
     ${banner}
-    <section class="block block--narrow" aria-label="Estado del bot">
+    <div class="cfgtabs" role="tablist" aria-label="Áreas de configuración">
+      ${cfgTab("agente", "Agente", tenant.bot_paused ? "Pausado" : "Activo", tenant.bot_paused ? "off" : "on")}
+      ${cfgTab("voz", "Voz de marca", vozMarcaResumen, vozMarcaResumen === "Sin definir" ? "off" : "on")}
+      ${cfgTab("modelo", "Modelo de IA", modeloResumen, "neutral")}
+      ${cfgTab("reportes", "Reportes y reseñas", reportesResumen, reportRecipient ? "on" : "off")}
+      ${cfgTab("cobros", "Cobros", maskedWompiKey ? "Conectado" : "Sin configurar", maskedWompiKey ? "on" : "off")}
+    </div>
+    <div class="cfgpanel" data-cfg-panel="agente" role="tabpanel" aria-label="Agente">
+    <section class="block" aria-label="Estado del bot">
       <div class="blockhead"><h2>Estado del bot</h2></div>
       <div class="panel connection">
         <div class="connection__head">
@@ -6485,41 +7760,7 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Modelo de IA">
-      <div class="blockhead"><h2>Modelo de IA</h2><span class="hint">BYOK</span></div>
-      <div class="panel connection">
-        <form method="POST" action="/admin/configuracion/modelo-ia">
-          <div class="field">
-            <label for="llm-provider">Proveedor</label>
-            <select id="llm-provider" name="provider" data-provider-select>
-              <option value=""${currentProviderKey ? "" : " selected"}>Automático (recomendado)</option>
-              ${providerOptions}
-            </select>
-            <p class="hint">Sin seleccionar, usa el proveedor y modelo por defecto de la plataforma.</p>
-          </div>
-          <div class="field">
-            <label for="llm-routing-mode">Selección de modelo</label>
-            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select>
-              <option value="manual"${llmConfig.routingMode === "manual" ? " selected" : ""}>Manual — elijo el modelo yo mismo</option>
-              <option value="auto_dificultad"${llmConfig.routingMode === "auto_dificultad" ? " selected" : ""}>Automático según dificultad (Cerebro del bot)</option>
-            </select>
-            <p class="hint">"Cerebro del bot" usa el modelo más barato del proveedor para preguntas simples y el más potente para las difíciles — requiere elegir un proveedor arriba (no "Automático").</p>
-          </div>
-          <div class="field">
-            <label for="llm-model">Modelo</label>
-            <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
-          </div>
-          <div class="field">
-            <label for="llm-apikey">API key propia (opcional)</label>
-            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input autocomplete="off">
-            <p class="hint">${keyHint}</p>
-          </div>
-          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
-        </form>
-        <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
-      </div>
-    </section>
-    <section class="block block--narrow" aria-label="Voz y estilo del agente">
+    <section class="block" aria-label="Voz y estilo del agente">
       <div class="blockhead"><h2>Voz y estilo del agente</h2></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/comportamiento">
@@ -6553,37 +7794,94 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Voz de marca">
+    </div>
+    <div class="cfgpanel" data-cfg-panel="voz" role="tabpanel" aria-label="Voz de marca" hidden>
+    <section class="block" aria-label="Voz de marca">
       <div class="blockhead"><h2>Voz de marca</h2></div>
-      <div class="panel connection">
-        <form method="POST" action="/admin/configuracion/voz-marca">
-          <div class="field">
-            <label for="voz-nombre-asistente">Nombre del asistente</label>
-            <input type="text" id="voz-nombre-asistente" name="nombreAsistente" value="${escapeHtml(brandVoiceConfig.nombreAsistente)}" placeholder="Ej: Sofía">
-            <p class="hint">Con qué nombre se presenta el asistente al cliente. Dejar vacío para no darle nombre propio.</p>
-          </div>
-          <div class="field">
-            <label for="voz-mision">Misión</label>
-            <textarea id="voz-mision" name="mision" rows="2" placeholder="Qué busca lograr la empresa para sus clientes.">${escapeHtml(brandVoiceConfig.mision)}</textarea>
-          </div>
-          <div class="field">
-            <label for="voz-vision">Visión</label>
-            <textarea id="voz-vision" name="vision" rows="2" placeholder="Hacia dónde va la empresa.">${escapeHtml(brandVoiceConfig.vision)}</textarea>
-          </div>
-          <div class="field">
-            <label for="voz-valores">Valores</label>
-            <textarea id="voz-valores" name="valores" rows="2" placeholder="Ej: Cercanía, honestidad, rapidez.">${escapeHtml(brandVoiceConfig.valores)}</textarea>
-          </div>
-          <div class="field">
-            <label for="voz-nomenclatura">Nomenclatura propia</label>
-            <textarea id="voz-nomenclatura" name="nomenclatura" rows="2" placeholder="Ej: acá a los pedidos les decimos 'órdenes'.">${escapeHtml(brandVoiceConfig.nomenclatura)}</textarea>
-            <p class="hint">Términos o formas de nombrar cosas propias del negocio, si las hay.</p>
-          </div>
-          <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
-        </form>
+      <div class="cfggrid">
+        <div class="panel connection">
+          <form method="POST" action="/admin/configuracion/voz-marca">
+            <div class="fieldset">
+              <p class="fieldset__title">Cómo se presenta</p>
+              <div class="field">
+                <label for="voz-nombre-asistente">Nombre del asistente</label>
+                <input type="text" id="voz-nombre-asistente" name="nombreAsistente" maxlength="500" value="${escapeHtml(brandVoiceConfig.nombreAsistente)}" placeholder="Ej: Sofía">
+                <p class="hint">Con qué nombre saluda al cliente. Vacío, se presenta sin nombre propio.</p>
+              </div>
+            </div>
+            <div class="fieldset">
+              <p class="fieldset__title">Qué representa el negocio</p>
+              <div class="field">
+                <label for="voz-mision">Misión<span class="counter" data-counter-for="voz-mision"></span></label>
+                <textarea id="voz-mision" name="mision" rows="3" maxlength="500" data-counted placeholder="Qué busca lograr la empresa para sus clientes.">${escapeHtml(brandVoiceConfig.mision)}</textarea>
+              </div>
+              <div class="field">
+                <label for="voz-vision">Visión<span class="counter" data-counter-for="voz-vision"></span></label>
+                <textarea id="voz-vision" name="vision" rows="3" maxlength="500" data-counted placeholder="Hacia dónde va la empresa.">${escapeHtml(brandVoiceConfig.vision)}</textarea>
+              </div>
+              <div class="field">
+                <label for="voz-valores">Valores<span class="counter" data-counter-for="voz-valores"></span></label>
+                <textarea id="voz-valores" name="valores" rows="3" maxlength="500" data-counted placeholder="Ej: Cercanía, honestidad, rapidez.">${escapeHtml(brandVoiceConfig.valores)}</textarea>
+              </div>
+            </div>
+            <div class="fieldset">
+              <p class="fieldset__title">Cómo se nombran las cosas acá</p>
+              <div class="field">
+                <label for="voz-nomenclatura">Nomenclatura propia<span class="counter" data-counter-for="voz-nomenclatura"></span></label>
+                <textarea id="voz-nomenclatura" name="nomenclatura" rows="3" maxlength="500" data-counted placeholder="Ej: acá a los pedidos les decimos 'órdenes'.">${escapeHtml(brandVoiceConfig.nomenclatura)}</textarea>
+                <p class="hint">Términos propios del negocio, si los hay. El agente los usa en vez de los genéricos.</p>
+              </div>
+            </div>
+            <div class="formfoot"><button type="submit" class="btn btn--primary">Guardar</button></div>
+          </form>
+        </div>
+        <aside class="cfgaside">
+          <h3>Dónde se nota</h3>
+          <p>Lo que escribas acá viaja en cada conversación: el agente responde con esta identidad cuando un cliente pregunta quiénes son, qué venden o por qué comprarles.</p>
+          <p>No hace falta llenarlo todo. Un campo vacío simplemente no se le cuenta al agente — es mejor eso que rellenarlo con frases genéricas que suenan a folleto.</p>
+          <p class="cfgaside__note">Cada campo admite hasta 500 caracteres. El contador aparece al escribir.</p>
+        </aside>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Reporte del asistente">
+    </div>
+    <div class="cfgpanel" data-cfg-panel="modelo" role="tabpanel" aria-label="Modelo de IA" hidden>
+    <section class="block" aria-label="Modelo de IA">
+      <div class="blockhead"><h2>Modelo de IA</h2><span class="hint">BYOK</span></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/configuracion/modelo-ia">
+          <div class="field">
+            <label for="llm-provider">Proveedor</label>
+            <select id="llm-provider" name="provider" data-provider-select>
+              <option value=""${currentProviderKey ? "" : " selected"}>Automático (recomendado)</option>
+              ${providerOptions}
+            </select>
+            <p class="hint">Sin seleccionar, usa el proveedor y modelo por defecto de la plataforma.</p>
+          </div>
+          <div class="field">
+            <label for="llm-routing-mode">Selección de modelo</label>
+            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select>
+              <option value="manual"${llmConfig.routingMode === "manual" ? " selected" : ""}>Manual — elijo el modelo yo mismo</option>
+              <option value="auto_dificultad"${llmConfig.routingMode === "auto_dificultad" ? " selected" : ""}>Automático según dificultad (Cerebro del bot)</option>
+            </select>
+            <p class="hint">"Cerebro del bot" usa el modelo más barato del proveedor para preguntas simples y el más potente para las difíciles — requiere elegir un proveedor arriba (no "Automático").</p>
+          </div>
+          <div class="field">
+            <label for="llm-model">Modelo</label>
+            <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
+          </div>
+          <div class="field">
+            <label for="llm-apikey">API key propia (opcional)</label>
+            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input autocomplete="off">
+            <p class="hint">${keyHint}</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
+        </form>
+        <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
+      </div>
+    </section>
+    </div>
+    <div class="cfgpanel" data-cfg-panel="reportes" role="tabpanel" aria-label="Reportes y reseñas" hidden>
+    <section class="block" aria-label="Reporte del asistente">
       <div class="blockhead"><h2>Reporte del asistente</h2></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/reporte-diario">
@@ -6609,7 +7907,7 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Encuestas y reseñas">
+    <section class="block" aria-label="Encuestas y reseñas">
       <div class="blockhead"><h2>Encuestas y reseñas</h2></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/resenas">
@@ -6622,7 +7920,9 @@ export async function renderConfiguracionPage(
         </form>
       </div>
     </section>
-    <section class="block block--narrow" aria-label="Cobros en línea">
+    </div>
+    <div class="cfgpanel" data-cfg-panel="cobros" role="tabpanel" aria-label="Cobros" hidden>
+    <section class="block" aria-label="Cobros en línea">
       <div class="blockhead"><h2>Cobros en línea</h2><span class="hint">BYOK — Wompi</span></div>
       <div class="panel connection">
         <form method="POST" action="/admin/configuracion/cobros">
@@ -6646,11 +7946,111 @@ export async function renderConfiguracionPage(
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
+        <div class="connection__webhook connection__webhook--aparte">
+          <label for="wompi-webhook-url">URL de eventos (pegala en el dashboard de Wompi)</label>
+          <div class="copyrow">
+            <code id="wompi-webhook-url" class="mono">${escapeHtml(wompiWebhookUrl())}</code>
+            <button type="button" class="btn" data-copy="${escapeHtml(wompiWebhookUrl())}">Copiar</button>
+          </div>
+          <p class="hint">
+            En Wompi: <strong>Configuración → Eventos</strong>, pegá esta URL y suscribí
+            <code>transaction.updated</code>. Con eso los pedidos pagados se confirman solos
+            y los rechazados quedan marcados sin que nadie los revise a mano.
+            ${
+              maskedEventsSecret
+                ? ""
+                : "<strong>Falta cargar el secreto de eventos arriba</strong> — sin él se rechazan los avisos que manda Wompi, porque no se puede verificar que vengan de ellos."
+            }
+          </p>
+        </div>
       </div>
     </section>
+    <section class="block" aria-label="Cuentas para transferencia">
+      <div class="blockhead">
+        <h2>Cuentas para transferencia</h2>
+        <span class="hint">${transferAccounts.filter((a) => a.active).length} activa(s)</span>
+      </div>
+      <div class="panel connection">
+        <p class="hint">Cuando un cliente elige pagar por transferencia, el asistente le manda estos datos automáticamente. ${
+          transferAccounts.some((a) => a.active)
+            ? "Se mandan todas las cuentas activas, en este orden."
+            : "<strong>Sin ninguna cuenta activa el asistente no puede dar datos de pago</strong> y escala la conversación a un asesor."
+        }</p>
+        <form method="POST" action="/admin/configuracion/transferencias">
+          <div data-transfer-rows>
+            ${transferAccounts.map((account, i) => transferAccountFieldsHtml(account, i)).join("")}
+          </div>
+          <div class="formfoot">
+            <button type="button" class="btn btn--add" data-transfer-add><span class="btn--add__plus">+</span> Agregar cuenta</button>
+            <button type="submit" class="btn btn--primary">Guardar cuentas</button>
+          </div>
+        </form>
+      </div>
+    </section>
+    </div>
+    <template data-transfer-template>${transferAccountFieldsHtml(
+      { entity: "", accountType: "", accountNumber: "", holderName: "", holderDocument: "", active: true },
+      -1,
+    )}</template>
   `;
 
   return layout("Configuración", tenant, body, "configuracion", admin);
+}
+
+/**
+ * Guarda las cuentas para transferencia. El formulario manda un array por
+ * campo y se recomponen por posición — `entity[0]` va con `accountNumber[0]`.
+ * Fastify entrega un string cuando hay una sola fila y un array cuando hay
+ * varias, de ahí el `normalizar`.
+ *
+ * Se descartan las filas sin entidad ni número: una fila recién agregada y
+ * dejada vacía no debería guardarse, y borrarla es exactamente eso — vaciar
+ * los campos o quitarla, que dan el mismo resultado.
+ */
+export async function guardarCuentasTransferencia(input: {
+  entity?: string | string[];
+  accountType?: string | string[];
+  accountNumber?: string | string[];
+  holderName?: string | string[];
+  holderDocument?: string | string[];
+  active?: string | string[];
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const normalizar = (value: string | string[] | undefined): string[] =>
+    value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+  const entities = normalizar(input.entity);
+  const types = normalizar(input.accountType);
+  const numbers = normalizar(input.accountNumber);
+  const holders = normalizar(input.holderName);
+  const documents = normalizar(input.holderDocument);
+  const actives = normalizar(input.active);
+
+  const cuentas: TransferAccount[] = [];
+  for (let i = 0; i < entities.length; i++) {
+    const entity = (entities[i] ?? "").trim();
+    const accountNumber = (numbers[i] ?? "").trim();
+    if (entity === "" && accountNumber === "") {
+      continue;
+    }
+    if (entity === "" || accountNumber === "") {
+      return { ok: false, error: "Cada cuenta necesita al menos entidad y número." };
+    }
+    const holderName = (holders[i] ?? "").trim();
+    if (holderName === "") {
+      return { ok: false, error: `Falta el titular de la cuenta de ${entity}.` };
+    }
+    cuentas.push({
+      entity,
+      accountType: (types[i] ?? "").trim(),
+      accountNumber,
+      holderName,
+      holderDocument: (documents[i] ?? "").trim(),
+      active: actives[i] === "1",
+    });
+  }
+
+  await saveTransferAccounts(cuentas);
+  return { ok: true };
 }
 
 export async function pausarBot(): Promise<void> {
@@ -6775,6 +8175,29 @@ function splitWhatsappPhone(phone: string | null): { prefix: string; number: str
     return { prefix: match.code, number: digits.slice(match.code.length) };
   }
   return { prefix: DEFAULT_PHONE_COUNTRY_CODE, number: digits };
+}
+
+/**
+ * `whatsapp:+573001112233` -> `+57 300 111 2233`. La columna Teléfono
+ * mostraba el identificador tal como lo guarda la base, con el prefijo
+ * `whatsapp:` que es de Twilio y no de nadie más: nadie reconoce su propio
+ * número escrito así, y encima era tan largo que se partía en dos líneas.
+ * Se agrupa de a tres desde la izquierda, salvo que el último grupo quede
+ * con uno o dos dígitos: ahí se pega al anterior. Sin esa regla, un celular
+ * colombiano de 10 dígitos terminaba en "+57 318 493 593 3", con un dígito
+ * suelto que se lee como error de tipeo. Es una regla de legibilidad y no
+ * un formato por país — el proyecto acepta números de cualquier prefijo
+ * (ver PHONE_COUNTRY_CODES) y no vale la pena arrastrar una tabla de
+ * formatos nacionales para una columna de tabla.
+ */
+function formatWhatsappPhoneDisplay(phone: string): string {
+  const { prefix, number } = splitWhatsappPhone(phone);
+  const grupos = number.match(/\d{1,3}/g) ?? [];
+  // La cola corta se concatena sin espacio al grupo anterior, en vez de
+  // reasignar por índice: mismo resultado, sin pelearle al chequeo de
+  // índices de TypeScript.
+  const cola = grupos.length > 1 && (grupos.at(-1)?.length ?? 3) < 3 ? (grupos.pop() ?? "") : "";
+  return `+${prefix} ${grupos.join(" ")}${cola}`;
 }
 
 /**

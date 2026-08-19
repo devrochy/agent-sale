@@ -14,6 +14,16 @@ export async function createWompiPaymentLink(orderId: string, paymentLinkId: str
   ]);
 }
 
+/**
+ * Guarda la URL del enlace en el propio pedido, no en
+ * `wompi_payment_links`: esa tabla existe para resolver
+ * payment_link_id -> pedido cuando entra un webhook, y el panel necesita la
+ * URL leyendo el pedido, sin un join más por fila de la tabla de Pedidos.
+ */
+export async function guardarPaymentLinkUrl(orderId: string, url: string): Promise<void> {
+  await pool.query(`UPDATE orders SET wompi_payment_link_url = $1 WHERE id = $2`, [url, orderId]);
+}
+
 export async function resolveWompiPaymentLink(paymentLinkId: string): Promise<{ orderId: string } | null> {
   const result = await pool.query<{ order_id: string }>(
     `SELECT order_id FROM wompi_payment_links WHERE payment_link_id = $1`,

@@ -141,6 +141,13 @@ la contraseña es correcta, el hash verifica, y aun así responde **401 sin
 un solo error en los logs**. `createAdmin()` inserta ambas dentro de la
 misma transacción; a mano hay que acordarse.
 
+**Cargale el teléfono a ese primer admin apenas entres** (Perfil → Teléfono).
+El enlace de "olvidé mi contraseña" se manda por WhatsApp y no hay otro
+canal, así que una cuenta sin teléfono solo se recupera volviendo a este
+mismo `UPDATE` a mano contra la base — y en producción eso significa entrar
+al servidor. Ver
+[contrasena.md](./fase-11-panel-admin-dashboard/contrasena.md).
+
 El panel vive en **`/login`**, no en `/`: la raíz no tiene ruta y responde 404. `/admin` redirige a `/login`.
 
 ## Datos de prueba

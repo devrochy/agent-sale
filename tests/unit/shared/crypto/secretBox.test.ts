@@ -29,7 +29,12 @@ describe("secretBox", () => {
     const [iv, authTag, ciphertext] = encrypted.split(":");
     // Altera un byte del ciphertext — GCM debe detectarlo y lanzar, no
     // devolver texto corrupto silenciosamente.
-    const tampered = `${iv}:${authTag}:${ciphertext!.slice(0, -2)}00`;
+    //
+    // El byte nuevo se elige distinto del que había: escribir "00" fijo
+    // hacía que el test fallara ~1 de cada 256 corridas, cuando el
+    // ciphertext ya terminaba en "00" y por lo tanto no se alteraba nada.
+    const ultimoByte = ciphertext!.slice(-2);
+    const tampered = `${iv}:${authTag}:${ciphertext!.slice(0, -2)}${ultimoByte === "00" ? "ff" : "00"}`;
     expect(() => decryptSecret(tampered)).toThrow();
   });
 

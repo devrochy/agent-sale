@@ -1,4 +1,5 @@
 import { withTransaction } from "../../shared/db/withTransaction.js";
+import { deleteAdminSessionsForAdmin } from "./adminSessionDirectory.js";
 
 export type AdminRole = "master" | "colaborador";
 
@@ -196,6 +197,46 @@ export async function updateAdminProfile(
       `UPDATE admins SET username = $1, email = $2, phone = $3, avatar_data = $4 WHERE id = $5`,
       [profile.username, profile.email, profile.phone, profile.avatarData, adminId],
     );
+  });
+}
+
+/**
+ * Reescribe la contraseña y cierra todas las sesiones abiertas del admin,
+ * en la misma transacción (ver `deleteAdminSessionsForAdmin`). Los dos
+ * caminos que llegan acá —"Cambiar contraseña" desde el Perfil y el enlace
+ * de recuperación— comparten esa consecuencia: después de cambiarla hay que
+ * volver a entrar en todos lados, incluido el navegador desde el que se
+ * hizo el cambio.
+ *
+ * No valida nada: quién puede cambiarle la contraseña a quién, y qué
+ * cuenta por contraseña aceptable, se decide antes de llamar (ver
+ * `cambiarContrasenaPropia` y `restablecerContrasenaConToken` en
+ * adminPanel.ts), mismo criterio que `updateAdminProfile`.
+ */
+export async function updateAdminPassword(adminId: string, passwordHash: string): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE admins SET password_hash = $1 WHERE id = $2`, [
+      passwordHash,
+      adminId,
+    ]);
+    await deleteAdminSessionsForAdmin(client, adminId);
+  });
+}
+
+/**
+ * Cambia el rol desde Colaboradores. Va aparte de `updateAdminProfile`
+ * porque no es un dato de contacto sino el nivel de acceso: cambiarlo es lo
+ * único de esta pantalla que puede dejar a alguien adentro o afuera de la
+ * gestión de cuentas, y quién puede hacerlo se decide antes de llamar (ver
+ * `editarColaborador`).
+ *
+ * No toca `admin_permissions`: un master los tiene todos por definición
+ * (ver `resolveEffectivePermissions`), así que su fila queda como estaba y
+ * vuelve a tener efecto tal cual si algún día baja a colaborador.
+ */
+export async function updateAdminRole(adminId: string, role: AdminRole): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query(`UPDATE admins SET role = $1 WHERE id = $2`, [role, adminId]);
   });
 }
 

@@ -21,6 +21,17 @@ Esta fase **no depende de la Fase 10** (Preparación para Escala y Lanzamiento M
 - [configuracion-comportamiento.md](./configuracion-comportamiento.md) — **11.4**: alcance reducido a un kill-switch (`tenants.bot_paused`) — tono/estilo editable en vivo queda fuera porque rompe el prompt caching (`docs/fase-4-motor-agente/prompt-caching.md`).
 - [analitica-costos.md](./analitica-costos.md) — **11.5**: tabla `llm_usage`, queries de costo/tokens, cruce con el funnel de [`metricas-cierre-ventas.md`](../fase-8-observabilidad-seguridad/metricas-cierre-ventas.md) (reusado, no duplicado).
 
+## Mejoras posteriores al cierre de la fase
+
+Cambios sobre el panel ya construido, que no pertenecen a ninguna sub-fase de la 11 pero viven en su mismo código (`layout()`, `STYLE_BLOCK`, `CLIENT_SCRIPT` de `src/admin/adminPanel.ts`):
+
+- [apariencia-tema.md](./apariencia-tema.md) — selector de apariencia **Sistema / Claro / Oscuro** en el menú de cuenta. La paleta oscura ya existía bajo `prefers-color-scheme`; lo que agrega es poder elegirla a mano, con la preferencia guardada por dispositivo.
+- [configuracion-por-pestanas.md](./configuracion-por-pestanas.md) — las siete secciones de Configuración pasan a **cinco pestañas**, cada una con el estado real de su área (`Activo`, `Sin definir`, `Conectado`…). Incluye el rediseño de Voz de marca, donde los `textarea` no tenían ningún estilo y el tope de 500 caracteres era invisible hasta que el formulario rebotaba.
+- [colaboradores-tabla.md](./colaboradores-tabla.md) — Colaboradores era la **única tabla del panel sin `data-table`**: se le aplica la barra de búsqueda/filtros/orden/paginado del resto, el botón `+ Nuevo colaborador` de Productos y el switch de estado con confirmación. Suma el **diálogo de edición** que faltaba —hasta ahora el panel solo sabía crear una cuenta y prenderla o apagarla— e incluye dos correcciones de contenido: el teléfono deja de mostrarse como `whatsapp:+57…` y la confirmación deja de decir que una persona "deja de estar disponible para el asistente".
+- [notificaciones.md](./notificaciones.md) — las confirmaciones y errores pasan de bloque que empuja el contenido a **notificación flotante** abajo a la derecha. La distinción que ordena el cambio: el resultado de una acción flota y se va; lo que describe un estado de la pantalla sigue siendo `.banner`, porque sigue siendo verdad después.
+- [acciones-color.md](./acciones-color.md) — los botones de acción de las tablas toman el color de lo que hacen **al pasar el mouse**, y quedan neutros en reposo. Unifica el sistema propio que Tickets tenía aparte.
+- [contrasena.md](./contrasena.md) — **cambiar la contraseña** desde el Perfil y **recuperarla** desde el login. El enlace de recuperación va por WhatsApp al teléfono del admin, porque el proyecto no tiene correo y sí tiene ese canal; el token se guarda hasheado, vence a los 30 minutos y sirve una sola vez.
+
 ## Orden de las sub-fases
 
 11.1 → 11.2 → 11.3 → 11.4 → 11.5, por dependencias de layout (11.1 primero) y para dejar la tabla de escritura recurrente de 11.5 para el final, cuando el resto del panel ya esté estable. El detalle de por qué cada una va en ese orden está en el propio documento de cada sub-fase.
