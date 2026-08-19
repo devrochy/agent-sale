@@ -1466,6 +1466,19 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
    botones necesita el ancho que ocupan y no una fraccion de la tabla. */
 .rowactions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
 td:has(> .rowactions) { padding-left: 12px; padding-right: 12px; }
+/* Los iconos de la ultima columna se apoyan en el borde derecho de la
+   celda, que es el borde de la tabla: asi quedan alineados entre filas por
+   mas que la columna cambie de ancho, y el ojo los encuentra siempre en el
+   mismo sitio al recorrer hacia abajo.
+   El selector es td:last-child a proposito y no una clase: la celda
+   "Asignado a" de Tickets tambien usa .rowactions, pero lleva el nombre del
+   asesor adelante y no es la ultima — ahi el texto tiene que empezar a la
+   izquierda como el resto de la tabla. */
+td:last-child > .rowactions { justify-content: flex-end; }
+/* El encabezado acompana a sus botones. Es una clase y no th:last-child
+   porque hay tablas que terminan en texto (Resumen en Tickets antes de
+   sumarle Conversacion) y ahi el titulo a la derecha no tendria sentido. */
+th.th--end { text-align: right; }
 .permcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
 .banner { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 .banner--ok { background: var(--go-soft); color: var(--go); }
@@ -3822,7 +3835,7 @@ export async function renderLeadsPage(
         </colgroup>
         <thead><tr>
           <th>Cliente</th><th>Clasificación</th><th>Bot</th><th>Estado</th>
-          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th>Acciones</th>
+          <th>Pedidos</th><th>Última compra</th><th>Ciudad</th><th>Cliente desde</th><th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="9">${emptyState(ICON_LEADS, "Sin leads todavía", "Acá va a aparecer cada cliente que le escriba al agente, clasificado según su avance: cotización, escalada o pedido.")}</td></tr>`}</tbody>
       </table>
@@ -4234,7 +4247,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
         <td><div class="rowactions">${row.assigned_to_name ? `<span>${escapeHtml(row.assigned_to_name)}</span>` : `<span class="hint">Sin asignar</span>`}${actionsHtml}</div></td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td>${escapeHtml(row.summary ?? "")}</td>
-        <td><a class="btn btn--ghost btn--icon act--chrome" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></td>
+        <td><div class="rowactions"><a class="btn btn--ghost btn--icon act--chrome" href="/admin/conversaciones?estado=${conversacionFiltro}&c=${row.conversation_id}" aria-label="Ver conversación" title="Ver conversación">${ICON_CONVERSACIONES}</a></div></td>
       </tr>`;
     })
     .join("\n");
@@ -4273,7 +4286,7 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
           <th class="sortable" data-sort-key="asignado">Asignado a</th>
           <th class="sortable" data-sort-key="creado">Creado</th>
           <th>Resumen</th>
-          <th>Conversación</th>
+          <th class="th--end">Conversación</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_TICKETS, "Sin tickets abiertos", "Acá van a aparecer los casos que el agente no pueda resolver solo — algo fuera de catálogo, un cliente molesto, algo que pida un humano.")}</td></tr>`}</tbody>
       </table>
@@ -5443,7 +5456,7 @@ export async function renderProductosPage(
           <th class="sortable" data-sort-key="price">Precio</th>
           <th class="sortable" data-sort-key="stock">Stock</th>
           <th class="sortable" data-sort-key="description">Descripción</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="7">${emptyState(ICON_PRODUCTOS, "Sin productos en el catálogo", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -6131,7 +6144,7 @@ export async function renderPedidosPage(
           <th>Entrega</th>
           <th class="sortable" data-sort-key="total">Total</th>
           <th class="sortable" data-sort-key="fecha">Fecha</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="8">${emptyState(ICON_PEDIDOS, "Sin pedidos todavía", "Se registra un pedido apenas un cliente confirme una compra por WhatsApp.")}</td></tr>`}</tbody>
       </table>
@@ -6272,7 +6285,7 @@ export async function renderAliadosPage(
           <th class="sortable" data-sort-key="contacto">Contacto</th>
           <th class="sortable" data-sort-key="productos">Productos</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_ALIADOS, "Sin aliados todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -6526,7 +6539,7 @@ export async function renderCategoriasPage(
           <col style="width:32%"><col style="width:12%">
           <col style="width:19%"><col style="width:20%"><col style="width:130px">
         </colgroup>
-        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <thead><tr><th>Categoría</th><th>Productos</th><th>Complementarias</th><th>Estado</th><th class="th--end">Acciones</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="5">${emptyState(ICON_CATEGORIAS, "Sin categorías todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
     </div>
@@ -6874,7 +6887,7 @@ export async function renderPromocionesPage(
           <th>Segmentos</th>
           <th>Vigencia</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_PROMOCIONES, "Sin promociones todavía", "Creá la primera con el botón de arriba.")}</td></tr>`}</tbody>
       </table>
@@ -7208,7 +7221,7 @@ export async function renderColaboradoresPage(
           <th class="sortable" data-sort-key="rol">Rol</th>
           <th class="sortable" data-sort-key="estado">Estado</th>
           <th>Notificaciones</th>
-          <th>Acciones</th>
+          <th class="th--end">Acciones</th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="7">${emptyState(ICON_COLABORADORES, "Sin colaboradores todavía", "Creá el primero con el botón de arriba.")}</td></tr>`}</tbody>
       </table>

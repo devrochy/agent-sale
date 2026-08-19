@@ -417,6 +417,33 @@ describe("panel admin", () => {
       expect(response.body).toMatch(/<col style="width:\d+px">/);
     });
 
+    it("los iconos de la última columna se apoyan en el borde derecho", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/productos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.body).toContain("td:last-child > .rowactions { justify-content: flex-end; }");
+      // El encabezado acompaña a sus botones, con clase y no con
+      // th:last-child: hay tablas que terminan en texto.
+      expect(response.body).toContain('<th class="th--end">Acciones</th>');
+      expect(response.body).toContain("th.th--end { text-align: right; }");
+    });
+
+    it("la celda mixta de Tickets no se alinea a la derecha", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // "Asignado a" también usa .rowactions, pero lleva el nombre del
+      // asesor adelante y no es la última celda: ahí el texto tiene que
+      // empezar a la izquierda como el resto de la tabla. Lo que lo
+      // garantiza es el td:last-child del selector, no una excepción.
+      expect(response.body).not.toContain('<th class="th--end">Asignado a</th>');
+      expect(response.body).toContain('<th class="th--end">Conversación</th>');
+    });
+
     it("ninguna columna de Tickets queda sin encabezado", async () => {
       const response = await app.inject({
         method: "GET",
@@ -426,7 +453,7 @@ describe("panel admin", () => {
       // Era la única columna sin título del panel. Se llama "Conversación"
       // y no "Acción" porque las acciones del ticket —tomar, resolver,
       // reasignar— viven en la columna "Asignado a".
-      expect(response.body).toContain("<th>Conversación</th>");
+      expect(response.body).toMatch(/<th[^>]*>Conversación<\/th>/);
       expect(response.body).not.toContain("<th></th>");
     });
 

@@ -81,6 +81,23 @@ Que entren depende de tres cosas que van juntas:
 Al agregar un botón a una fila hay que subir el ancho de su columna. Si no,
 con `nowrap` el icono nuevo no se envuelve: se corta.
 
+### Apoyados a la derecha
+
+Los iconos de la última columna se alinean al borde derecho de la celda, que
+es el borde de la tabla: así quedan **alineados entre filas** por más que la
+columna cambie de ancho, y el ojo los encuentra siempre en el mismo sitio al
+recorrer hacia abajo.
+
+El selector es `td:last-child > .rowactions` y no una clase, a propósito: la
+celda "Asignado a" de Tickets **también** usa `.rowactions`, pero lleva el
+nombre del asesor adelante y no es la última — ahí el texto tiene que empezar
+a la izquierda como el resto de la tabla. La regla la excluye sola, sin una
+excepción escrita a mano que alguien tenga que recordar.
+
+El encabezado acompaña con `th--end`, que sí es una clase: hay tablas que
+terminan en texto (Resumen, Descripción) y ahí un título a la derecha no
+tendría sentido.
+
 ## Cobertura
 
 `tests/integration/gateway/admin.test.ts`: que Cancelar lleva `act--redline`
