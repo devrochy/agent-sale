@@ -373,6 +373,48 @@ describe("panel admin", () => {
       expect(response.body).not.toContain("data-theme-option");
     });
 
+    it("los botones de acción toman color según lo que hacen, solo en hover", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      // Cancelar en rojo, marcar entregado en verde — y neutros en reposo,
+      // que es lo que evita que una columna de colores repetidos deje de
+      // significar nada.
+      expect(response.body).toMatch(/class="btn btn--ghost btn--icon act--redline"[^>]*Cancelar/);
+
+      // "Marcar entregado" solo existe en un pedido despachado, y el del
+      // fixture está abierto; el verde de confirmar se verifica sobre
+      // "Guardar cambios", que es la misma intención.
+      const aliados = await app.inject({
+        method: "GET",
+        url: "/admin/aliados",
+        headers: { cookie: sessionCookie },
+      });
+      expect(aliados.body).toMatch(/class="btn btn--ghost btn--icon act--go"[^>]*Guardar cambios/);
+      expect(aliados.body).toMatch(/class="btn btn--ghost btn--icon act--ignition"[^>]*Editar/);
+      // El color solo aparece bajo :hover / :focus-visible, nunca en la
+      // regla base de la clase.
+      expect(response.body).toContain(".btn--ghost.act--redline:hover");
+      expect(response.body).toContain(".btn--ghost.act--redline:focus-visible");
+      expect(response.body).not.toMatch(/\.act--redline \{/);
+    });
+
+    it("no quedan dos sistemas de color para lo mismo", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/tickets",
+        headers: { cookie: sessionCookie },
+      });
+      // Tickets tenía su propio btn--icon-go/amber/chrome, que pintaba
+      // siempre. Se unificó al de hover para que el panel entero se
+      // comporte igual.
+      expect(response.body).not.toContain("btn--icon-go");
+      expect(response.body).not.toContain("btn--icon-amber");
+      expect(response.body).not.toContain("btn--icon-chrome");
+    });
+
     it("el modal declara su color, que no hereda del body", async () => {
       const response = await app.inject({
         method: "GET",

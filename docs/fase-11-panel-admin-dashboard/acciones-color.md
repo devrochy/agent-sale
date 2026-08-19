@@ -1,0 +1,65 @@
+# Botones de acción — el color aparece al pasar por encima
+
+Los botones de acción de las tablas son iconos neutros en reposo y **toman el
+color de lo que hacen cuando el puntero pasa por encima**.
+
+## Por qué no siempre
+
+En reposo los iconos son neutros a propósito: una columna de botones de
+colores repetidos en cada fila es ruido, y a la tercera fila **deja de
+significar nada** — un rojo que aparece veinte veces ya no dice "cuidado".
+
+El color aparece cuando importa, que es el instante antes del clic. Ahí sí
+hay una decisión que tomar, y el color es lo que la informa.
+
+También responde a `:focus-visible`: quien navega con teclado necesita la
+misma pista que quien usa el mouse.
+
+## La convención
+
+Las clases se nombran **por token y no por acción** (`act--go`, no
+`act--guardar`), igual que `chip--go` o `banner--warn` en el resto del panel:
+la clase dice qué tono usa, y esta tabla dice dónde va cada tono.
+
+| Clase | Tono | Para acciones que… | Ejemplos |
+| --- | --- | --- | --- |
+| `act--go` | verde | confirman o completan | Guardar cambios, Marcar entregado, Marcar resuelto |
+| `act--redline` | rojo | cancelan o destruyen | Cancelar pedido |
+| `act--ignition` | naranja | modifican o toman control | Editar, Tomar ticket |
+| `act--violet` | violeta | crean algo aparte | Crear promoción |
+| `act--chrome` | celeste | reencaminan | Reasignar al asistente |
+
+**Un botón sin clase queda neutro, y eso también es una decisión.** "Ver
+conversación" y el chevron de expandir no llevan color: navegar no confirma,
+no destruye y no modifica nada, así que teñirlos sería inventar una
+intención que no existe.
+
+## Se unificaron dos sistemas
+
+Tickets ya tenía el suyo —`btn--icon-go`, `btn--icon-amber`,
+`btn--icon-chrome`— que pintaba el icono **siempre** e intensificaba en
+hover. Funcionaba, pero dejaba al panel con dos mecanismos para lo mismo y a
+Tickets comportándose distinto del resto sin motivo.
+
+Los tres se migraron conservando exactamente su color; lo único que cambia es
+**cuándo** aparece. Las reglas viejas se borraron: hay un test que verifica
+que no vuelvan.
+
+## Dónde tocar
+
+Las reglas viven junto a `.btn--ghost` en `STYLE_BLOCK`. Para un botón nuevo,
+agregarle la clase del tono que le corresponda según la tabla de arriba —
+no hace falta CSS nuevo.
+
+Si un tono nuevo hiciera falta, necesita su par de tokens (`--x` y
+`--x-soft`) en **las dos paletas**. `--ignition-soft` se agregó con este
+cambio: existía `--go-soft`, `--redline-soft`, `--violet-soft` y
+`--chrome-soft`, pero el naranja de marca no tenía su versión suave y se
+venía resolviendo con `rgba()` a mano en cada sitio.
+
+## Cobertura
+
+`tests/integration/gateway/admin.test.ts`: que Cancelar lleva `act--redline`
+y Guardar/Editar sus tonos, que **el color solo aparece bajo `:hover` /
+`:focus-visible`** y nunca en la regla base de la clase, y que no quedan
+rastros del sistema viejo de Tickets.

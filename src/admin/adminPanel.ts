@@ -777,7 +777,7 @@ ${STYLE_BLOCK}
  */
 const DARK_PALETTE = `    --bg: #14171C; --bg-grid: #1A1E24; --panel: #1B1F26; --panel-inset: #21262E;
     --border: #2B313A; --border-strong: #3A424D; --ink: #F1EEE6; --ink-muted: #9BA3AD; --ink-faint: #6B727C;
-    --ignition: #E8A33D; --ignition-glow: #FFC875; --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
+    --ignition: #E8A33D; --ignition-glow: #FFC875; --ignition-soft: rgba(232,163,61,0.14); --chrome: #5FC7D9; --chrome-soft: rgba(95,199,217,0.14);
     --redline: #FF6B5E; --redline-soft: rgba(255,107,94,0.14); --go: #46C97F; --go-soft: rgba(70,201,127,0.14);
     --violet: #A98CDB; --violet-soft: rgba(169,140,219,0.16);
     --wa: #3FD37F; --wa-soft: rgba(37,211,102,0.18);
@@ -810,6 +810,7 @@ const STYLE_BLOCK = `
   --ink-faint: #889198;
   --ignition: #9C6108;
   --ignition-glow: #C9820F;
+  --ignition-soft: rgba(156, 97, 8, 0.1);
   --chrome: #0F6B7A;
   --chrome-soft: rgba(15, 107, 122, 0.12);
   --redline: #B4362A;
@@ -1416,6 +1417,31 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--primary:hover { filter: brightness(1.08); border-color: var(--chrome); background: var(--chrome); }
 .btn--ghost { background: transparent; }
 .btn--ghost:hover { background: var(--panel-inset); }
+
+/* Color de la accion, revelado al pasar por encima.
+   En reposo los iconos son neutros a proposito: una columna de botones de
+   colores repetidos en cada fila es ruido y deja de significar nada. El
+   color aparece cuando importa, que es el instante antes del clic.
+
+   Se nombran por token y no por accion (act--go, no act--guardar), igual
+   que chip--go o banner--warn: la clase dice que tono usa, y donde se usa
+   cada tono es la convencion de abajo.
+
+     act--go        confirma o completa       guardar, entregado, resuelto
+     act--redline   cancela o destruye        cancelar pedido
+     act--ignition  modifica o toma control   editar, tomar ticket
+     act--violet    crea algo aparte          crear promocion
+     act--chrome    reencamina                reasignar al asistente
+
+   Va tambien en :focus-visible: quien navega con teclado necesita la misma
+   pista que quien usa el mouse. */
+.btn--ghost.act--go:hover, .btn--ghost.act--go:focus-visible { color: var(--go); border-color: var(--go); background: var(--go-soft); }
+.btn--ghost.act--redline:hover, .btn--ghost.act--redline:focus-visible { color: var(--redline); border-color: var(--redline); background: var(--redline-soft); }
+.btn--ghost.act--ignition:hover, .btn--ghost.act--ignition:focus-visible { color: var(--ignition); border-color: var(--ignition); background: var(--ignition-soft); }
+.btn--ghost.act--violet:hover, .btn--ghost.act--violet:focus-visible { color: var(--violet); border-color: var(--violet); background: var(--violet-soft); }
+.btn--ghost.act--chrome:hover, .btn--ghost.act--chrome:focus-visible { color: var(--chrome); border-color: var(--chrome); background: var(--chrome-soft); }
+.btn--ghost[class*="act--"] { transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
+@media (prefers-reduced-motion: reduce) { .btn--ghost[class*="act--"] { transition: none; } }
 /* Color = la acción que el botón va a ejecutar, no el estado actual (ver
    estadoForm en renderColaboradoresPage) — mismo lenguaje de --go/--redline
    que ya usan los chips Activo/Inactivo. */
@@ -1425,18 +1451,6 @@ tr.expandrow td { padding: 12px 16px 14px 44px; }
 .btn--go:hover { filter: brightness(1.08); }
 .btn--icon { width: 34px; height: 34px; padding: 0; justify-content: center; flex-shrink: 0; }
 .btn--icon svg { width: 15px; height: 15px; }
-/* Botones icono de acción sobre tickets (Fase 18): minimalistas — color
-   solo en el icono/borde en reposo, se rellenan suave al pasar el mouse. */
-.btn--icon-go { color: var(--go); border-color: var(--go-soft); }
-.btn--icon-go:hover { background: var(--go-soft); border-color: var(--go); }
-.btn--icon-amber { color: var(--ignition); border-color: rgba(156, 97, 8, 0.22); }
-.btn--icon-amber:hover { background: rgba(156, 97, 8, 0.12); border-color: var(--ignition); }
-@media (prefers-color-scheme: dark) {
-  .btn--icon-amber { border-color: rgba(232, 163, 61, 0.28); }
-  .btn--icon-amber:hover { background: rgba(232, 163, 61, 0.16); }
-}
-.btn--icon-chrome { color: var(--chrome); border-color: var(--chrome-soft); }
-.btn--icon-chrome:hover { background: var(--chrome-soft); border-color: var(--chrome); }
 .btn--sm { padding: 6px 11px; font-size: 11.5px; }
 .permform { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 /* Columna "Acciones" de Colaboradores: agrupa el botón Guardar de
@@ -3476,14 +3490,14 @@ export async function renderConversacionesPage(
       // vivir en la caja del ticket.
       if (detalle.handoff_status === "queued") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--ignition" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
         </form>`;
       } else if (detalle.handoff_status === "en_atencion") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
         </form>
         <form method="POST" action="/admin/conversaciones/${detalle.handoff_id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
         </form>`;
       }
     }
@@ -3767,7 +3781,7 @@ export async function renderLeadsPage(
         <td>${escapeHtml(row.city ?? "—")}</td>
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td><div class="rowactions">
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
           <button type="button" data-open-dialog="${detailDialogId}" class="btn btn--ghost btn--icon" aria-label="Ver información del cliente" title="Ver información del cliente">${ICON_USER}</button>
         </div></td>
       </tr>
@@ -4189,14 +4203,14 @@ export async function renderTicketsPage(admin: AdminRecord): Promise<string | nu
       let actionsHtml = "";
       if (row.status === "queued") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/tomar" data-confirm="¿Tomar este ticket? Se le va a avisar al cliente que lo estás atendiendo.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-amber" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--ignition" aria-label="Tomar ticket" title="Tomar ticket">${ICON_HAND}</button>
         </form>`;
       } else if (row.status === "en_atencion") {
         actionsHtml = `<form method="POST" action="/admin/conversaciones/${row.id}/resolver" data-confirm="¿Marcar este ticket como resuelto? Se le avisará al cliente por WhatsApp.">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar como resuelto" title="Marcar como resuelto">${ICON_CHECK}</button>
         </form>
         <form method="POST" action="/admin/conversaciones/${row.id}/reasignar-bot" data-confirm="¿Devolver esta conversación al asistente para que siga la venta?">
-          <button type="submit" class="btn btn--ghost btn--icon btn--icon-chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
+          <button type="submit" class="btn btn--ghost btn--icon act--chrome" aria-label="Reasignar al asistente" title="Reasignar al asistente">${ICON_BOT}</button>
         </form>`;
       }
       // El filtro del enlace debe reflejar dónde va a aparecer realmente
@@ -5368,9 +5382,9 @@ export async function renderProductosPage(
         <td class="mono ${product.totalStock === 0 ? "stock-cero" : ""}">${product.totalStock}</td>
         <td class="dblclick-cell"><input type="text" name="description" form="${rapidoFormId}" value="${escapeHtml(product.description ?? "")}"></td>
         <td><div class="rowactions">
-          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${rapidoFormId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar producto" title="Editar producto">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este producto" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <tr class="expandrow" id="${expandId}"><td colspan="7"><div class="variantgrid">${variantChips}</div></td></tr>
@@ -6042,12 +6056,12 @@ export async function renderPedidosPage(
       const acciones: string[] = [];
       if (row.status === "despachado") {
         acciones.push(
-          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--icon" aria-label="Marcar ${escapeHtml(row.public_order_number)} como entregado" title="Marcar entregado">${ICON_ENTREGADO}</button></form>`,
+          `<form method="POST" action="/admin/pedidos/${row.id}/entregado" data-confirm="¿Marcar ${escapeHtml(row.public_order_number)} como entregado?"><button type="submit" class="btn btn--ghost btn--icon act--go" aria-label="Marcar ${escapeHtml(row.public_order_number)} como entregado" title="Marcar entregado">${ICON_ENTREGADO}</button></form>`,
         );
       }
       if (row.status === "abierto" || row.status === "despachado") {
         acciones.push(
-          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--icon" aria-label="Cancelar ${escapeHtml(row.public_order_number)}" title="Cancelar pedido">${ICON_CANCELAR}</button></form>`,
+          `<form method="POST" action="/admin/pedidos/${row.id}/cancelar" data-confirm="¿Cancelar ${escapeHtml(row.public_order_number)}? El pedido deja de contar como venta y no se puede reabrir."><button type="submit" class="btn btn--ghost btn--icon act--redline" aria-label="Cancelar ${escapeHtml(row.public_order_number)}" title="Cancelar pedido">${ICON_CANCELAR}</button></form>`,
         );
       }
       const accionesCell = acciones.length > 0 ? acciones.join("") : `<p class="hint">—</p>`;
@@ -6202,9 +6216,9 @@ export async function renderAliadosPage(
         <td><a class="countbadge" href="/admin/productos?allyId=${ally.id}"><strong>${productCount}</strong> ${productCount === 1 ? "producto" : "productos"}</a></td>
         <td>${statusToggleHtml(`/admin/aliados/${ally.id}`, ally.active, `el aliado "${ally.name}"`, "Activo", "Inactivo")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar aliado" title="Editar aliado">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este aliado" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       <dialog id="${editarDialogId}" class="modal">
@@ -6461,9 +6475,9 @@ export async function renderCategoriasPage(
         <td>${complementTags || '<span class="hint">—</span>'}</td>
         <td>${statusToggleHtml(`/admin/categorias/${category.id}`, category.active, `la categoría "${category.name}"`, "Activa", "Inactiva")}</td>
         <td><div class="rowactions">
-          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
-          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
-          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
+          <button type="submit" form="${formId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar cambios" title="Guardar cambios">${ICON_SAVE}</button>
+          <button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar categoría" title="Editar categoría">${ICON_EDIT}</button>
+          <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para esta categoría" title="Crear promoción">${ICON_PERCENT}</button>
         </div></td>
       </tr>
       ${categoriaEditDialogHtml(category, categories, selectedComplements)}
@@ -6809,7 +6823,7 @@ export async function renderPromocionesPage(
         <td>${vigencia}</td>
         <td>${statusToggleHtml(`/admin/promociones/${promo.id}`, promo.active, `la promoción "${promo.label ?? promo.id}"`, "Activa", "Inactiva")}</td>
         <td><div class="rowactions">
-          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
+          ${editable ? `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar promoción" title="Editar promoción">${ICON_EDIT}</button>` : `<span class="hint">Gestión directa en BD</span>`}
         </div></td>
       </tr>
       ${editable ? promocionDialogHtml(editarDialogId, `/admin/promociones/${promo.id}`, `Editar ${promo.label ?? "promoción"}`, "Guardar cambios", promo, allies, categories, products) : ""}`;
@@ -7107,10 +7121,10 @@ export async function renderColaboradoresPage(
       // debe verse igual en las tres.
       const guardarPermisosBtn = isMasterRow
         ? ""
-        : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
+        : `<button type="submit" form="${permisosFormId}" class="btn btn--ghost btn--icon act--go" aria-label="Guardar notificaciones" title="Guardar notificaciones">${ICON_SAVE}</button>`;
 
       const editarDialogId = `editar-colaborador-${row.id}`;
-      const editarBtn = `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon" aria-label="Editar a ${escapeHtml(row.username)}" title="Editar datos">${ICON_EDIT}</button>`;
+      const editarBtn = `<button type="button" data-open-dialog="${editarDialogId}" class="btn btn--ghost btn--icon act--ignition" aria-label="Editar a ${escapeHtml(row.username)}" title="Editar datos">${ICON_EDIT}</button>`;
 
       // El switch reemplaza al par "chip de estado + botón Desactivar", que
       // decía lo mismo dos veces en dos columnas. Es el mismo control que
