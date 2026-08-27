@@ -107,6 +107,7 @@ const adminEmails = [
   "para-desactivar@formotos-test.com",
   "con-permisos@formotos-test.com",
   "colab-conexiones@formotos.test",
+  "colab-plantillas@formotos.test",
   "telefono.visible@formotos-test.com",
   "editada@formotos-test.com",
   "cambia.rol@formotos-test.com",
@@ -1857,24 +1858,21 @@ describe("panel admin", () => {
     });
 
     it("un admin que no es master no puede entrar a Plantillas", async () => {
+      // Sesión creada directo contra admin_sessions (mismo criterio que
+      // loginComoRecupera), no vía POST /login: ese endpoint tiene su
+      // propio techo de 10/min (ver server.ts) y este archivo hace bastantes
+      // logins reales a lo largo de la suite — lo que a este test le importa
+      // es la restricción por rol, no cómo se abrió la sesión.
       const passwordHash = await hashPassword("Colab-Plantillas-1");
-      await createAdmin(
+      const colabId = await createAdmin(
         "colab plantillas",
         "colab-plantillas@formotos.test",
         passwordHash,
         "colaborador",
         null,
       );
-      const loginResponse = await app.inject({
-        method: "POST",
-        url: "/login",
-        payload: new URLSearchParams({
-          identifier: "colab-plantillas@formotos.test",
-          password: "Colab-Plantillas-1",
-        }).toString(),
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-      });
-      const colabCookie = cookieValueFrom(loginResponse.headers["set-cookie"]);
+      const token = await createAdminSession(colabId);
+      const colabCookie = `agent_sale_admin_session=${token}`;
 
       const response = await app.inject({
         method: "GET",
