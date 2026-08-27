@@ -1,5 +1,5 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // El adapter de salida se controla desde el test: "Probar y guardar" llama a
 // verifyCredentials, y sin este mock el test haría una llamada HTTP real a
@@ -29,6 +29,10 @@ import {
   invalidateConnectionsCache,
   saveConnection,
 } from "../../../src/shared/db/connectionsDirectory.js";
+import {
+  createTemplateRecord,
+  deleteTemplateRecord,
+} from "../../../src/shared/db/whatsappTemplatesDirectory.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
@@ -1801,6 +1805,206 @@ describe("panel admin", () => {
       });
       expect(resumen.statusCode).toBe(200);
       expect(resumen.body).not.toContain('href="/admin/conexiones"');
+    });
+  });
+
+  describe("plantillas", () => {
+    // Plantillas no pasa por outboundAdapterFor/registry.js (mockeado arriba
+    // para todo el archivo) — usa src/gateway/channels/meta/templates.ts,
+    // que llama a `fetch` directo (mismo criterio de test que
+    // tests/unit/gateway/channels/meta/outbound.test.ts). Por eso este mock
+    // de fetch queda scoped a este describe, no al archivo entero.
+    let conexionMetaId: string;
+    let masterAdminId: string;
+    const fetchMock = vi.fn();
+
+    beforeAll(async () => {
+      conexionMetaId = await saveConnection({
+        channel: "whatsapp",
+        provider: "meta",
+        label: "WhatsApp Panel Test · Meta",
+        externalId: "555666777888999",
+        displayAddress: "+57 300 000 0000",
+        credentials: {
+          phoneNumberId: "555666777888999",
+          wabaId: "waba-test-1",
+          accessToken: "token-meta-test",
+          appSecret: "secreto-meta-test",
+          verifyToken: "verify-meta-test",
+        },
+      });
+      const master = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE username = $1`,
+        [ADMIN_USERNAME],
+      );
+      masterAdminId = master.rows[0]!.id;
+    });
+
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    afterAll(async () => {
+      // ON DELETE CASCADE en whatsapp_templates.connection_id se lleva
+      // cualquier fila que haya quedado de un test fallido a mitad de camino.
+      await adminPool.query(`DELETE FROM channel_connections WHERE id = $1`, [conexionMetaId]);
+      invalidateConnectionsCache();
+    });
+
+    it("un admin que no es master no puede entrar a Plantillas", async () => {
+      const passwordHash = await hashPassword("Colab-Plantillas-1");
+      await createAdmin(
+        "colab plantillas",
+        "colab-plantillas@formotos.test",
+        passwordHash,
+        "colaborador",
+        null,
+      );
+      const loginResponse = await app.inject({
+        method: "POST",
+        url: "/login",
+        payload: new URLSearchParams({
+          identifier: "colab-plantillas@formotos.test",
+          password: "Colab-Plantillas-1",
+        }).toString(),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      const colabCookie = cookieValueFrom(loginResponse.headers["set-cookie"]);
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/plantillas",
+        headers: { cookie: colabCookie },
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("crea una plantilla y la manda a revisión de Meta en el mismo request", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "tpl-meta-123", status: "PENDING" }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "pedido_confirmado",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}.",
+          bodyExamples: "Juan, 1042, $150.000, Domicilio",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{ status: string; external_template_id: string }>(
+        `SELECT status, external_template_id FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado'`,
+        [conexionMetaId],
+      );
+      expect(fila.rows[0]).toMatchObject({ status: "pending", external_template_id: "tpl-meta-123" });
+
+      await adminPool.query(
+        `DELETE FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado'`,
+        [conexionMetaId],
+      );
+    });
+
+    it("rechaza el alta si el cuerpo tiene variables sin ejemplos, sin llamar a Meta", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "sin_ejemplos",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola {{1}}, tu pedido está listo.",
+        }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("envía hello_world sin pasar por la tabla de plantillas locales", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ messages: [{ id: "wamid.HELLO" }] }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas/prueba",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          templateId: "",
+          to: "+573001234567",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain("/555666777888999/messages");
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body.template).toMatchObject({ name: "hello_world", language: { code: "en_US" } });
+      expect(body.template.components).toBeUndefined();
+    });
+
+    it("no envía una plantilla que todavía no está aprobada por Meta", async () => {
+      const templateId = await createTemplateRecord({
+        connectionId: conexionMetaId,
+        name: "pendiente_de_prueba",
+        category: "UTILITY",
+        language: "es",
+        components: [{ type: "BODY", text: "Hola, sin variables." }],
+        createdByAdminId: masterAdminId,
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas/prueba",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          templateId,
+          to: "+573001234567",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await deleteTemplateRecord(templateId);
+    });
+
+    it("el listado nunca imprime el access token ni el app secret en claro", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("hello_world");
+      expect(response.body).not.toContain("token-meta-test");
+      expect(response.body).not.toContain("secreto-meta-test");
     });
   });
 

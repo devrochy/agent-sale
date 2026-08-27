@@ -40,6 +40,25 @@ import {
   type ConnectionSummary,
   type Provider,
 } from "../shared/db/connectionsDirectory.js";
+import {
+  listTemplates,
+  getTemplate,
+  createTemplateRecord,
+  markTemplateSubmitted,
+  updateTemplateStatus,
+  deleteTemplateRecord,
+  type TemplateCategory,
+  type TemplateStatus,
+  type TemplateComponent,
+} from "../shared/db/whatsappTemplatesDirectory.js";
+import {
+  createTemplate,
+  fetchTemplateStatus,
+  deleteTemplateOnMeta,
+  sendTemplateMessage,
+  type TemplateSendParam,
+} from "../gateway/channels/meta/templates.js";
+import { canonicalToMetaRecipient } from "../gateway/channels/meta/addresses.js";
 import { appendMessage } from "../orchestrator/memory.js";
 import { sendSurveyOnClose } from "../orchestrator/satisfactionSurvey.js";
 import { logger } from "../shared/observability/logger.js";
@@ -409,6 +428,10 @@ const ICON_FLUJO =
 const ICON_CONEXIONES =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.3 2v3.2M10.7 2v3.2M3.8 5.2h8.4v2.7a4.2 4.2 0 0 1-8.4 0V5.2Z"/><path d="M8 12v2.4"/></svg>';
 
+/** Sección Plantillas (mensajes de Meta pre-aprobados) — burbuja de mensaje con una insignia de aprobación, para distinguirla de Conversaciones (burbuja sola). */
+const ICON_PLANTILLAS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3.6h9.6v6.7H6l-2.6 2.2v-2.2H2V3.6Z"/><path d="M4.6 6h4.4M4.6 8h2.8"/><circle cx="12.6" cy="11.4" r="2.6"/><path d="M11.4 11.4l.9.9 1.6-1.8"/></svg>';
+
 const ICON_CONFIGURACION =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.1"/><path d="M8 2.4v1.5M8 12.1v1.5M13.6 8h-1.5M3.9 8H2.4M11.9 4.1l-1.05 1.05M5.15 10.85 4.1 11.9M11.9 11.9l-1.05-1.05M5.15 5.15 4.1 4.1"/></svg>';
 const ICON_COLABORADORES =
@@ -464,6 +487,7 @@ type ActiveSection =
   | "analitica"
   | "flujo"
   | "conexiones"
+  | "plantillas"
   | "configuracion"
   | "productos"
   | "pedidos"
@@ -640,6 +664,7 @@ async function navRail(
               ? item(`/admin/conexiones`, "Conexiones", "conexiones", ICON_CONEXIONES)
               : ""
           }
+          ${isMaster ? item(`/admin/plantillas`, "Plantillas", "plantillas", ICON_PLANTILLAS) : ""}
           ${item(`/admin/configuracion`, "Configuración", "configuracion", ICON_CONFIGURACION)}
         </ul>
       </div>
@@ -5463,6 +5488,11 @@ function credentialFieldsHtml(connection: ConnectionSummary): string {
             ? `<div class="field">
           <label for="pnid-${id}">Phone Number ID</label>
           <input type="text" id="pnid-${id}" name="phoneNumberId" placeholder="123456789012345" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="waba-${id}">WhatsApp Business Account ID</label>
+          <input type="text" id="waba-${id}" name="wabaId" placeholder="987654321098765" autocomplete="off">
+          <p class="hint">Necesario para gestionar plantillas de mensajes (sección Plantillas). Lo encontrás en el administrador de WhatsApp Business, dentro de tu app de Meta.</p>
         </div>`
             : ""
         }
@@ -5581,6 +5611,11 @@ function nuevaConexionMetaHtml(): string {
             <div class="field">
               <label for="nueva-pnid">Phone Number ID</label>
               <input type="text" id="nueva-pnid" name="phoneNumberId" placeholder="123456789012345" autocomplete="off" required>
+            </div>
+            <div class="field">
+              <label for="nueva-waba">WhatsApp Business Account ID</label>
+              <input type="text" id="nueva-waba" name="wabaId" placeholder="987654321098765" autocomplete="off">
+              <p class="hint">Opcional acá — hace falta más adelante para gestionar plantillas de mensajes (sección Plantillas). Se puede cargar después desde esta misma pantalla.</p>
             </div>
             <div class="field">
               <label for="nueva-appsecret">App Secret</label>
@@ -5744,7 +5779,7 @@ export async function renderConexionesPage(
 function credentialFieldsFor(channel: Channel, provider: Provider): string[] {
   if (provider === "meta") {
     return channel === "whatsapp"
-      ? ["phoneNumberId", "appSecret", "accessToken", "verifyToken"]
+      ? ["phoneNumberId", "wabaId", "appSecret", "accessToken", "verifyToken"]
       : ["appSecret", "accessToken", "verifyToken"];
   }
   return ["accountSid", "authToken"];
@@ -7690,6 +7725,487 @@ export async function desactivarPromocion(promotionId: string): Promise<void> {
 }
 
 /**
+ * Plantillas de mensajes de Meta (WhatsApp Business), ver
+ * migrations/0057_whatsapp_templates.cjs y
+ * docs/fase-3-whatsapp-gateway/plantillas-mensajes.md. Solo master (server.ts
+ * restringe `/admin/plantillas` igual que Conexiones): toca la cuenta de
+ * negocio de Meta y crear una plantilla de categoría marketing tiene costo.
+ *
+ * `hello_world` — la plantilla de ejemplo que trae cualquier WABA, ya
+ * aprobada y sin variables — no tiene fila en `whatsapp_templates`: se
+ * ofrece como fila sintética para poder probar el envío sin esperar
+ * aprobación de una plantilla propia.
+ */
+
+/** Cuenta las variables `{{n}}` de un texto de cuerpo — mismo número que hacen falta como ejemplos al crear y como valores al enviar una prueba. */
+function countTemplateVariables(bodyText: string): number {
+  const matches = new Set(Array.from(bodyText.matchAll(/\{\{(\d+)\}\}/g)).map((m) => m[1]));
+  return matches.size;
+}
+
+/** Igual que countTemplateVariables, pero a partir de los `components` ya guardados (plantillas existentes, no del formulario de alta). */
+function countBodyVariables(components: TemplateComponent[]): number {
+  const bodyComponent = components.find((c) => c.type === "BODY") as { text?: string } | undefined;
+  return bodyComponent?.text ? countTemplateVariables(bodyComponent.text) : 0;
+}
+
+function mapMetaTemplateStatus(status: string): TemplateStatus {
+  switch (status.toUpperCase()) {
+    case "APPROVED":
+      return "approved";
+    case "REJECTED":
+      return "rejected";
+    case "PAUSED":
+      return "paused";
+    case "DISABLED":
+      return "disabled";
+    case "IN_REVIEW":
+      return "in_review";
+    default:
+      return "pending";
+  }
+}
+
+function templateStatusBadgeHtml(status: TemplateStatus): string {
+  const MAP: Record<TemplateStatus, { label: string; clase: string }> = {
+    pending: { label: "Pendiente", clase: "chip--amber" },
+    in_review: { label: "En revisión", clase: "chip--amber" },
+    approved: { label: "Aprobada", clase: "chip--go" },
+    rejected: { label: "Rechazada", clase: "chip--redline" },
+    paused: { label: "Pausada", clase: "chip--muted" },
+    disabled: { label: "Deshabilitada", clase: "chip--muted" },
+  };
+  const { label, clase } = MAP[status];
+  return `<span class="chip ${clase}">${label}</span>`;
+}
+
+interface ParsedTemplateInput {
+  connectionId: string;
+  name: string;
+  category: TemplateCategory;
+  language: string;
+  components: TemplateComponent[];
+}
+
+function parseTemplateInput(input: {
+  connectionId?: string;
+  name?: string;
+  category?: string;
+  language?: string;
+  headerText?: string;
+  body?: string;
+  bodyExamples?: string;
+  footerText?: string;
+}): { ok: true; value: ParsedTemplateInput } | { ok: false; error: string } {
+  const connectionId = (input.connectionId ?? "").trim();
+  if (!connectionId) {
+    return { ok: false, error: "Falta elegir la conexión de WhatsApp/Meta." };
+  }
+  const name = (input.name ?? "").trim().toLowerCase();
+  if (!/^[a-z0-9_]+$/.test(name)) {
+    return { ok: false, error: "El nombre solo puede tener minúsculas, números y guion bajo." };
+  }
+  const category = input.category;
+  if (category !== "UTILITY" && category !== "MARKETING" && category !== "AUTHENTICATION") {
+    return { ok: false, error: "Categoría inválida." };
+  }
+  const language = (input.language ?? "").trim();
+  if (!language) {
+    return { ok: false, error: "Falta el idioma (ej. es)." };
+  }
+  const body = (input.body ?? "").trim();
+  if (!body) {
+    return { ok: false, error: "El cuerpo del mensaje es obligatorio." };
+  }
+  const variableCount = countTemplateVariables(body);
+  const examples = (input.bodyExamples ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (variableCount > 0 && examples.length !== variableCount) {
+    return {
+      ok: false,
+      error: `El cuerpo usa ${variableCount} variable(s) — hacen falta ${variableCount} ejemplo(s) separados por coma.`,
+    };
+  }
+
+  const components: TemplateComponent[] = [];
+  const headerText = (input.headerText ?? "").trim();
+  if (headerText) {
+    components.push({ type: "HEADER", format: "TEXT", text: headerText });
+  }
+  const bodyComponent: TemplateComponent = { type: "BODY", text: body };
+  if (variableCount > 0) {
+    bodyComponent.example = { body_text: [examples] };
+  }
+  components.push(bodyComponent);
+  const footerText = (input.footerText ?? "").trim();
+  if (footerText) {
+    components.push({ type: "FOOTER", text: footerText });
+  }
+
+  return { ok: true, value: { connectionId, name, category, language, components } };
+}
+
+/** Un único `<select>`/hidden reusado en los dos formularios que necesitan elegir conexión (alta de plantilla, prueba de hello_world). Con una sola conexión Meta/WhatsApp activa —el caso normal— no hace falta elegir nada. */
+function connectionFieldHtml(fieldId: string, connections: ConnectionSummary[]): string {
+  if (connections.length === 1) {
+    return `<input type="hidden" name="connectionId" value="${escapeHtml(connections[0]!.id)}">`;
+  }
+  const options = connections
+    .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.label)}</option>`)
+    .join("");
+  return `<div class="field">
+    <label for="${fieldId}">Conexión</label>
+    <select id="${fieldId}" name="connectionId" required>${options}</select>
+  </div>`;
+}
+
+function nuevaPlantillaDialogHtml(connections: ConnectionSummary[]): string {
+  return `<dialog id="nueva-plantilla-dialog" class="modal">
+    <div class="blockhead"><h2>Nueva plantilla</h2></div>
+    <form method="POST" action="/admin/plantillas">
+      ${connectionFieldHtml("nueva-plantilla-conexion", connections)}
+      <div class="field">
+        <label for="nueva-plantilla-nombre">Nombre</label>
+        <input type="text" id="nueva-plantilla-nombre" name="name" required pattern="[a-z0-9_]+" placeholder="pedido_confirmado">
+        <p class="hint">Solo minúsculas, números y guion bajo — Meta lo usa como identificador único.</p>
+      </div>
+      <div class="fieldgrid">
+        <div class="field">
+          <label for="nueva-plantilla-categoria">Categoría</label>
+          <select id="nueva-plantilla-categoria" name="category" required>
+            <option value="UTILITY">Utility</option>
+            <option value="MARKETING">Marketing</option>
+            <option value="AUTHENTICATION">Authentication</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="nueva-plantilla-idioma">Idioma</label>
+          <input type="text" id="nueva-plantilla-idioma" name="language" required value="es" placeholder="es">
+        </div>
+      </div>
+      <div class="field">
+        <label for="nueva-plantilla-header">Encabezado (opcional)</label>
+        <input type="text" id="nueva-plantilla-header" name="headerText" placeholder="Ej. ForMotos">
+      </div>
+      <div class="field">
+        <label for="nueva-plantilla-body">Cuerpo del mensaje</label>
+        <textarea id="nueva-plantilla-body" name="body" rows="4" required placeholder="Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}."></textarea>
+        <p class="hint">Usá {{1}}, {{2}}, {{3}}… para las variables, en orden.</p>
+      </div>
+      <div class="field">
+        <label for="nueva-plantilla-examples">Ejemplos de las variables</label>
+        <input type="text" id="nueva-plantilla-examples" name="bodyExamples" placeholder="Juan, 1042, $150.000, Domicilio">
+        <p class="hint">Uno por variable, separados por coma, en el mismo orden — Meta los exige para revisar la plantilla. Dejalo vacío si el cuerpo no tiene variables.</p>
+      </div>
+      <div class="field">
+        <label for="nueva-plantilla-footer">Pie (opcional)</label>
+        <input type="text" id="nueva-plantilla-footer" name="footerText" placeholder="Ej. Este mensaje es automático">
+      </div>
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Crear y enviar a revisión</button>
+        <button type="button" data-close-dialog="nueva-plantilla-dialog" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+/** Un diálogo por fila (mismo criterio que editar-promocion-${id}): así cada uno ya sabe cuántas variables pide su plantilla sin JS de cliente nuevo. */
+function probarPlantillaDialogHtml(
+  dialogId: string,
+  connections: ConnectionSummary[],
+  templateId: string,
+  templateLabel: string,
+  variableCount: number,
+): string {
+  const variablesField =
+    variableCount > 0
+      ? `<div class="field">
+        <label for="${dialogId}-variables">Valores de las variables (una por línea, en orden — ${variableCount} en total)</label>
+        <textarea id="${dialogId}-variables" name="variablesRaw" rows="${Math.min(variableCount, 6)}" required placeholder="${Array.from({ length: variableCount }, (_, i) => `Valor para {{${i + 1}}}`).join("\n")}"></textarea>
+      </div>`
+      : "";
+  return `<dialog id="${dialogId}" class="modal">
+    <div class="blockhead"><h2>Enviar prueba · ${escapeHtml(templateLabel)}</h2></div>
+    <form method="POST" action="/admin/plantillas/prueba">
+      <input type="hidden" name="templateId" value="${escapeHtml(templateId)}">
+      ${connectionFieldHtml(`${dialogId}-conexion`, connections)}
+      <div class="field">
+        <label for="${dialogId}-to">Número destino (E.164)</label>
+        <input type="tel" id="${dialogId}-to" name="to" required placeholder="+573001234567">
+      </div>
+      ${variablesField}
+      <div class="formfoot">
+        <button type="submit" class="btn btn--primary">Enviar prueba</button>
+        <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+export async function renderPlantillasPage(
+  admin: AdminRecord,
+  query: { error?: string; guardado?: string },
+): Promise<string | null> {
+  const tenant = await getSettings();
+  if (!tenant) {
+    return null;
+  }
+
+  const connections = (await listConnections()).filter(
+    (c) => c.provider === "meta" && c.channel === "whatsapp" && c.active,
+  );
+  const templates = await listTemplates();
+  const connectionLabel = new Map(connections.map((c) => [c.id, c.label]));
+
+  const banner = queryToastsHtml(query);
+
+  const helloWorldDialogId = "probar-hello-world-dialog";
+  const helloWorldRow =
+    connections.length > 0
+      ? `<tr>
+        <td class="mono">hello_world</td>
+        <td>Utility</td>
+        <td>en_US</td>
+        <td class="hint">Predeterminada de Meta</td>
+        <td>${templateStatusBadgeHtml("approved")}</td>
+        <td><div class="rowactions">
+          <button type="button" data-open-dialog="${helloWorldDialogId}" class="btn btn--ghost btn--sm">Enviar prueba</button>
+        </div></td>
+      </tr>
+      ${probarPlantillaDialogHtml(helloWorldDialogId, connections, "", "hello_world", 0)}`
+      : "";
+
+  const rows = templates
+    .map((t) => {
+      const sincronizarForm = `<form method="POST" action="/admin/plantillas/${t.id}/sincronizar" style="display:inline">
+        <button type="submit" class="btn btn--ghost btn--sm">Sincronizar</button>
+      </form>`;
+      const eliminarForm = `<form method="POST" action="/admin/plantillas/${t.id}/eliminar" style="display:inline" data-confirm="¿Eliminar la plantilla ${escapeHtml(t.name)}? Esto también la borra de Meta.">
+        <button type="submit" class="btn btn--ghost btn--sm act--redline">Eliminar</button>
+      </form>`;
+      const probarDialogId = `probar-plantilla-${t.id}`;
+      const probarBoton =
+        t.status === "approved"
+          ? `<button type="button" data-open-dialog="${probarDialogId}" class="btn btn--ghost btn--sm">Enviar prueba</button>
+           ${probarPlantillaDialogHtml(probarDialogId, connections, t.id, t.name, countBodyVariables(t.components))}`
+          : "";
+      return `<tr data-search="${escapeHtml(t.name)}">
+        <td class="mono">${escapeHtml(t.name)}</td>
+        <td>${escapeHtml(t.category)}</td>
+        <td>${escapeHtml(t.language)}</td>
+        <td>${escapeHtml(connectionLabel.get(t.connectionId) ?? "—")}</td>
+        <td>${templateStatusBadgeHtml(t.status)}${t.rejectionReason ? `<p class="hint">${escapeHtml(t.rejectionReason)}</p>` : ""}</td>
+        <td><div class="rowactions">${probarBoton}${sincronizarForm}${eliminarForm}</div></td>
+      </tr>`;
+    })
+    .join("\n");
+
+  const sinConexion =
+    connections.length === 0
+      ? `<div class="banner banner--warn">Conectá WhatsApp por Meta desde <a href="/admin/conexiones">Conexiones</a> antes de gestionar plantillas.</div>`
+      : "";
+
+  const body = `
+    <div class="pagehead">
+      <p class="eyebrow">Agente</p>
+      <h1>Plantillas</h1>
+      <p>Plantillas de WhatsApp Business aprobadas por Meta, para mensajes fuera de la ventana de 24h.</p>
+    </div>
+    ${banner}
+    ${sinConexion}
+    <div class="panel tablewrap" data-table data-page-size="20">
+      <div class="tabletools">
+        <input type="search" class="searchbox" data-table-search placeholder="Buscar por nombre…" aria-label="Buscar plantillas">
+        <div class="tabletools__actions">
+          ${connections.length > 0 ? `<button type="button" data-open-dialog="nueva-plantilla-dialog" class="btn btn--add" aria-label="Agregar plantilla"><span class="btn--add__plus">+</span> Nueva plantilla</button>` : ""}
+        </div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Nombre</th><th>Categoría</th><th>Idioma</th><th>Conexión</th><th>Estado</th><th class="th--end">Acciones</th>
+        </tr></thead>
+        <tbody>${helloWorldRow}${rows || (connections.length === 0 ? "" : `<tr><td colspan="6">${emptyState(ICON_PLANTILLAS, "Sin plantillas propias todavía", "Creá la primera con el botón de arriba, o probá hello_world mientras tanto.")}</td></tr>`)}</tbody>
+      </table>
+    </div>
+    ${connections.length > 0 ? nuevaPlantillaDialogHtml(connections) : ""}
+  `;
+
+  return layout("Plantillas", tenant, body, "plantillas", admin);
+}
+
+export async function crearPlantilla(
+  admin: AdminRecord,
+  input: Parameters<typeof parseTemplateInput>[0],
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const parsed = parseTemplateInput(input);
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const connection = await getConnection(parsed.value.connectionId);
+  if (!connection || connection.provider !== "meta" || connection.channel !== "whatsapp") {
+    return { ok: false, error: "La conexión elegida no existe o no es WhatsApp por Meta." };
+  }
+
+  let resultadoMeta;
+  try {
+    resultadoMeta = await createTemplate(connection.credentials, {
+      name: parsed.value.name,
+      category: parsed.value.category,
+      language: parsed.value.language,
+      components: parsed.value.components,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Meta rechazó la plantilla por un error desconocido.",
+    };
+  }
+
+  const templateId = await createTemplateRecord({
+    connectionId: connection.id,
+    name: parsed.value.name,
+    category: parsed.value.category,
+    language: parsed.value.language,
+    components: parsed.value.components,
+    createdByAdminId: admin.id,
+  });
+  await markTemplateSubmitted(
+    templateId,
+    resultadoMeta.externalTemplateId,
+    mapMetaTemplateStatus(resultadoMeta.status),
+  );
+  return { ok: true };
+}
+
+export async function eliminarPlantilla(templateId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const record = await getTemplate(templateId);
+  if (!record) {
+    return { ok: false, error: "La plantilla no existe." };
+  }
+  const connection = await getConnection(record.connectionId);
+  if (!connection) {
+    return { ok: false, error: "La conexión de esta plantilla ya no existe." };
+  }
+  try {
+    await deleteTemplateOnMeta(connection.credentials, record.name);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Meta rechazó la eliminación por un error desconocido.",
+    };
+  }
+  await deleteTemplateRecord(templateId);
+  return { ok: true };
+}
+
+export async function sincronizarPlantilla(templateId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const record = await getTemplate(templateId);
+  if (!record) {
+    return { ok: false, error: "La plantilla no existe." };
+  }
+  if (!record.externalTemplateId) {
+    return { ok: false, error: "Esta plantilla no tiene id de Meta todavía." };
+  }
+  const connection = await getConnection(record.connectionId);
+  if (!connection) {
+    return { ok: false, error: "La conexión de esta plantilla ya no existe." };
+  }
+  let estado;
+  try {
+    estado = await fetchTemplateStatus(connection.credentials, record.externalTemplateId);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Meta rechazó la consulta de estado.",
+    };
+  }
+  await updateTemplateStatus(templateId, mapMetaTemplateStatus(estado.status), estado.rejectionReason);
+  return { ok: true };
+}
+
+export async function enviarPruebaPlantilla(input: {
+  connectionId?: string;
+  templateId?: string;
+  to?: string;
+  variablesRaw?: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const to = (input.to ?? "").trim();
+  if (!to) {
+    return { ok: false, error: "Falta el número destino." };
+  }
+  const destinatario = canonicalToMetaRecipient(to);
+  const templateId = (input.templateId ?? "").trim();
+
+  if (!templateId) {
+    // hello_world: la plantilla de ejemplo de Meta, ya aprobada, sin variables.
+    const connection = await getConnection((input.connectionId ?? "").trim());
+    if (!connection || connection.provider !== "meta" || connection.channel !== "whatsapp") {
+      return { ok: false, error: "La conexión elegida no existe o no es WhatsApp por Meta." };
+    }
+    try {
+      await sendTemplateMessage(
+        connection.credentials,
+        connection.externalId,
+        destinatario,
+        "hello_world",
+        "en_US",
+        [],
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Meta rechazó el envío de la plantilla.",
+      };
+    }
+    return { ok: true };
+  }
+
+  const record = await getTemplate(templateId);
+  if (!record) {
+    return { ok: false, error: "La plantilla no existe." };
+  }
+  if (record.status !== "approved") {
+    return { ok: false, error: "Esta plantilla todavía no está aprobada por Meta." };
+  }
+  const connection = await getConnection(record.connectionId);
+  if (!connection) {
+    return { ok: false, error: "La conexión de esta plantilla ya no existe." };
+  }
+
+  const variableCount = countBodyVariables(record.components);
+  const valores = (input.variablesRaw ?? "")
+    .split("\n")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (valores.length !== variableCount) {
+    return {
+      ok: false,
+      error: `Esta plantilla necesita ${variableCount} variable(s) — se recibieron ${valores.length}.`,
+    };
+  }
+  const bodyParams: TemplateSendParam[] = valores.map((text) => ({ type: "text", text }));
+
+  try {
+    await sendTemplateMessage(
+      connection.credentials,
+      connection.externalId,
+      destinatario,
+      record.name,
+      record.language,
+      bodyParams,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Meta rechazó el envío de la plantilla.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Colaboradores (Fase 13, ver ADR-025) — solo visible/accionable para un
  * admin `role='master'`; el hook de auth de server.ts no filtra esto (solo
  * exige sesión válida), así que el propio route handler de
@@ -9125,6 +9641,10 @@ export async function crearConexionMeta(
   for (const campo of credentialFieldsFor(channel, "meta")) {
     const valor = input[campo]?.trim();
     if (!valor) {
+      // wabaId es opcional en el alta: no hace falta para enviar texto
+      // libre, solo para gestionar plantillas — se puede cargar después
+      // desde esta misma pantalla, sin volver a "Probar y conectar".
+      if (campo === "wabaId") continue;
       return { ok: false, error: `Falta ${campo}.` };
     }
     credentials[campo] = valor;
