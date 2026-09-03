@@ -27,6 +27,22 @@ export interface MetaMessage {
   timestamp?: string;
   type?: string;
   text?: { body?: string };
+  /**
+   * Presente cuando `type === "interactive"` — el tap de un botón de un
+   * mensaje interactivo suelto (no de plantilla). No es el caso que usa
+   * cerrar_pedido.ts, pero se deja tipado por si se usan interactivos en
+   * el futuro.
+   */
+  interactive?: { type?: string; button_reply?: { id?: string; title?: string } };
+  /**
+   * Presente cuando `type === "button"` — el tap de un botón QUICK_REPLY
+   * de una PLANTILLA (ver templates.ts, componente BUTTONS). Meta usa esta
+   * forma, distinta de `interactive`, específicamente para respuestas a
+   * plantillas — confirmado contra el payload real que mandó Meta al
+   * tocar un botón de "pedido_confirmado" (cerrarPedido.ts). El botón de
+   * tipo URL no genera ningún mensaje de vuelta: abre el link directo.
+   */
+  button?: { payload?: string; text?: string };
 }
 
 export interface MetaStatusError {

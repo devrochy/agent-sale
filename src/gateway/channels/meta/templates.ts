@@ -112,10 +112,14 @@ interface SendTemplateResponse {
 }
 
 /**
- * POST {phone_number_id}/messages con type "template". Sin variables
- * (`bodyParams` vacío, el caso de `hello_world`) no se manda `components` en
- * absoluto — mandar `components: []` es una forma distinta y Meta la puede
- * rechazar según la plantilla.
+ * POST {phone_number_id}/messages con type "template". `components` recibe
+ * los parámetros ya armados por el caller — un objeto `{type:"body",
+ * parameters:[...]}` si hay variables en el cuerpo, y/o un
+ * `{type:"button", sub_type:"url", index, parameters:[...]}` por cada botón
+ * URL con variable dinámica (ver ADR de botones en adminPanel.ts). Sin
+ * variables (`components` vacío, el caso de `hello_world`) no se manda
+ * `components` en absoluto — mandar `components: []` es una forma distinta y
+ * Meta la puede rechazar según la plantilla.
  */
 export async function sendTemplateMessage(
   credentials: ConnectionCredentials,
@@ -123,7 +127,7 @@ export async function sendTemplateMessage(
   to: string,
   templateName: string,
   languageCode: string,
-  bodyParams: TemplateSendParam[],
+  components: Record<string, unknown>[],
 ): Promise<string> {
   const token = requireToken(credentials);
   const payload = {
@@ -133,7 +137,7 @@ export async function sendTemplateMessage(
     template: {
       name: templateName,
       language: { code: languageCode },
-      ...(bodyParams.length > 0 ? { components: [{ type: "body", parameters: bodyParams }] } : {}),
+      ...(components.length > 0 ? { components } : {}),
     },
   };
   const body = await graphRequest<SendTemplateResponse>(

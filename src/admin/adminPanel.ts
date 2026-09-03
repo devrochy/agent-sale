@@ -7749,6 +7749,21 @@ function countBodyVariables(components: TemplateComponent[]): number {
   return bodyComponent?.text ? countTemplateVariables(bodyComponent.text) : 0;
 }
 
+/**
+ * Meta rechaza (error_subcode 2388299) una plantilla cuya primera o última
+ * variable queda pegada al borde del cuerpo — un signo de puntuación solo
+ * ("...{{4}}.") no cuenta como texto real para esa regla. Se valida acá,
+ * antes de gastar un viaje a la Graph API, con el mismo criterio que Meta
+ * aplica del otro lado.
+ */
+function bodyStartsOrEndsWithVariable(body: string): boolean {
+  if (/^\{\{\d+\}\}/.test(body)) {
+    return true;
+  }
+  const despuesDeUltimaVariable = body.replace(/^[\s\S]*\}\}/, "");
+  return !/[\p{L}\p{N}]/u.test(despuesDeUltimaVariable);
+}
+
 function mapMetaTemplateStatus(status: string): TemplateStatus {
   switch (status.toUpperCase()) {
     case "APPROVED":
@@ -7787,6 +7802,75 @@ interface ParsedTemplateInput {
   components: TemplateComponent[];
 }
 
+/** Límite de Meta para el texto visible de cualquier botón (quick reply o call-to-action). */
+const BUTTON_TEXT_MAX_LENGTH = 25;
+
+/**
+ * Botones de plantilla (ver conversación de soporte sobre pedido_confirmado
+ * con 3 botones). Solo se ofrecen los dos tipos que cubren el caso de uso
+ * real: hasta 3 `QUICK_REPLY` (texto fijo que vuelve como mensaje normal —
+ * el agente LLM ya tiene tools para "cancelar pedido", etc., así que no
+ * hace falta routing explícito) y un botón `URL` con una variable dinámica
+ * al final (para el link de pago — hoy con un valor de ejemplo; el valor
+ * real llega cuando exista el envío proactivo de la Fase 21/ADR-031).
+ * PHONE_NUMBER/COPY_CODE quedan fuera por no tener caso de uso todavía.
+ *
+ * Orden fijo quick-replies-luego-URL: es la única combinación de Meta que
+ * no requiere que el admin entienda la regla de agrupación él mismo.
+ */
+function buildButtonsComponent(input: {
+  quickReply1?: string;
+  quickReply2?: string;
+  quickReply3?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  ctaUrlExample?: string;
+}): { ok: true; value: TemplateComponent | null } | { ok: false; error: string } {
+  const quickReplies = [input.quickReply1, input.quickReply2, input.quickReply3]
+    .map((v) => (v ?? "").trim())
+    .filter(Boolean);
+  for (const texto of quickReplies) {
+    if (texto.length > BUTTON_TEXT_MAX_LENGTH) {
+      return { ok: false, error: `El texto de un botón no puede pasar de ${BUTTON_TEXT_MAX_LENGTH} caracteres: "${texto}".` };
+    }
+  }
+
+  const ctaLabel = (input.ctaLabel ?? "").trim();
+  const ctaUrl = (input.ctaUrl ?? "").trim();
+  if (Boolean(ctaLabel) !== Boolean(ctaUrl)) {
+    return { ok: false, error: "El botón de enlace necesita texto y URL — o dejá los dos vacíos." };
+  }
+
+  const buttons: TemplateComponent[] = quickReplies.map((text) => ({ type: "QUICK_REPLY", text }));
+
+  if (ctaLabel && ctaUrl) {
+    if (ctaLabel.length > BUTTON_TEXT_MAX_LENGTH) {
+      return { ok: false, error: `El texto del botón de enlace no puede pasar de ${BUTTON_TEXT_MAX_LENGTH} caracteres.` };
+    }
+    if (!/^https:\/\//.test(ctaUrl)) {
+      return { ok: false, error: "El enlace del botón tiene que empezar con https:// (Meta lo exige)." };
+    }
+    const variablesEnUrl = ctaUrl.match(/\{\{\d+\}\}/g) ?? [];
+    if (variablesEnUrl.length > 1 || (variablesEnUrl.length === 1 && !ctaUrl.endsWith(variablesEnUrl[0]!))) {
+      return { ok: false, error: "El enlace admite una sola variable dinámica, y tiene que ir al final (ej. .../pago/{{1}})." };
+    }
+    const ctaUrlExample = (input.ctaUrlExample ?? "").trim();
+    if (variablesEnUrl.length === 1 && !ctaUrlExample) {
+      return { ok: false, error: "El enlace usa una variable dinámica — hace falta un valor de ejemplo para que Meta revise la plantilla." };
+    }
+    const boton: TemplateComponent = { type: "URL", text: ctaLabel, url: ctaUrl };
+    if (variablesEnUrl.length === 1) {
+      boton.example = [ctaUrlExample];
+    }
+    buttons.push(boton);
+  }
+
+  if (buttons.length === 0) {
+    return { ok: true, value: null };
+  }
+  return { ok: true, value: { type: "BUTTONS", buttons } };
+}
+
 function parseTemplateInput(input: {
   connectionId?: string;
   name?: string;
@@ -7796,6 +7880,12 @@ function parseTemplateInput(input: {
   body?: string;
   bodyExamples?: string;
   footerText?: string;
+  quickReply1?: string;
+  quickReply2?: string;
+  quickReply3?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  ctaUrlExample?: string;
 }): { ok: true; value: ParsedTemplateInput } | { ok: false; error: string } {
   const connectionId = (input.connectionId ?? "").trim();
   if (!connectionId) {
@@ -7828,6 +7918,13 @@ function parseTemplateInput(input: {
       error: `El cuerpo usa ${variableCount} variable(s) — hacen falta ${variableCount} ejemplo(s) separados por coma.`,
     };
   }
+  if (variableCount > 0 && bodyStartsOrEndsWithVariable(body)) {
+    return {
+      ok: false,
+      error:
+        "Meta no permite que una variable quede al principio o al final del cuerpo — agregá texto antes o después (un signo de puntuación solo no cuenta).",
+    };
+  }
 
   const components: TemplateComponent[] = [];
   const headerText = (input.headerText ?? "").trim();
@@ -7844,7 +7941,35 @@ function parseTemplateInput(input: {
     components.push({ type: "FOOTER", text: footerText });
   }
 
+  const botones = buildButtonsComponent(input);
+  if (!botones.ok) {
+    return botones;
+  }
+  if (botones.value) {
+    // BUTTONS va siempre al final del array — Meta lo exige después de
+    // HEADER/BODY/FOOTER, no importa el orden en que se llenó el formulario.
+    components.push(botones.value);
+  }
+
   return { ok: true, value: { connectionId, name, category, language, components } };
+}
+
+/**
+ * Si la plantilla tiene un botón URL con variable dinámica, devuelve su
+ * posición dentro de `buttons` (el `index` que exige la Graph API al
+ * mandar el valor real) y su texto — usado tanto para pedir el valor en
+ * "Enviar prueba" como para armar el parámetro del envío.
+ */
+function getUrlButtonInfo(components: TemplateComponent[]): { index: number; label: string } | null {
+  const buttonsComponent = components.find((c) => c.type === "BUTTONS") as
+    | { buttons?: Array<{ type?: string; text?: string; url?: string }> }
+    | undefined;
+  const buttons = buttonsComponent?.buttons ?? [];
+  const index = buttons.findIndex((b) => b.type === "URL" && b.url?.includes("{{"));
+  if (index === -1) {
+    return null;
+  }
+  return { index, label: buttons[index]!.text ?? "Enlace" };
 }
 
 /** Un único `<select>`/hidden reusado en los dos formularios que necesitan elegir conexión (alta de plantilla, prueba de hello_world). Con una sola conexión Meta/WhatsApp activa —el caso normal— no hace falta elegir nada. */
@@ -7892,7 +8017,7 @@ function nuevaPlantillaDialogHtml(connections: ConnectionSummary[]): string {
       <div class="field">
         <label for="nueva-plantilla-body">Cuerpo del mensaje</label>
         <textarea id="nueva-plantilla-body" name="body" rows="4" required placeholder="Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}."></textarea>
-        <p class="hint">Usá {{1}}, {{2}}, {{3}}… para las variables, en orden.</p>
+        <p class="hint">Usá {{1}}, {{2}}, {{3}}… para las variables, en orden. Meta no admite una variable pegada al principio o al final — dejá texto real antes y después (un punto solo no alcanza).</p>
       </div>
       <div class="field">
         <label for="nueva-plantilla-examples">Ejemplos de las variables</label>
@@ -7902,6 +8027,24 @@ function nuevaPlantillaDialogHtml(connections: ConnectionSummary[]): string {
       <div class="field">
         <label for="nueva-plantilla-footer">Pie (opcional)</label>
         <input type="text" id="nueva-plantilla-footer" name="footerText" placeholder="Ej. Este mensaje es automático">
+      </div>
+      <div class="field">
+        <label>Botones de respuesta rápida (opcional, hasta 3)</label>
+        <div class="fieldgrid">
+          <input type="text" name="quickReply1" maxlength="25" placeholder="Ej. Agregar productos al pedido">
+          <input type="text" name="quickReply2" maxlength="25" placeholder="Ej. Cancelar pedido">
+          <input type="text" name="quickReply3" maxlength="25" placeholder="(opcional)">
+        </div>
+        <p class="hint">Le devuelven al cliente ese texto exacto como si lo hubiera escrito — el asistente sigue la conversación con sus herramientas normales, no hace falta configurar nada más acá.</p>
+      </div>
+      <div class="field">
+        <label>Botón de enlace (opcional, uno solo)</label>
+        <div class="fieldgrid">
+          <input type="text" name="ctaLabel" maxlength="25" placeholder="Ej. Confirmar y pagar">
+          <input type="text" name="ctaUrl" placeholder="https://tudominio.com/pago/{{1}}">
+        </div>
+        <input type="text" name="ctaUrlExample" placeholder="Valor de ejemplo para {{1}}, ej. 1042">
+        <p class="hint">Si el enlace termina en {{1}}, Meta pide un valor de ejemplo para revisar la plantilla — el real se completa recién al enviar (hoy no hay envío automático de plantillas, así que por ahora se completa a mano en "Enviar prueba").</p>
       </div>
       <div class="formfoot">
         <button type="submit" class="btn btn--primary">Crear y enviar a revisión</button>
@@ -7918,6 +8061,7 @@ function probarPlantillaDialogHtml(
   templateId: string,
   templateLabel: string,
   variableCount: number,
+  urlButtonInfo: { index: number; label: string } | null,
 ): string {
   const variablesField =
     variableCount > 0
@@ -7926,6 +8070,12 @@ function probarPlantillaDialogHtml(
         <textarea id="${dialogId}-variables" name="variablesRaw" rows="${Math.min(variableCount, 6)}" required placeholder="${Array.from({ length: variableCount }, (_, i) => `Valor para {{${i + 1}}}`).join("\n")}"></textarea>
       </div>`
       : "";
+  const urlButtonField = urlButtonInfo
+    ? `<div class="field">
+        <label for="${dialogId}-urlbtn">Valor real para el enlace "${escapeHtml(urlButtonInfo.label)}"</label>
+        <input type="text" id="${dialogId}-urlbtn" name="urlButtonValue" required placeholder="Ej. 1042">
+      </div>`
+    : "";
   return `<dialog id="${dialogId}" class="modal">
     <div class="blockhead"><h2>Enviar prueba · ${escapeHtml(templateLabel)}</h2></div>
     <form method="POST" action="/admin/plantillas/prueba">
@@ -7936,6 +8086,7 @@ function probarPlantillaDialogHtml(
         <input type="tel" id="${dialogId}-to" name="to" required placeholder="+573001234567">
       </div>
       ${variablesField}
+      ${urlButtonField}
       <div class="formfoot">
         <button type="submit" class="btn btn--primary">Enviar prueba</button>
         <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
@@ -7974,7 +8125,7 @@ export async function renderPlantillasPage(
           <button type="button" data-open-dialog="${helloWorldDialogId}" class="btn btn--ghost btn--sm">Enviar prueba</button>
         </div></td>
       </tr>
-      ${probarPlantillaDialogHtml(helloWorldDialogId, connections, "", "hello_world", 0)}`
+      ${probarPlantillaDialogHtml(helloWorldDialogId, connections, "", "hello_world", 0, null)}`
       : "";
 
   const rows = templates
@@ -7989,7 +8140,7 @@ export async function renderPlantillasPage(
       const probarBoton =
         t.status === "approved"
           ? `<button type="button" data-open-dialog="${probarDialogId}" class="btn btn--ghost btn--sm">Enviar prueba</button>
-           ${probarPlantillaDialogHtml(probarDialogId, connections, t.id, t.name, countBodyVariables(t.components))}`
+           ${probarPlantillaDialogHtml(probarDialogId, connections, t.id, t.name, countBodyVariables(t.components), getUrlButtonInfo(t.components))}`
           : "";
       return `<tr data-search="${escapeHtml(t.name)}">
         <td class="mono">${escapeHtml(t.name)}</td>
@@ -8130,6 +8281,7 @@ export async function enviarPruebaPlantilla(input: {
   templateId?: string;
   to?: string;
   variablesRaw?: string;
+  urlButtonValue?: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const to = (input.to ?? "").trim();
   if (!to) {
@@ -8187,6 +8339,28 @@ export async function enviarPruebaPlantilla(input: {
   }
   const bodyParams: TemplateSendParam[] = valores.map((text) => ({ type: "text", text }));
 
+  const urlButtonInfo = getUrlButtonInfo(record.components);
+  const urlButtonValue = (input.urlButtonValue ?? "").trim();
+  if (urlButtonInfo && !urlButtonValue) {
+    return {
+      ok: false,
+      error: `Falta el valor real para el enlace "${urlButtonInfo.label}".`,
+    };
+  }
+
+  const sendComponents: Record<string, unknown>[] = [];
+  if (bodyParams.length > 0) {
+    sendComponents.push({ type: "body", parameters: bodyParams });
+  }
+  if (urlButtonInfo) {
+    sendComponents.push({
+      type: "button",
+      sub_type: "url",
+      index: String(urlButtonInfo.index),
+      parameters: [{ type: "text", text: urlButtonValue }],
+    });
+  }
+
   try {
     await sendTemplateMessage(
       connection.credentials,
@@ -8194,7 +8368,7 @@ export async function enviarPruebaPlantilla(input: {
       destinatario,
       record.name,
       record.language,
-      bodyParams,
+      sendComponents,
     );
   } catch (error) {
     return {

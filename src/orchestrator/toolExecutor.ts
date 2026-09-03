@@ -11,6 +11,8 @@ import {
   agregarItemPedido,
   type AgregarItemPedidoInput,
 } from "../domains/commerce/agregarItemPedido.js";
+import { cerrarPedido, type CerrarPedidoInput } from "../domains/commerce/cerrarPedido.js";
+import { cancelarPedido, type CancelarPedidoInput } from "../domains/commerce/cancelarPedido.js";
 import {
   consultarEstadoPedido,
   type ConsultarEstadoPedidoInput,
@@ -82,6 +84,12 @@ export async function executeTool(
           toolUse.input as AgregarItemPedidoInput,
           montoAltoThreshold,
         );
+        break;
+      case "cerrar_pedido":
+        output = await cerrarPedido(toolUse.input as CerrarPedidoInput);
+        break;
+      case "cancelar_pedido":
+        output = await cancelarPedido(toolUse.input as CancelarPedidoInput);
         break;
       case "consultar_estado_pedido":
         output = await consultarEstadoPedido(customerId, toolUse.input as ConsultarEstadoPedidoInput);

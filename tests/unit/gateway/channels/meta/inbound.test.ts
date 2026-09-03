@@ -239,6 +239,36 @@ describe("metaInboundAdapter.parseInbound", () => {
     expect(metaInboundAdapter.parseInbound(request(conImagen))).toEqual([]);
   });
 
+  it("normaliza el tap de un botón QUICK_REPLY de una plantilla (type: button) como si fuera texto", () => {
+    const tapDeBoton = mensajeEntrante({
+      messages: [
+        {
+          from: "573184935933",
+          id: "wamid.btn",
+          timestamp: "1786300000",
+          type: "button",
+          button: { text: "Cancelar pedido", payload: "Cancelar pedido" },
+        },
+      ],
+    });
+    expect(metaInboundAdapter.parseInbound(request(tapDeBoton))[0]?.body).toBe("Cancelar pedido");
+  });
+
+  it("ignora un botón de mensaje interactivo suelto (type: interactive) — Meta no usa esta forma para plantillas", () => {
+    const interactivo = mensajeEntrante({
+      messages: [
+        {
+          from: "573184935933",
+          id: "wamid.int",
+          timestamp: "1786300000",
+          type: "interactive",
+          interactive: { type: "button_reply", button_reply: { id: "x", title: "Cancelar pedido" } },
+        },
+      ],
+    });
+    expect(metaInboundAdapter.parseInbound(request(interactivo))).toEqual([]);
+  });
+
   it("deja customerName undefined si no hay contacto que matchee", () => {
     const sinContacto = mensajeEntrante({ contacts: [] });
     expect(metaInboundAdapter.parseInbound(request(sinContacto))[0]?.customerName).toBeUndefined();

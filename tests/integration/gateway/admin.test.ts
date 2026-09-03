@@ -1898,7 +1898,7 @@ describe("panel admin", () => {
           name: "pedido_confirmado",
           category: "UTILITY",
           language: "es",
-          body: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}.",
+          body: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}. Gracias por tu compra.",
           bodyExamples: "Juan, 1042, $150.000, Domicilio",
         }).toString(),
       });
@@ -1916,6 +1916,69 @@ describe("panel admin", () => {
         `DELETE FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado'`,
         [conexionMetaId],
       );
+    });
+
+    it("crea una plantilla con botones de respuesta rápida y un botón de enlace con variable", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "tpl-meta-botones", status: "PENDING" }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "pedido_confirmado_botones",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola, tu pedido fue confirmado. Gracias por tu compra.",
+          quickReply1: "Agregar productos",
+          quickReply2: "Cancelar pedido",
+          ctaLabel: "Confirmar y pagar",
+          ctaUrl: "https://formotos-test.com/pago/{{1}}",
+          ctaUrlExample: "1042",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      const body = JSON.parse((init as RequestInit).body as string);
+      const buttonsComponent = body.components.find((c: { type: string }) => c.type === "BUTTONS");
+      expect(buttonsComponent.buttons).toEqual([
+        { type: "QUICK_REPLY", text: "Agregar productos" },
+        { type: "QUICK_REPLY", text: "Cancelar pedido" },
+        { type: "URL", text: "Confirmar y pagar", url: "https://formotos-test.com/pago/{{1}}", example: ["1042"] },
+      ]);
+
+      await adminPool.query(
+        `DELETE FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado_botones'`,
+        [conexionMetaId],
+      );
+    });
+
+    it("rechaza un botón de enlace sin https, sin llamar a Meta", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "enlace_invalido",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola, tu pedido fue confirmado.",
+          ctaLabel: "Pagar",
+          ctaUrl: "http://formotos-test.com/pago",
+        }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it("rechaza el alta si el cuerpo tiene variables sin ejemplos, sin llamar a Meta", async () => {
