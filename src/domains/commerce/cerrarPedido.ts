@@ -1,6 +1,9 @@
-import { getConnection, withTransaction } from "../../shared/db/index.js";
-import { listTemplates } from "../../shared/db/whatsappTemplatesDirectory.js";
+import { withTransaction } from "../../shared/db/index.js";
 import { canonicalToMetaRecipient } from "../../gateway/channels/meta/addresses.js";
+import {
+  findUrlButtonIndex,
+  resolveApprovedTemplate,
+} from "../../gateway/channels/meta/resolveApprovedTemplate.js";
 import { sendTemplateMessage } from "../../gateway/channels/meta/templates.js";
 
 export interface CerrarPedidoInput {
@@ -17,6 +20,16 @@ export interface CerrarPedidoOutput {
   order_id: string;
   status: CerrarPedidoStatus;
   public_order_number?: string;
+  /**
+   * Estado del segundo mensaje (confirmación de domicilio, ver
+   * confirmarDomicilioPedido.ts) — independiente del de arriba: si
+   * "pedido_confirmado" se manda bien pero "confirmar_domicilio" todavía no
+   * está aprobada, el cierre del pedido no se considera fallido (el LLM ya
+   * cerró la venta; el aviso de domicilio es un segundo mensaje aparte).
+   * Ausente si el primer envío ya falló (no tiene sentido intentar el
+   * segundo sin conexión/plantilla resuelta).
+   */
+  domicilio_status?: "enviado" | "plantilla_no_aprobada";
 }
 
 const DELIVERY_METHOD_LABEL: Record<string, string> = {
@@ -33,6 +46,7 @@ interface OrderRow {
   conversation_id: string;
   total: string;
   delivery_method: string;
+  delivery_address: string | null;
   public_order_number: string;
   delivery_full_name: string | null;
   customer_full_name: string | null;
@@ -52,13 +66,20 @@ interface OrderRow {
  * "cancelar_pedido"; el tercero es el botón URL, que no vuelve a pasar
  * por el LLM).
  *
+ * Manda un SEGUNDO mensaje de plantilla, "confirmar_domicilio" (ver
+ * confirmarDomicilioPedido.ts y registrarGuia.ts, que exige esta
+ * confirmación antes de aceptar una guía) — best-effort: si esa plantilla
+ * todavía no está aprobada, no revierte ni falla el cierre del pedido
+ * (`status` sigue "enviado"), solo queda reflejado en
+ * `domicilio_status`. El admin puede reenviarla después desde el panel.
+ *
  * No cambia "orders.status": el pedido sigue "abierto" hasta que el
  * cliente decida — cerrar_pedido es un mensaje, no una transición de
  * estado. Puede volver a llamarse sin romper nada si hace falta reenviar
  * el resumen (ej. el cliente no respondió).
  *
- * A propósito NO llama appendMessage para dejar registro del texto
- * plantilla (a diferencia de lo que podría parecer razonable, y a
+ * A propósito NO llama appendMessage para dejar registro de ninguno de los
+ * dos textos (a diferencia de lo que podría parecer razonable, y a
  * diferencia — en apariencia — de datosTransferencia.ts, que sí lo evita
  * por otro motivo): esta función corre *en medio* de la ejecución de la
  * tool, antes de que loop.ts/toolExecutor.ts agreguen el tool_result de
@@ -70,14 +91,15 @@ interface OrderRow {
  * conversación completa inutilizable, todo turno futuro falla con 400
  * "insufficient tool messages following tool_calls message" hasta reparar
  * la fila a mano. El LLM no necesita el texto igual: los taps de botón
- * llegan como texto propio ("Agregar productos", "Cancelar pedido") que
- * se interpreta solo, sin depender de este mensaje.
+ * llegan como texto propio ("Agregar productos", "Cancelar pedido",
+ * "Confirmar dirección") que se interpreta solo, sin depender de este
+ * mensaje.
  */
 export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedidoOutput> {
   const order = await withTransaction(async (client) => {
     const result = await client.query<OrderRow>(
-      `SELECT o.status, o.conversation_id, o.total, o.delivery_method, o.public_order_number,
-              o.delivery_full_name, c.full_name AS customer_full_name,
+      `SELECT o.status, o.conversation_id, o.total, o.delivery_method, o.delivery_address,
+              o.public_order_number, o.delivery_full_name, c.full_name AS customer_full_name,
               c.external_id AS customer_external_id, conv.connection_id
          FROM orders o
          JOIN customers c ON c.id = o.customer_id
@@ -92,37 +114,20 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
     return { order_id: input.order_id, status: "pedido_no_abierto" };
   }
 
-  if (!order.connection_id) {
-    return { order_id: input.order_id, status: "canal_no_soportado" };
-  }
-  const connection = await getConnection(order.connection_id);
-  // Las plantillas de Meta solo aplican a WhatsApp Cloud API — Twilio
-  // gestiona sus propias plantillas por fuera de este proyecto (ver el
-  // docblock de gateway/channels/meta/templates.ts), y ni Instagram ni
-  // Messenger tienen plantillas en absoluto.
-  if (!connection || connection.provider !== "meta" || connection.channel !== "whatsapp") {
+  const pedidoConfirmado = await resolveApprovedTemplate(order.connection_id, "pedido_confirmado");
+  if (!pedidoConfirmado.ok) {
     return {
       order_id: input.order_id,
-      status: "canal_no_soportado",
+      status: pedidoConfirmado.status,
       public_order_number: order.public_order_number,
     };
   }
-
-  const plantillasAprobadas = (await listTemplates(connection.id)).filter(
-    (t) => t.name === "pedido_confirmado" && t.status === "approved",
-  );
-  const plantilla = plantillasAprobadas[0];
-  if (!plantilla) {
-    return {
-      order_id: input.order_id,
-      status: "plantilla_no_aprobada",
-      public_order_number: order.public_order_number,
-    };
-  }
+  const { connection, template: plantilla } = pedidoConfirmado;
 
   const fullName = order.delivery_full_name || order.customer_full_name || "cliente";
   const total = Number(order.total);
   const deliveryLabel = DELIVERY_METHOD_LABEL[order.delivery_method] ?? order.delivery_method;
+  const destinatario = canonicalToMetaRecipient(order.customer_external_id);
 
   const components: Record<string, unknown>[] = [
     {
@@ -139,10 +144,7 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
   // buildButtonsComponent) va siempre en el último índice del arreglo de
   // botones — es el único con variable, así que su índice es
   // `buttons.length - 1` sin necesidad de buscarlo por texto.
-  const botones = (plantilla.components.find((c) => c.type === "BUTTONS") as
-    | { buttons?: { type?: string }[] }
-    | undefined)?.buttons;
-  const indiceBotonUrl = botones?.findIndex((b) => b.type === "URL") ?? -1;
+  const indiceBotonUrl = findUrlButtonIndex(plantilla);
   if (indiceBotonUrl >= 0) {
     components.push({
       type: "button",
@@ -158,15 +160,38 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
   await sendTemplateMessage(
     connection.credentials,
     connection.externalId,
-    canonicalToMetaRecipient(order.customer_external_id),
+    destinatario,
     "pedido_confirmado",
     plantilla.language,
     components,
   );
 
+  const domicilio = await resolveApprovedTemplate(order.connection_id, "confirmar_domicilio");
+  let domicilioStatus: CerrarPedidoOutput["domicilio_status"] = "plantilla_no_aprobada";
+  if (domicilio.ok) {
+    await sendTemplateMessage(
+      domicilio.connection.credentials,
+      domicilio.connection.externalId,
+      destinatario,
+      "confirmar_domicilio",
+      domicilio.template.language,
+      [
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: order.public_order_number },
+            { type: "text", text: order.delivery_address ?? deliveryLabel },
+          ],
+        },
+      ],
+    );
+    domicilioStatus = "enviado";
+  }
+
   return {
     order_id: input.order_id,
     status: "enviado",
     public_order_number: order.public_order_number,
+    domicilio_status: domicilioStatus,
   };
 }

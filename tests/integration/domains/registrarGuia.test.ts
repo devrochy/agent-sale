@@ -69,6 +69,11 @@ beforeAll(async () => {
   );
   orderId = created.order_id!;
   publicOrderNumber = created.public_order_number!;
+
+  // Domicilio confirmado a mano en el fixture: estos tests son sobre el
+  // flujo de la guía, no sobre el gate de confirmación (que tiene su propio
+  // test aparte, más abajo).
+  await adminPool.query(`UPDATE orders SET address_confirmed_at = now() WHERE id = $1`, [orderId]);
 });
 
 afterEach(() => {
@@ -153,5 +158,38 @@ describe("registrarGuia", () => {
       carrier: "Servientrega",
     });
     expect(result).toEqual({ ok: false, error: "Pedido no encontrado." });
+  });
+
+  it("rechaza la guía si el cliente todavía no confirmó su dirección", async () => {
+    const quote = await generarCotizacion(conversationId, customerId, {
+      items: [{ variant_id: variantId, quantity: 1 }],
+    });
+    const otroPedido = await crearPedido(
+      "sid-registrar-guia-sin-confirmar",
+      {
+        quote_id: quote.quote_id,
+        payment_method: "transferencia",
+        delivery_method: "domicilio",
+        customer_data: customerData,
+      },
+      1000000,
+    );
+    // A propósito, sin marcar address_confirmed_at — es el estado por
+    // defecto de un pedido nuevo (ver migración 0059).
+
+    const result = await registrarGuia(otroPedido.order_id!, {
+      trackingNumber: "GUIA-004",
+      carrier: "Servientrega",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error:
+        "El cliente todavía no confirmó su dirección — no se puede despachar hasta que confirme, o reenviá la plantilla de confirmación desde el pedido.",
+    });
+    expect(sendToConversation).not.toHaveBeenCalled();
+
+    await adminPool.query(`DELETE FROM order_items WHERE order_id = $1`, [otroPedido.order_id]);
+    await adminPool.query(`DELETE FROM orders WHERE id = $1`, [otroPedido.order_id]);
   });
 });

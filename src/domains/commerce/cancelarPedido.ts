@@ -1,5 +1,6 @@
 import { withTransaction } from "../../shared/db/index.js";
 import { cambiarEstadoPedido } from "./estadoPedido.js";
+import { notificarPedidoCancelado } from "./notificarPedidoCancelado.js";
 
 export interface CancelarPedidoInput {
   order_id: string;
@@ -48,6 +49,10 @@ export async function cancelarPedido(input: CancelarPedidoInput): Promise<Cancel
     "cancelado",
     input.reason ? `Cancelado por el cliente: ${input.reason}` : "Cancelado por el cliente desde WhatsApp.",
   );
+  // Plantilla "pedido_cancelado" — ver notificarPedidoCancelado.ts para por
+  // qué esta llamada, aunque corre en medio de la tool, no rompe la
+  // secuencia tool_use/tool_result (no toca appendMessage).
+  await notificarPedidoCancelado(input.order_id);
 
   return { order_id: input.order_id, status: "cancelado", public_order_number: order.public_order_number };
 }

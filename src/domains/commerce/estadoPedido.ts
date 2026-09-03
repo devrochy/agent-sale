@@ -108,6 +108,32 @@ export async function cambiarEstadoPedido(
 }
 
 /**
+ * Registra un pago aprobado. Simétrica a `marcarPagoRechazado` de abajo —
+ * mismo guard (`payment_status = 'pendiente'`, así un webhook duplicado o
+ * desordenado de Wompi no vuelve a aplicar ni a notificar dos veces), y el
+ * mismo motivo para vivir acá y no inline en `wompiWebhookHandler.ts` (que
+ * es donde vivía antes de esta función): centraliza la única escritura real
+ * de este estado en un solo lugar, testeable sin webhook. Devuelve el total
+ * (no un boolean) porque el caller ya lo necesitaba para la notificación a
+ * los admins — es lo mismo que devolvía el `RETURNING total` inline que
+ * reemplaza.
+ */
+export async function marcarPagoAprobado(
+  orderId: string,
+  wompiTransactionId: string,
+): Promise<number | null> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{ total: string }>(
+      `UPDATE orders SET payment_status = 'pagado', paid_at = now(), wompi_transaction_id = $1
+        WHERE id = $2 AND payment_status = 'pendiente'
+        RETURNING total`,
+      [wompiTransactionId, orderId],
+    );
+    return result.rows[0] ? Number(result.rows[0].total) : null;
+  });
+}
+
+/**
  * Registra un pago rechazado. Va acá y no en el webhook porque el rechazo
  * puede llegar por dos caminos —Wompi, o un admin que revisó una
  * transferencia y no la encontró— y los dos tienen que dejar la misma

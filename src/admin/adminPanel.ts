@@ -25,6 +25,7 @@ import {
   ESTADOS_VISIBLES,
   cambiarEstadoPedido,
 } from "../domains/commerce/estadoPedido.js";
+import { notificarPedidoCancelado } from "../domains/commerce/notificarPedidoCancelado.js";
 import { env } from "../config/env.js";
 import { outboundAdapterFor } from "../gateway/channels/registry.js";
 import { sendToConversation, sendWhatsAppMessage } from "../gateway/sendMessage.js";
@@ -241,6 +242,7 @@ interface PedidoRow {
   carrier: string | null;
   wompi_payment_link_url: string | null;
   status_reason: string | null;
+  address_confirmed_at: string | null;
   items: OrderItemJson[];
 }
 
@@ -4109,19 +4111,23 @@ function leadFilterOptions<T extends string>(values: T[], label: (v: T) => strin
  */
 export async function renderLeadsPage(
   admin: AdminRecord,
-  query: { guardado?: string } = {},
+  query: { error?: string; guardado?: string } = {},
 ): Promise<string | null> {
   const tenant = await getSettings();
   if (!tenant) {
     return null;
   }
   const banner = queryToastsHtml(query);
-  const [rows, allies, categories, products] = await Promise.all([
+  const [rows, allies, categories, products, plantillasPromo] = await Promise.all([
     fetchLeads(),
     listAllies(),
     listCategories(),
     listProductsSummary(),
+    listTemplates(),
   ]);
+  const plantillasMarketing = plantillasPromo.filter(
+    (t) => t.category === "MARKETING" && t.status === "approved",
+  );
 
   const tableRows = rows
     .map((row) => {
@@ -4133,6 +4139,7 @@ export async function renderLeadsPage(
       const who = row.full_name ?? row.name ?? row.external_id;
       const promoDialogId = `promo-lead-${row.id}`;
       const detailDialogId = `detalle-lead-${row.id}`;
+      const mandarPromoDialogId = `mandar-promo-${row.id}`;
       const search = [row.full_name, row.name, row.external_id, row.contact_phone, CHANNEL_LABEL[row.channel], row.ultimo_mensaje, LEAD_ESTADO_LABEL[row.estado], SEGMENT_LABEL[row.segment], row.city]
         .filter((v): v is string => Boolean(v))
         .join(" ")
@@ -4157,10 +4164,39 @@ export async function renderLeadsPage(
         <td class="mono">${formatFecha(row.created_at)}</td>
         <td><div class="rowactions">
           <button type="button" data-open-dialog="${promoDialogId}" class="btn btn--ghost btn--icon act--violet" aria-label="Crear promoción para este segmento" title="Crear promoción para este segmento">${ICON_PERCENT}</button>
+          ${
+            row.channel === "whatsapp" && plantillasMarketing.length > 0
+              ? `<button type="button" data-open-dialog="${mandarPromoDialogId}" class="btn btn--ghost btn--icon act--chrome" aria-label="Mandar plantilla de promoción a ${escapeHtml(who)}" title="Mandar plantilla de promoción por WhatsApp">${ICON_SEND}</button>`
+              : ""
+          }
           <button type="button" data-open-dialog="${detailDialogId}" class="btn btn--ghost btn--icon" aria-label="Ver información del cliente" title="Ver información del cliente">${ICON_USER}</button>
         </div></td>
       </tr>
       ${promocionDialogHtml(promoDialogId, "/admin/promociones", `Promoción para segmento "${SEGMENT_LABEL[row.segment]}"`, "Crear promoción", null, allies, categories, products, { dimension: "todo", presetSegment: row.segment, warning })}
+      ${
+        row.channel === "whatsapp" && plantillasMarketing.length > 0
+          ? `<dialog id="${mandarPromoDialogId}" class="modal">
+               <div class="blockhead"><h2>Mandar promoción a ${escapeHtml(who)}</h2></div>
+               <p class="hint">Envío individual, no masivo — se manda solo a este cliente.</p>
+               <form method="POST" action="/admin/leads/${row.id}/promocion">
+                 <div class="field">
+                   <label for="${mandarPromoDialogId}-template">Plantilla</label>
+                   <select id="${mandarPromoDialogId}-template" name="templateId" required>
+                     ${plantillasMarketing.map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("")}
+                   </select>
+                 </div>
+                 <div class="field">
+                   <label for="${mandarPromoDialogId}-variables">Valores de las variables (una por línea, en el orden que pida la plantilla elegida — ver su texto en Plantillas)</label>
+                   <textarea id="${mandarPromoDialogId}-variables" name="variablesRaw" rows="4" placeholder="Ej. Black Friday&#10;20&#10;cascos&#10;30 de noviembre"></textarea>
+                 </div>
+                 <div class="formfoot">
+                   <button type="submit" class="btn btn--primary">Mandar</button>
+                   <button type="button" data-close-dialog="${mandarPromoDialogId}" class="btn btn--ghost">Cancelar</button>
+                 </div>
+               </form>
+             </dialog>`
+          : ""
+      }
       ${leadDetailDialogHtml(detailDialogId, row)}`;
     })
     .join("\n");
@@ -6675,7 +6711,7 @@ export async function renderPedidosPage(
     const result = await client.query<PedidoRow>(
       `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
               o.delivery_address, o.delivery_id_document, o.delivery_full_name, o.delivery_municipality, o.delivery_city,
-              o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason,
+              o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason, o.address_confirmed_at,
               c.external_id, c.name AS customer_name,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
@@ -6780,14 +6816,41 @@ export async function renderPedidosPage(
       // La guía es un dato de la entrega, no una columna aparte: junta con
       // el método y la dirección se lee como "cómo le llega esto al
       // cliente", que es la pregunta real.
+      const domicilioSinConfirmar =
+        row.delivery_method === "domicilio" && row.status === "abierto" && !row.address_confirmed_at;
+      const domicilioDialogId = `domicilio-${row.id}`;
       const guiaCell = row.tracking_number
         ? `<p class="hint mono">${escapeHtml(row.tracking_number)} · ${escapeHtml(row.carrier ?? "—")}</p>`
-        : row.delivery_method === "domicilio" && row.status === "abierto"
-          ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm" title="Registrar la guía de envío">${ICON_GUIA} Guía</button>`
-          : "";
+        : domicilioSinConfirmar
+          ? `<button type="button" data-open-dialog="${domicilioDialogId}" class="btn btn--ghost btn--sm" title="El cliente todavía no confirmó su dirección">${ICON_GUIA} Domicilio sin confirmar</button>`
+          : row.delivery_method === "domicilio" && row.status === "abierto"
+            ? `<button type="button" data-open-dialog="${guiaDialogId}" class="btn btn--ghost btn--sm" title="Registrar la guía de envío">${ICON_GUIA} Guía</button>`
+            : "";
+
+      // Mientras el domicilio no esté confirmado, este dialog reemplaza al
+      // de la guía (no al revés): registrarGuia.ts rechaza la guía sin
+      // confirmación, así que mostrar el form de guía sería un callejón sin
+      // salida. Las dos acciones son best-effort e independientes —
+      // reenviar puede fallar si la plantilla no está aprobada, marcar a
+      // mano no depende de Meta en absoluto.
+      const domicilioDialog = domicilioSinConfirmar
+        ? `<dialog id="${domicilioDialogId}" class="modal">
+             <div class="blockhead"><h2>Domicilio sin confirmar — ${escapeHtml(row.public_order_number)}</h2></div>
+             <p class="hint">El cliente todavía no tocó "Confirmar dirección" en la plantilla que le mandamos al cerrar el pedido. No se puede registrar la guía hasta que confirme.</p>
+             <div class="formfoot">
+               <form method="POST" action="/admin/pedidos/${row.id}/domicilio/reenviar">
+                 <button type="submit" class="btn btn--ghost btn--sm">Reenviar confirmación</button>
+               </form>
+               <form method="POST" action="/admin/pedidos/${row.id}/domicilio/confirmar" data-confirm="¿Confirmar la dirección de ${escapeHtml(row.public_order_number)} a mano? Usá esto solo si ya la verificaste por otro medio.">
+                 <button type="submit" class="btn btn--ghost btn--sm">Marcar confirmado a mano</button>
+               </form>
+               <button type="button" data-close-dialog="${domicilioDialogId}" class="btn btn--ghost">Cerrar</button>
+             </div>
+           </dialog>`
+        : "";
 
       const guiaDialog =
-        !row.tracking_number && row.delivery_method === "domicilio" && row.status === "abierto"
+        !row.tracking_number && !domicilioSinConfirmar && row.delivery_method === "domicilio" && row.status === "abierto"
           ? `<dialog id="${guiaDialogId}" class="modal">
                <div class="blockhead"><h2>Registrar guía — ${escapeHtml(row.public_order_number)}</h2></div>
                <p class="hint">Registrar la guía marca el pedido como despachado.</p>
@@ -6845,6 +6908,7 @@ export async function renderPedidosPage(
       </tr>
       <tr class="expandrow" id="${itemsId}"><td colspan="8"><div class="variantgrid">${items}</div></td></tr>
       ${direccionDialog}
+      ${domicilioDialog}
       ${guiaDialog}`;
     })
     .join("\n");
@@ -6931,6 +6995,9 @@ export async function marcarPedidoEntregado(orderId: string): Promise<void> {
 
 export async function cancelarPedido(orderId: string, admin: AdminRecord): Promise<void> {
   await cambiarEstadoPedido(orderId, "cancelado", `Cancelado desde el panel por ${admin.username}.`);
+  // Plantilla "pedido_cancelado" (best-effort: si todavía no está aprobada
+  // por Meta, la cancelación en sí ya quedó hecha igual).
+  await notificarPedidoCancelado(orderId);
 }
 
 export async function renderAliadosPage(
@@ -8377,6 +8444,36 @@ export async function enviarPruebaPlantilla(input: {
     };
   }
   return { ok: true };
+}
+
+/**
+ * "Mandar promoción" de Leads (ver renderLeadsPage) — envío manual 1 a 1,
+ * no masivo (decisión explícita: por ahora no hay broadcast por segmento,
+ * ver el ADR-019 sobre reactivación de leads fríos). Es un delgado wrapper
+ * sobre `enviarPruebaPlantilla`: la única diferencia real es que el
+ * destinatario sale del cliente elegido en la fila, no de un campo que
+ * escribe el admin a mano.
+ */
+export async function enviarPromocionCliente(input: {
+  customerId?: string;
+  templateId?: string;
+  variablesRaw?: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const customerId = (input.customerId ?? "").trim();
+  if (!customerId) {
+    return { ok: false, error: "Falta el cliente." };
+  }
+  const externalId = await withTransaction(async (client) => {
+    const result = await client.query<{ external_id: string }>(
+      `SELECT external_id FROM customers WHERE id = $1`,
+      [customerId],
+    );
+    return result.rows[0]?.external_id ?? null;
+  });
+  if (!externalId) {
+    return { ok: false, error: "El cliente ya no existe." };
+  }
+  return enviarPruebaPlantilla({ templateId: input.templateId, to: externalId, variablesRaw: input.variablesRaw });
 }
 
 /**
