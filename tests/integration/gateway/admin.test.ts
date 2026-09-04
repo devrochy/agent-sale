@@ -1614,7 +1614,46 @@ describe("panel admin", () => {
       expect(despues.rows[0]!.external_id).toBe(antes.rows[0]!.external_id);
     });
 
-    it("da de alta una conexión de Meta validando contra el proveedor", async () => {
+    it("editar credenciales con un nombre nuevo renombra la conexión; vacío conserva el actual", async () => {
+      verifyCredentials.mockResolvedValueOnce({ externalId: null, displayAddress: null });
+      const renombrar = await app.inject({
+        method: "POST",
+        url: `/admin/conexiones/${conexionId}/credenciales`,
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          label: "Nombre renombrado",
+          accountSid: "ACpanel",
+          authToken: "token-panel-secreto",
+        }).toString(),
+      });
+      expect(renombrar.headers.location).toContain("guardado=1");
+
+      const conNombreNuevo = await adminPool.query<{ label: string }>(
+        `SELECT label FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+      expect(conNombreNuevo.rows[0]!.label).toBe("Nombre renombrado");
+
+      verifyCredentials.mockResolvedValueOnce({ externalId: null, displayAddress: null });
+      const sinTocarNombre = await app.inject({
+        method: "POST",
+        url: `/admin/conexiones/${conexionId}/credenciales`,
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          accountSid: "ACpanel",
+          authToken: "token-panel-secreto",
+        }).toString(),
+      });
+      expect(sinTocarNombre.headers.location).toContain("guardado=1");
+
+      const conservado = await adminPool.query<{ label: string }>(
+        `SELECT label FROM channel_connections WHERE id = $1`,
+        [conexionId],
+      );
+      expect(conservado.rows[0]!.label).toBe("Nombre renombrado");
+    });
+
+    it("da de alta una conexión de Meta validando contra el proveedor, con nombre propio", async () => {
       // Meta sí reporta la clave de ruteo y la dirección legible, a diferencia
       // de Twilio: ninguna de las dos se toma de lo que tipeó el admin.
       verifyCredentials.mockResolvedValueOnce({
@@ -1627,6 +1666,7 @@ describe("panel admin", () => {
         url: "/admin/conexiones/meta/whatsapp",
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
         payload: new URLSearchParams({
+          label: "App de pruebas — Feature X",
           phoneNumberId: "111222333444555",
           appSecret: "secreto-meta",
           accessToken: "token-meta",
@@ -1637,18 +1677,121 @@ describe("panel admin", () => {
       expect(response.statusCode).toBe(303);
       expect(response.headers.location).toContain("guardado=1");
 
-      const fila = await adminPool.query<{ provider: string; external_id: string; display_address: string }>(
-        `SELECT provider, external_id, display_address FROM channel_connections WHERE external_id = $1`,
+      const fila = await adminPool.query<{
+        provider: string;
+        external_id: string;
+        display_address: string;
+        label: string;
+      }>(
+        `SELECT provider, external_id, display_address, label FROM channel_connections WHERE external_id = $1`,
         ["111222333444555"],
       );
       expect(fila.rows[0]).toMatchObject({
         provider: "meta",
         external_id: "111222333444555",
         display_address: "+57 300 555 6666",
+        label: "App de pruebas — Feature X",
       });
 
       await adminPool.query(`DELETE FROM channel_connections WHERE external_id = $1`, [
         "111222333444555",
+      ]);
+      invalidateConnectionsCache();
+    });
+
+    it("sin nombre propio, cae al label genérico de siempre", async () => {
+      verifyCredentials.mockResolvedValueOnce({
+        externalId: "111222333444556",
+        displayAddress: "+57 300 555 6667",
+      });
+
+      await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/whatsapp",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          phoneNumberId: "111222333444556",
+          appSecret: "secreto-meta",
+          accessToken: "token-meta",
+          verifyToken: "verify-meta",
+        }).toString(),
+      });
+
+      const fila = await adminPool.query<{ label: string }>(
+        `SELECT label FROM channel_connections WHERE external_id = $1`,
+        ["111222333444556"],
+      );
+      expect(fila.rows[0]!.label).toBe("WhatsApp · Meta");
+
+      await adminPool.query(`DELETE FROM channel_connections WHERE external_id = $1`, [
+        "111222333444556",
+      ]);
+      invalidateConnectionsCache();
+    });
+
+    it("da de alta una segunda app de WhatsApp por Meta cuando ya existe una — sin bloqueo de unicidad", async () => {
+      verifyCredentials.mockResolvedValueOnce({
+        externalId: "222333444555666",
+        displayAddress: "+57 300 111 2222",
+      });
+      verifyCredentials.mockResolvedValueOnce({
+        externalId: "222333444555667",
+        displayAddress: "+57 300 111 2223",
+      });
+
+      const primera = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/whatsapp",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          label: "App A",
+          phoneNumberId: "222333444555666",
+          appSecret: "secreto-a",
+          accessToken: "token-a",
+          verifyToken: "verify-a",
+        }).toString(),
+      });
+      expect(primera.headers.location).toContain("guardado=1");
+
+      const segunda = await app.inject({
+        method: "POST",
+        url: "/admin/conexiones/meta/whatsapp",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          label: "App B",
+          phoneNumberId: "222333444555667",
+          appSecret: "secreto-b",
+          accessToken: "token-b",
+          verifyToken: "verify-b",
+        }).toString(),
+      });
+      expect(segunda.headers.location).toContain("guardado=1");
+
+      const filas = await adminPool.query<{ external_id: string; label: string }>(
+        `SELECT external_id, label FROM channel_connections WHERE external_id IN ($1, $2) ORDER BY label`,
+        ["222333444555666", "222333444555667"],
+      );
+      expect(filas.rows).toEqual([
+        { external_id: "222333444555666", label: "App A" },
+        { external_id: "222333444555667", label: "App B" },
+      ]);
+
+      const pagina = await app.inject({
+        method: "GET",
+        url: "/admin/conexiones",
+        headers: { cookie: sessionCookie },
+      });
+      // Con dos conexiones Meta/WhatsApp ya no se muestra el formulario
+      // inline de alta — queda detrás del botón "agregar otra app", y cada
+      // tarjeta se distingue por su propio nombre.
+      expect(pagina.body).toContain("App A");
+      expect(pagina.body).toContain("App B");
+      expect(pagina.body).toContain("Agregar otra app de WhatsApp por Meta");
+      expect(pagina.body).not.toContain('aria-label="Conectar WhatsApp por Meta"');
+
+      await adminPool.query(`DELETE FROM channel_connections WHERE external_id IN ($1, $2)`, [
+        "222333444555666",
+        "222333444555667",
       ]);
       invalidateConnectionsCache();
     });

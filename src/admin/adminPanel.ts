@@ -5498,7 +5498,12 @@ function credentialFieldsHtml(connection: ConnectionSummary): string {
 /** Una tarjeta por conexión configurada. */
 function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): string {
   const webhookUrl = webhookUrlFor(connection.provider);
-  const titulo = `${CHANNEL_LABEL[connection.channel]} · ${PROVIDER_LABEL[connection.provider]}`;
+  // El título es el nombre propio de la conexión (editable, ver
+  // `guardarCredencialesConexion`), no un genérico "WhatsApp · Meta" — con
+  // varias conexiones del mismo canal/proveedor (Fase de apps de prueba
+  // múltiples) ese genérico las volvía indistinguibles. El canal/proveedor
+  // queda igual visible como chip aparte.
+  const id = escapeHtml(connection.id);
 
   // Desactivar la última conexión activa deja al bot mudo: sin ninguna
   // conexión no hay por dónde responder, ni siquiera las notificaciones a
@@ -5519,7 +5524,8 @@ function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): st
       <div class="connection__head">
         <div class="connection__titlewrap">
           <span class="connection__icon">${ICON_WHATSAPP}</span>
-          <h2>${escapeHtml(titulo)}</h2>
+          <h2>${escapeHtml(connection.label)}</h2>
+          <span class="chip chip--muted">${escapeHtml(CHANNEL_LABEL[connection.channel])} · ${escapeHtml(PROVIDER_LABEL[connection.provider])}</span>
         </div>
         <div class="statustoggle">
           ${toggle}
@@ -5538,6 +5544,11 @@ function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): st
         </div>
       </div>
       <form method="POST" action="/admin/conexiones/${connection.id}/credenciales">
+        <div class="field">
+          <label for="label-${id}">Nombre de esta conexión</label>
+          <input type="text" id="label-${id}" name="label" value="${escapeHtml(connection.label)}" placeholder="Ej. Feature X — número de prueba" autocomplete="off">
+          <p class="hint">Para distinguirla del resto en el panel — no la ve el cliente.</p>
+        </div>
         ${credentialFieldsHtml(connection)}
         <p class="hint">Ya hay credenciales guardadas. Dejar un campo vacío conserva el valor actual.</p>
         <div class="formfoot">
@@ -5549,12 +5560,49 @@ function connectionCardHtml(connection: ConnectionSummary, esUnica: boolean): st
 }
 
 /**
- * Alta de una conexión de WhatsApp por Meta Cloud API (Fase 19, Etapa B).
- *
- * Se muestra solo mientras no exista ninguna: el panel no lista canales sin
- * integración real detrás (criterio original de la página), pero sí ofrece
- * conectar el proveedor que ya tiene adapter. Instagram y Messenger aparecerán
- * cuando tengan el suyo (Etapa C), no antes como carteles de "próximamente".
+ * Campos del formulario de alta de WhatsApp por Meta, factorizados para
+ * reusarse tanto en la primera conexión (`nuevaConexionMetaHtml`, inline)
+ * como en el diálogo de "agregar otra app" (`agregarOtraConexionMetaDialogHtml`)
+ * — mismos campos, solo cambian los `id` de cada input para no chocar si
+ * ambos bloques llegan a convivir en el DOM.
+ */
+function metaWhatsappFormFieldsHtml(idPrefix: string): string {
+  return `
+    <div class="fieldgrid">
+      <div class="field">
+        <label for="${idPrefix}-label">Nombre de esta app (opcional)</label>
+        <input type="text" id="${idPrefix}-label" name="label" placeholder="Ej. Feature X — número de prueba" autocomplete="off">
+        <p class="hint">Para distinguirla del resto en el panel — no la ve el cliente. Si la dejás vacía, se llama "WhatsApp · Meta".</p>
+      </div>
+      <div class="field">
+        <label for="${idPrefix}-pnid">Phone Number ID</label>
+        <input type="text" id="${idPrefix}-pnid" name="phoneNumberId" placeholder="123456789012345" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="${idPrefix}-appsecret">App Secret</label>
+        <input type="password" id="${idPrefix}-appsecret" name="appSecret" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="${idPrefix}-token">Access Token</label>
+        <input type="password" id="${idPrefix}-token" name="accessToken" autocomplete="off" required>
+        <p class="hint">En modo desarrollo Meta lo renueva cada 24 h.</p>
+      </div>
+      <div class="field">
+        <label for="${idPrefix}-verify">Verify Token</label>
+        <input type="password" id="${idPrefix}-verify" name="verifyToken" autocomplete="off" required>
+        <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
+      </div>
+    </div>`;
+}
+
+/**
+ * Alta de la primera conexión de WhatsApp por Meta Cloud API (Fase 19, Etapa
+ * B). Se muestra solo mientras no exista ninguna: el panel no lista canales
+ * sin integración real detrás (criterio original de la página), pero sí
+ * ofrece conectar el proveedor que ya tiene adapter. Una vez que existe la
+ * primera, dar de alta más apps pasa por `agregarOtraConexionMetaDialogHtml`
+ * (botón + diálogo, para no saturar la pantalla con varios formularios
+ * inline cuando hay varios ambientes de prueba).
  */
 function nuevaConexionMetaHtml(): string {
   const webhookUrl = webhookUrlFor("meta");
@@ -5567,7 +5615,8 @@ function nuevaConexionMetaHtml(): string {
       <div class="panel connection">
         <p class="hint">
           Alternativa a Twilio, directo con Meta y sin intermediario. Podés tener
-          las dos activas a la vez: cada conversación responde por donde entró.
+          varias apps de Meta activas a la vez —una por ambiente de prueba, por
+          ejemplo— además de Twilio: cada conversación responde por donde entró.
         </p>
         <div class="connection__webhook">
           <label for="webhook-url-meta-nueva">URL de webhook (regístrala en tu app de Meta)</label>
@@ -5577,32 +5626,53 @@ function nuevaConexionMetaHtml(): string {
           </div>
         </div>
         <form method="POST" action="/admin/conexiones/meta/whatsapp">
-          <div class="fieldgrid">
-            <div class="field">
-              <label for="nueva-pnid">Phone Number ID</label>
-              <input type="text" id="nueva-pnid" name="phoneNumberId" placeholder="123456789012345" autocomplete="off" required>
-            </div>
-            <div class="field">
-              <label for="nueva-appsecret">App Secret</label>
-              <input type="password" id="nueva-appsecret" name="appSecret" autocomplete="off" required>
-            </div>
-            <div class="field">
-              <label for="nueva-token">Access Token</label>
-              <input type="password" id="nueva-token" name="accessToken" autocomplete="off" required>
-              <p class="hint">En modo desarrollo Meta lo renueva cada 24 h.</p>
-            </div>
-            <div class="field">
-              <label for="nueva-verify">Verify Token</label>
-              <input type="password" id="nueva-verify" name="verifyToken" autocomplete="off" required>
-              <p class="hint">Inventalo vos y usá el mismo en la app de Meta. Este no se puede probar desde acá: si no coincide, falla el handshake al registrar el webhook.</p>
-            </div>
-          </div>
+          ${metaWhatsappFormFieldsHtml("nueva")}
           <div class="formfoot">
             <button type="submit" class="btn btn--primary">Probar y conectar</button>
           </div>
         </form>
       </div>
     </section>
+  `;
+}
+
+/**
+ * Botón + diálogo para dar de alta una segunda (o tercera, o cuarta…) app de
+ * WhatsApp por Meta, una vez que ya existe al menos una. Mismo endpoint que
+ * `nuevaConexionMetaHtml` (`POST /admin/conexiones/meta/whatsapp`, que no
+ * tiene ninguna restricción de unicidad — ver migración 0053), mismo patrón
+ * de diálogo que "Nueva plantilla"/"Nuevo producto" (`data-open-dialog`).
+ */
+function agregarOtraConexionMetaDialogHtml(): string {
+  const webhookUrl = webhookUrlFor("meta");
+  const dialogId = "agregar-otra-app-meta-dialog";
+  return `
+    <section class="block block--narrow" aria-label="Agregar otra app de WhatsApp por Meta">
+      <button type="button" data-open-dialog="${dialogId}" class="btn btn--add">
+        <span class="btn--add__plus">+</span> Agregar otra app de WhatsApp por Meta
+      </button>
+    </section>
+    <dialog id="${dialogId}" class="modal">
+      <div class="blockhead"><h2>Agregar otra app de WhatsApp por Meta</h2></div>
+      <p class="hint">
+        Para un ambiente de prueba nuevo: cada app de Meta con su propio Phone
+        Number ID queda aislada de las demás, con su propio número.
+      </p>
+      <div class="connection__webhook">
+        <label for="webhook-url-meta-otra">URL de webhook (la misma para todas las apps)</label>
+        <div class="copyrow">
+          <code id="webhook-url-meta-otra" class="mono">${escapeHtml(webhookUrl)}</code>
+          <button type="button" class="btn" data-copy="${escapeHtml(webhookUrl)}">Copiar</button>
+        </div>
+      </div>
+      <form method="POST" action="/admin/conexiones/meta/whatsapp">
+        ${metaWhatsappFormFieldsHtml("otra")}
+        <div class="formfoot">
+          <button type="submit" class="btn btn--primary">Probar y conectar</button>
+          <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
   `;
 }
 
@@ -5715,7 +5785,7 @@ export async function renderConexionesPage(
     </div>
     ${banner}
     ${tarjetas}
-    ${yaHayWhatsAppMeta ? "" : nuevaConexionMetaHtml()}
+    ${yaHayWhatsAppMeta ? agregarOtraConexionMetaDialogHtml() : nuevaConexionMetaHtml()}
     ${yaHayInstagram ? "" : nuevaConexionInstagramHtml()}
   `;
 
@@ -5813,7 +5883,10 @@ export async function guardarCredencialesConexion(
   // misma (el phone number id de Meta), y un upsert insertaría una conexión
   // nueva dejando la vieja activa (ver updateConnection).
   const actualizada = await updateConnection(connectionId, {
-    label: existente.label,
+    // Campo vacío conserva el nombre actual — mismo criterio que las
+    // credenciales (mergeCredentials), no es un secreto pero sigue la misma
+    // regla de "no pisar con nada" para no forzar a retipear todo el form.
+    label: input.label?.trim() || existente.label,
     // La clave de ruteo la reporta el proveedor cuando puede, para que el
     // admin no la tipee (un valor mal escrito daría una conexión que guarda
     // bien pero cuyo webhook no matchea nunca). Cuando no puede —cuenta de
@@ -9161,7 +9234,10 @@ export async function crearConexionMeta(
   await saveConnection({
     channel,
     provider: "meta",
-    label: `${CHANNEL_LABEL[channel]} · Meta`,
+    // Nombre propio para distinguir varias apps de Meta del mismo canal
+    // (ambientes de prueba aislados) — si no lo tipea, cae al genérico de
+    // siempre para no romper el flujo existente.
+    label: input.label?.trim() || `${CHANNEL_LABEL[channel]} · Meta`,
     externalId,
     displayAddress: verificadas.displayAddress,
     credentials,
