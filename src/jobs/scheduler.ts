@@ -3,6 +3,7 @@ import { logger } from "../shared/observability/logger.js";
 import { runCazadorDeVentas } from "./cazadorDeVentas.js";
 import { runCloseExpiredOrders } from "./closeExpiredOrders.js";
 import { sendDailyReports } from "./dailyReport.js";
+import { runReactivarCotizacionesFrias } from "./reactivarCotizacionesFrias.js";
 
 /**
  * Jobs programados (ADR-018, docs/fase-12-capacidades-proactivas-agente/):
@@ -42,6 +43,21 @@ export function startJobScheduler(): void {
         logger.error(
           { error, event: "jobs.cazador_ventas_fallido" },
           "Falló la corrida del Cazador de ventas",
+        );
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
+  cron.schedule(
+    "0 * * * *",
+    async () => {
+      try {
+        await runReactivarCotizacionesFrias();
+      } catch (error) {
+        logger.error(
+          { error, event: "jobs.reactivar_cotizaciones_frias_fallido" },
+          "Falló la corrida de reactivación de cotizaciones frías",
         );
       }
     },

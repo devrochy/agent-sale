@@ -2069,6 +2069,149 @@ describe("panel admin", () => {
     });
   });
 
+  describe("pedidos — confirmación de domicilio (Fase de plantillas nuevas)", () => {
+    // Mismo criterio de mock de `fetch` que "plantillas": estas rutas
+    // llaman a gateway/channels/meta/templates.ts directo.
+    let conexionId: string;
+    let orderId: string;
+    let masterAdminId: string;
+    const fetchMock = vi.fn();
+
+    beforeAll(async () => {
+      const master = await adminPool.query<{ id: string }>(`SELECT id FROM admins WHERE username = $1`, [
+        ADMIN_USERNAME,
+      ]);
+      masterAdminId = master.rows[0]!.id;
+
+      conexionId = await saveConnection({
+        channel: "whatsapp",
+        provider: "meta",
+        label: "WhatsApp Domicilio Test · Meta",
+        externalId: "111222333444555",
+        displayAddress: "+57 300 222 3333",
+        credentials: {
+          phoneNumberId: "111222333444555",
+          wabaId: "waba-domicilio-test",
+          accessToken: "token-domicilio-test",
+          appSecret: "secreto-domicilio-test",
+          verifyToken: "verify-domicilio-test",
+        },
+      });
+
+      // Reusa el pedido a domicilio del fixture global ("Cliente Con
+      // Pedido", admin-test-order-1) — nace sin address_confirmed_at
+      // (default de la migración 0059), que es justo el estado que estas
+      // pruebas necesitan. Se le apunta la conversación a esta conexión
+      // para poder resolver la plantilla.
+      const order = await adminPool.query<{ id: string; conversation_id: string }>(
+        `SELECT id, conversation_id FROM orders WHERE idempotency_key = 'admin-test-order-1'`,
+      );
+      orderId = order.rows[0]!.id;
+      await adminPool.query(`UPDATE conversations SET connection_id = $1 WHERE id = $2`, [
+        conexionId,
+        order.rows[0]!.conversation_id,
+      ]);
+    });
+
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    afterAll(async () => {
+      // El fixture de "Cliente Con Pedido" es compartido por otros describe
+      // de este archivo — se le devuelve connection_id a null en vez de
+      // borrar la conversación.
+      await adminPool.query(`UPDATE conversations SET connection_id = NULL WHERE id = (SELECT conversation_id FROM orders WHERE id = $1)`, [orderId]);
+      await adminPool.query(`DELETE FROM channel_connections WHERE id = $1`, [conexionId]);
+      invalidateConnectionsCache();
+    });
+
+    it("la fila muestra 'Domicilio sin confirmar' en vez del botón de Guía", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("Domicilio sin confirmar");
+    });
+
+    it("reenviar sin plantilla aprobada redirige con un error claro, sin romper", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/domicilio/reenviar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("reenviar manda confirmar_domicilio cuando la plantilla ya está aprobada", async () => {
+      const templateId = await createTemplateRecord({
+        connectionId: conexionId,
+        name: "confirmar_domicilio",
+        category: "UTILITY",
+        language: "es",
+        components: [
+          { type: "BODY", text: "Antes de alistar tu pedido #{{1}}, confirmanos: ¿la dirección sigue siendo {{2}}?" },
+          { type: "BUTTONS", buttons: [{ type: "QUICK_REPLY", text: "Confirmar dirección" }] },
+        ],
+        createdByAdminId: masterAdminId,
+      });
+      await adminPool.query(`UPDATE whatsapp_templates SET status = 'approved' WHERE id = $1`, [templateId]);
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ messages: [{ id: "wamid.reenviar-domicilio" }] }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/domicilio/reenviar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/pedidos?guardado=1");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await deleteTemplateRecord(templateId);
+    });
+
+    it("confirmar a mano marca la dirección y la fila pasa a ofrecer el botón de Guía", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/domicilio/confirmar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(303);
+
+      const fila = await adminPool.query<{ address_confirmed_at: string | null }>(
+        `SELECT address_confirmed_at FROM orders WHERE id = $1`,
+        [orderId],
+      );
+      expect(fila.rows[0]!.address_confirmed_at).not.toBeNull();
+
+      const pedidos = await app.inject({
+        method: "GET",
+        url: "/admin/pedidos",
+        headers: { cookie: sessionCookie },
+      });
+      expect(pedidos.body).not.toContain("Domicilio sin confirmar");
+      expect(pedidos.body).toMatch(/data-open-dialog="guia-[^"]*"[^>]*>.*Guía/s);
+
+      // registrarGuia ya no rechaza — el gate de esta fase queda cubierto
+      // por tests/integration/domains/registrarGuia.test.ts, acá solo
+      // interesa que el panel refleje el cambio de estado.
+      await adminPool.query(`UPDATE orders SET address_confirmed_at = NULL WHERE id = $1`, [orderId]);
+    });
+  });
+
   describe("configuración — pestañas", () => {
     it("agrupa las siete secciones en cinco pestañas, con una sola visible", async () => {
       const response = await app.inject({

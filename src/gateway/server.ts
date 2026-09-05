@@ -30,6 +30,7 @@ import {
   editarColaborador,
   eliminarPlantilla,
   enviarMensajeHumano,
+  enviarPromocionCliente,
   enviarPruebaPlantilla,
   exportLeadsCsv,
   guardarAliado,
@@ -84,6 +85,10 @@ import { currentAdmin, SESSION_COOKIE_NAME } from "../admin/auth/currentAdmin.js
 import { login, logout } from "../admin/auth/session.js";
 import { env } from "../config/env.js";
 import { registrarGuia } from "../domains/commerce/registrarGuia.js";
+import {
+  confirmarDomicilioManual,
+  reenviarConfirmacionDomicilio,
+} from "../domains/commerce/confirmarDomicilioPedido.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { listConnectionsWithCredentials, type Channel } from "../shared/db/connectionsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
@@ -371,8 +376,8 @@ export async function buildServer() {
   });
 
   app.get("/admin/leads", async (request, reply) => {
-    const { guardado } = request.query as { guardado?: string };
-    const html = await renderLeadsPage(request.admin!, { guardado });
+    const { guardado, error } = request.query as { guardado?: string; error?: string };
+    const html = await renderLeadsPage(request.admin!, { guardado, error });
     if (!html) {
       return reply.status(404).send();
     }
@@ -419,6 +424,19 @@ export async function buildServer() {
     const { customerId } = request.params as { customerId: string };
     await desactivarBotLead(customerId);
     return reply.status(303).redirect("/admin/leads?guardado=1");
+  });
+
+  app.post("/admin/leads/:customerId/promocion", async (request, reply) => {
+    const { customerId } = request.params as { customerId: string };
+    const { templateId, variablesRaw } = request.body as {
+      templateId?: string;
+      variablesRaw?: string;
+    };
+    const result = await enviarPromocionCliente({ customerId, templateId, variablesRaw });
+    const redirectUrl = result.ok
+      ? "/admin/leads?guardado=1"
+      : `/admin/leads?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
   });
 
   app.get("/admin/tickets", async (request, reply) => {
@@ -870,6 +888,21 @@ export async function buildServer() {
       return reply.status(404).send();
     }
     return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/pedidos/:orderId/domicilio/reenviar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    const result = await reenviarConfirmacionDomicilio(orderId);
+    const redirectUrl = result.ok
+      ? "/admin/pedidos?guardado=1"
+      : `/admin/pedidos?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/pedidos/:orderId/domicilio/confirmar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    await confirmarDomicilioManual(orderId, request.admin!.username);
+    return reply.status(303).redirect("/admin/pedidos?guardado=1");
   });
 
   app.post("/admin/pedidos/:orderId/guia", async (request, reply) => {

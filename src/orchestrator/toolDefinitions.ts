@@ -156,6 +156,30 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "preguntar_metodo_pago",
+    description:
+      "Manda la plantilla de WhatsApp 'metodo_pago' con 3 botones (Transferencia / Pago en línea / Contra entrega) para que el cliente elija cómo pagar, en vez de preguntarlo por texto libre. Llamar cuando el cliente confirme que quiere comprar y todavía no haya dicho el método de pago. Cuando responda con uno de los 3 botones, mapealo a payment_method ('Transferencia'→'transferencia', 'Pago en línea'→'pago_en_linea', 'Contra entrega'→'efectivo_contraentrega') y seguí a crear_pedido con ese valor — no vuelvas a preguntar. Si devuelve 'status' distinto de 'enviado', no reintentes: preguntá el método de pago por texto normal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        quote_id: { type: "string", description: "UUID de la cotización sobre la que se va a confirmar el pedido." },
+      },
+      required: ["quote_id"],
+    },
+  },
+  {
+    name: "confirmar_domicilio_pedido",
+    description:
+      "Marca la dirección de un pedido como confirmada por el cliente. Llamar cuando el cliente responde 'Confirmar dirección' (el botón de la plantilla 'confirmar_domicilio' que se manda junto con cerrar_pedido) — no hace falta volver a preguntar nada, tocar el botón ya es la confirmación. El pedido no se puede despachar hasta que esto pase.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido cuya dirección se confirma." },
+      },
+      required: ["order_id"],
+    },
+  },
+  {
     name: "cerrar_pedido",
     description:
       "Manda la plantilla de WhatsApp 'pedido_confirmado' (resumen del pedido con 3 botones: Agregar productos, Cancelar pedido, Confirmar y pagar) y termina el turno esperando la respuesta del cliente. Llamar cuando el cliente confirme que ya no quiere agregar nada más a un pedido abierto (creado con crear_pedido, quizás ampliado con agregar_item_pedido) y esté listo para cerrarlo — en vez de redactar vos el resumen final, esta tool se lo manda con las 3 opciones ya armadas. Si el cliente responde con texto pidiendo agregar algo, usa agregar_item_pedido; si pide cancelar, usa cancelar_pedido; si toca 'Confirmar y pagar' no llega ningún mensaje nuevo (el botón abre un link directo), así que no hace falta que hagas nada más. Si devuelve 'plantilla_no_aprobada' o 'canal_no_soportado', no repitas el intento: seguí la conversación por texto normal, resumiendo vos el pedido y preguntando cómo quiere continuar.",

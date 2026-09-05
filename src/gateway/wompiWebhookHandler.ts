@@ -1,12 +1,11 @@
 import { resolveNotificationRecipients } from "../admin/auth/adminsDirectory.js";
-import { marcarPagoRechazado } from "../domains/commerce/estadoPedido.js";
-import { verifyWompiChecksum } from "../payments/wompiSignature.js";
+import { marcarPagoAprobado, marcarPagoRechazado } from "../domains/commerce/estadoPedido.js";
 import {
-  getReportRecipient,
-  getWompiConfig,
-  resolveWompiPaymentLink,
-  withTransaction,
-} from "../shared/db/index.js";
+  notificarClientePagoAprobado,
+  notificarClientePagoRechazado,
+} from "../domains/commerce/notificarPagoCliente.js";
+import { verifyWompiChecksum } from "../payments/wompiSignature.js";
+import { getReportRecipient, getWompiConfig, resolveWompiPaymentLink } from "../shared/db/index.js";
 import { logger } from "../shared/observability/logger.js";
 import { sendWhatsAppMessage } from "./sendMessage.js";
 
@@ -161,6 +160,7 @@ export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookRes
         buildRejectionNotification(link.orderId, transaction.status),
         wompiLogger,
       );
+      await notificarClientePagoRechazado(link.orderId);
     }
     return { status: 200, reason: "rejected" };
   }
@@ -173,19 +173,12 @@ export async function handleWompiWebhook(body: unknown): Promise<WompiWebhookRes
     return { status: 200, reason: "not_approved" };
   }
 
-  const updatedTotal = await withTransaction(async (client) => {
-    const result = await client.query<{ total: string }>(
-      `UPDATE orders SET payment_status = 'pagado', paid_at = now(), wompi_transaction_id = $1
-       WHERE id = $2 AND payment_status = 'pendiente'
-       RETURNING total`,
-      [transaction.id, link.orderId],
-    );
-    return result.rows[0] ? Number(result.rows[0].total) : null;
-  });
+  const updatedTotal = await marcarPagoAprobado(link.orderId, transaction.id);
 
   if (updatedTotal !== null) {
     wompiLogger.info({ event: "wompi.pago_confirmado" }, "Pago de Wompi confirmado, pedido marcado como pagado");
     await notificarAdmins(buildApprovalNotification(link.orderId, updatedTotal), wompiLogger);
+    await notificarClientePagoAprobado(link.orderId);
   }
 
   return { status: 200, reason: "ok" };
