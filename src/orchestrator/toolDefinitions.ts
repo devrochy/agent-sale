@@ -156,6 +156,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "cerrar_pedido",
+    description:
+      "Manda la plantilla de WhatsApp 'pedido_confirmado' (resumen del pedido con 3 botones: Agregar productos, Cancelar pedido, Confirmar y pagar) y termina el turno esperando la respuesta del cliente. Llamar cuando el cliente confirme que ya no quiere agregar nada más a un pedido abierto (creado con crear_pedido, quizás ampliado con agregar_item_pedido) y esté listo para cerrarlo — en vez de redactar vos el resumen final, esta tool se lo manda con las 3 opciones ya armadas. Si el cliente responde con texto pidiendo agregar algo, usa agregar_item_pedido; si pide cancelar, usa cancelar_pedido; si toca 'Confirmar y pagar' no llega ningún mensaje nuevo (el botón abre un link directo), así que no hace falta que hagas nada más. Si devuelve 'plantilla_no_aprobada' o 'canal_no_soportado', no repitas el intento: seguí la conversación por texto normal, resumiendo vos el pedido y preguntando cómo quiere continuar.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido abierto a cerrar (de crear_pedido)." },
+      },
+      required: ["order_id"],
+    },
+  },
+  {
+    name: "cancelar_pedido",
+    description:
+      "Cancela un pedido todavía abierto — no revierte pagos ni libera stock, solo cambia su estado. Llamar cuando el cliente pida cancelar explícitamente (por texto, o al tocar el botón 'Cancelar pedido' del resumen que manda cerrar_pedido).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido a cancelar." },
+        reason: { type: "string", description: "Motivo que dio el cliente, si lo dijo (opcional)." },
+      },
+      required: ["order_id"],
+    },
+  },
+  {
     name: "consultar_estado_pedido",
     description:
       "Responde el estado real de un pedido ya hecho por el cliente, a partir de su número público (formato 'FM-0001'). Llamar cuando el cliente pregunte cómo va su pedido — nunca inventar ni asumir el estado. Si devuelve found:false, pedirle al cliente que confirme el número o avisarle que no se encontró.",

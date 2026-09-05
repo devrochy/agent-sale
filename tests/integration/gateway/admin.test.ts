@@ -1,5 +1,5 @@
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // El adapter de salida se controla desde el test: "Probar y guardar" llama a
 // verifyCredentials, y sin este mock el test haría una llamada HTTP real a
@@ -29,6 +29,10 @@ import {
   invalidateConnectionsCache,
   saveConnection,
 } from "../../../src/shared/db/connectionsDirectory.js";
+import {
+  createTemplateRecord,
+  deleteTemplateRecord,
+} from "../../../src/shared/db/whatsappTemplatesDirectory.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 
@@ -103,6 +107,7 @@ const adminEmails = [
   "para-desactivar@formotos-test.com",
   "con-permisos@formotos-test.com",
   "colab-conexiones@formotos.test",
+  "colab-plantillas@formotos.test",
   "telefono.visible@formotos-test.com",
   "editada@formotos-test.com",
   "cambia.rol@formotos-test.com",
@@ -1801,6 +1806,266 @@ describe("panel admin", () => {
       });
       expect(resumen.statusCode).toBe(200);
       expect(resumen.body).not.toContain('href="/admin/conexiones"');
+    });
+  });
+
+  describe("plantillas", () => {
+    // Plantillas no pasa por outboundAdapterFor/registry.js (mockeado arriba
+    // para todo el archivo) — usa src/gateway/channels/meta/templates.ts,
+    // que llama a `fetch` directo (mismo criterio de test que
+    // tests/unit/gateway/channels/meta/outbound.test.ts). Por eso este mock
+    // de fetch queda scoped a este describe, no al archivo entero.
+    let conexionMetaId: string;
+    let masterAdminId: string;
+    const fetchMock = vi.fn();
+
+    beforeAll(async () => {
+      conexionMetaId = await saveConnection({
+        channel: "whatsapp",
+        provider: "meta",
+        label: "WhatsApp Panel Test · Meta",
+        externalId: "555666777888999",
+        displayAddress: "+57 300 000 0000",
+        credentials: {
+          phoneNumberId: "555666777888999",
+          wabaId: "waba-test-1",
+          accessToken: "token-meta-test",
+          appSecret: "secreto-meta-test",
+          verifyToken: "verify-meta-test",
+        },
+      });
+      const master = await adminPool.query<{ id: string }>(
+        `SELECT id FROM admins WHERE username = $1`,
+        [ADMIN_USERNAME],
+      );
+      masterAdminId = master.rows[0]!.id;
+    });
+
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    afterAll(async () => {
+      // ON DELETE CASCADE en whatsapp_templates.connection_id se lleva
+      // cualquier fila que haya quedado de un test fallido a mitad de camino.
+      await adminPool.query(`DELETE FROM channel_connections WHERE id = $1`, [conexionMetaId]);
+      invalidateConnectionsCache();
+    });
+
+    it("un admin que no es master no puede entrar a Plantillas", async () => {
+      // Sesión creada directo contra admin_sessions (mismo criterio que
+      // loginComoRecupera), no vía POST /login: ese endpoint tiene su
+      // propio techo de 10/min (ver server.ts) y este archivo hace bastantes
+      // logins reales a lo largo de la suite — lo que a este test le importa
+      // es la restricción por rol, no cómo se abrió la sesión.
+      const passwordHash = await hashPassword("Colab-Plantillas-1");
+      const colabId = await createAdmin(
+        "colab plantillas",
+        "colab-plantillas@formotos.test",
+        passwordHash,
+        "colaborador",
+        null,
+      );
+      const token = await createAdminSession(colabId);
+      const colabCookie = `agent_sale_admin_session=${token}`;
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/plantillas",
+        headers: { cookie: colabCookie },
+      });
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("crea una plantilla y la manda a revisión de Meta en el mismo request", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "tpl-meta-123", status: "PENDING" }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "pedido_confirmado",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}. Gracias por tu compra.",
+          bodyExamples: "Juan, 1042, $150.000, Domicilio",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const fila = await adminPool.query<{ status: string; external_template_id: string }>(
+        `SELECT status, external_template_id FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado'`,
+        [conexionMetaId],
+      );
+      expect(fila.rows[0]).toMatchObject({ status: "pending", external_template_id: "tpl-meta-123" });
+
+      await adminPool.query(
+        `DELETE FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado'`,
+        [conexionMetaId],
+      );
+    });
+
+    it("crea una plantilla con botones de respuesta rápida y un botón de enlace con variable", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "tpl-meta-botones", status: "PENDING" }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "pedido_confirmado_botones",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola, tu pedido fue confirmado. Gracias por tu compra.",
+          quickReply1: "Agregar productos",
+          quickReply2: "Cancelar pedido",
+          ctaLabel: "Confirmar y pagar",
+          ctaUrl: "https://formotos-test.com/pago/{{1}}",
+          ctaUrlExample: "1042",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      const [, init] = fetchMock.mock.calls[0]!;
+      const body = JSON.parse((init as RequestInit).body as string);
+      const buttonsComponent = body.components.find((c: { type: string }) => c.type === "BUTTONS");
+      expect(buttonsComponent.buttons).toEqual([
+        { type: "QUICK_REPLY", text: "Agregar productos" },
+        { type: "QUICK_REPLY", text: "Cancelar pedido" },
+        { type: "URL", text: "Confirmar y pagar", url: "https://formotos-test.com/pago/{{1}}", example: ["1042"] },
+      ]);
+
+      await adminPool.query(
+        `DELETE FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pedido_confirmado_botones'`,
+        [conexionMetaId],
+      );
+    });
+
+    it("rechaza un botón de enlace sin https, sin llamar a Meta", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "enlace_invalido",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola, tu pedido fue confirmado.",
+          ctaLabel: "Pagar",
+          ctaUrl: "http://formotos-test.com/pago",
+        }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("rechaza el alta si el cuerpo tiene variables sin ejemplos, sin llamar a Meta", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          name: "sin_ejemplos",
+          category: "UTILITY",
+          language: "es",
+          body: "Hola {{1}}, tu pedido está listo.",
+        }).toString(),
+      });
+
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("envía hello_world sin pasar por la tabla de plantillas locales", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ messages: [{ id: "wamid.HELLO" }] }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas/prueba",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          templateId: "",
+          to: "+573001234567",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("guardado=1");
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain("/555666777888999/messages");
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body.template).toMatchObject({ name: "hello_world", language: { code: "en_US" } });
+      expect(body.template.components).toBeUndefined();
+    });
+
+    it("no envía una plantilla que todavía no está aprobada por Meta", async () => {
+      const templateId = await createTemplateRecord({
+        connectionId: conexionMetaId,
+        name: "pendiente_de_prueba",
+        category: "UTILITY",
+        language: "es",
+        components: [{ type: "BODY", text: "Hola, sin variables." }],
+        createdByAdminId: masterAdminId,
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/plantillas/prueba",
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          connectionId: conexionMetaId,
+          templateId,
+          to: "+573001234567",
+        }).toString(),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await deleteTemplateRecord(templateId);
+    });
+
+    it("el listado nunca imprime el access token ni el app secret en claro", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/plantillas",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain("hello_world");
+      expect(response.body).not.toContain("token-meta-test");
+      expect(response.body).not.toContain("secreto-meta-test");
     });
   });
 

@@ -18,6 +18,7 @@ import {
   crearCategoria,
   crearColaborador,
   crearConexionMeta,
+  crearPlantilla,
   crearPromocion,
   crearProducto,
   desactivarAliado,
@@ -27,7 +28,9 @@ import {
   desactivarColaborador,
   desactivarPromocion,
   editarColaborador,
+  eliminarPlantilla,
   enviarMensajeHumano,
+  enviarPruebaPlantilla,
   exportLeadsCsv,
   guardarAliado,
   guardarCategoria,
@@ -63,6 +66,7 @@ import {
   renderOverviewPage,
   renderPedidosPage,
   renderPerfilPage,
+  renderPlantillasPage,
   renderProductosPage,
   renderPromocionesPage,
   renderRecuperarContrasenaPage,
@@ -70,6 +74,7 @@ import {
   renderTicketsPage,
   resolverTicket,
   restablecerContrasenaConToken,
+  sincronizarPlantilla,
   solicitarRecuperacionContrasena,
   setConexionActiva,
   tomarTicket,
@@ -152,7 +157,7 @@ export async function buildServer() {
   // los canales, así que restringirla es un endurecimiento deliberado
   // respecto de la versión anterior de la página, que veía cualquier admin.
   app.addHook("preHandler", async (request, reply) => {
-    if (!request.url.match(/^\/admin\/(colaboradores|conexiones)/i)) {
+    if (!request.url.match(/^\/admin\/(colaboradores|conexiones|plantillas)/i)) {
       return;
     }
     if (request.admin?.role !== "master") {
@@ -1108,6 +1113,56 @@ export async function buildServer() {
     const { promotionId } = request.params as { promotionId: string };
     await desactivarPromocion(promotionId);
     return reply.status(303).redirect("/admin/promociones?guardado=1");
+  });
+
+  app.get("/admin/plantillas", async (request, reply) => {
+    const { error, guardado } = request.query as { error?: string; guardado?: string };
+    const html = await renderPlantillasPage(request.admin!, { error, guardado });
+    if (!html) {
+      return reply.status(404).send();
+    }
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/admin/plantillas", async (request, reply) => {
+    const result = await crearPlantilla(
+      request.admin!,
+      request.body as Parameters<typeof crearPlantilla>[1],
+    );
+    const redirectUrl = result.ok
+      ? "/admin/plantillas?guardado=1"
+      : `/admin/plantillas?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/plantillas/:templateId/eliminar", async (request, reply) => {
+    const { templateId } = request.params as { templateId: string };
+    const result = await eliminarPlantilla(templateId);
+    const redirectUrl = result.ok
+      ? "/admin/plantillas?guardado=1"
+      : `/admin/plantillas?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/plantillas/:templateId/sincronizar", async (request, reply) => {
+    const { templateId } = request.params as { templateId: string };
+    const result = await sincronizarPlantilla(templateId);
+    const redirectUrl = result.ok
+      ? "/admin/plantillas?guardado=1"
+      : `/admin/plantillas?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  // Atiende también hello_world, que no tiene fila en whatsapp_templates —
+  // por eso va con `templateId` en el body y no como parámetro de ruta.
+  app.post("/admin/plantillas/prueba", async (request, reply) => {
+    const result = await enviarPruebaPlantilla(
+      request.body as Parameters<typeof enviarPruebaPlantilla>[0],
+    );
+    const redirectUrl = result.ok
+      ? "/admin/plantillas?guardado=1"
+      : `/admin/plantillas?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
   });
 
   /**

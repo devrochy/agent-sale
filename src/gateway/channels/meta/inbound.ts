@@ -193,10 +193,20 @@ export const metaInboundAdapter: InboundAdapter = {
    * endpoint para los callbacks de estado de entrega. Devolver `[]` es un
    * resultado normal, no un error (ver `parseDeliveryStatuses`).
    *
-   * Solo se normalizan los mensajes de texto. Los de otro tipo (imagen, audio,
-   * ubicación) se ignoran en silencio: el pipeline de entrada es 100% texto
-   * hoy, igual que con Twilio, y tragarse un tipo desconocido es preferible a
-   * encolar un mensaje vacío que el agente respondería sin sentido.
+   * Se normalizan los mensajes de texto y los taps de botón QUICK_REPLY de
+   * una plantilla (`type: "button"`, `button.text` — ver cerrarPedido.ts).
+   * Confirmado contra un payload real de Meta: el tap de un botón de
+   * plantilla llega como `type: "button"` con `button.text`, **no** como
+   * `type: "interactive"` con `interactive.button_reply` (esa forma es
+   * para botones de un mensaje interactivo suelto, no de una plantilla —
+   * se dejó tipada en payload.ts por si se usa más adelante, pero no es lo
+   * que manda Meta acá). El tap llega con el título del botón, nunca con
+   * su `payload`/`id`: es lo que hace que el LLM lo pueda interpretar como
+   * cualquier mensaje de texto ("Cancelar pedido"), sin un router aparte.
+   * Los demás tipos (imagen, audio, ubicación, `interactive`) se ignoran
+   * en silencio: el pipeline de entrada es 100% texto hoy, igual que con
+   * Twilio, y tragarse un tipo desconocido es preferible a encolar un
+   * mensaje vacío que el agente respondería sin sentido.
    */
   parseInbound(raw: RawInboundRequest): NormalizedInbound[] {
     const payload = parseMetaPayload(raw.rawBody);
@@ -210,7 +220,9 @@ export const metaInboundAdapter: InboundAdapter = {
     const mensajes: NormalizedInbound[] = [];
     for (const value of metaValues(payload)) {
       for (const mensaje of value.messages ?? []) {
-        if (mensaje.type !== "text" || !mensaje.id || !mensaje.from) {
+        const botonTocado = mensaje.type === "button" ? mensaje.button?.text : undefined;
+        const body = mensaje.type === "text" ? mensaje.text?.body : botonTocado;
+        if (body === undefined || !mensaje.id || !mensaje.from) {
           // Sin esto el descarte es invisible: el cliente manda un audio o una
           // foto, no recibe nada, y no queda una sola línea que lo explique.
           logger.info(
@@ -223,7 +235,7 @@ export const metaInboundAdapter: InboundAdapter = {
           externalMessageId: mensaje.id,
           customerExternalId: metaWaIdToCanonical(mensaje.from),
           customerName: nombreDelContacto(value, mensaje.from),
-          body: mensaje.text?.body ?? "",
+          body,
           receivedAt: receivedAtFrom(mensaje.timestamp),
         });
       }
