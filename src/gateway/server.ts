@@ -89,6 +89,10 @@ import {
   confirmarDomicilioManual,
   reenviarConfirmacionDomicilio,
 } from "../domains/commerce/confirmarDomicilioPedido.js";
+import {
+  aprobarComprobanteManual,
+  rechazarComprobanteManual,
+} from "../domains/commerce/procesarComprobante.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { listConnectionsWithCredentials, type Channel } from "../shared/db/connectionsDirectory.js";
 import { logger } from "../shared/observability/logger.js";
@@ -561,6 +565,24 @@ export async function buildServer() {
     const { orderId } = request.params as { orderId: string };
     await cancelarPedido(orderId, request.admin!);
     return reply.status(303).redirect("/admin/pedidos?guardado=1");
+  });
+
+  app.post("/admin/comprobantes/:orderId/aprobar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    const { receiptId } = request.body as { receiptId?: string };
+    const ok = receiptId ? await aprobarComprobanteManual(orderId, receiptId, request.admin!.username) : false;
+    return reply
+      .status(303)
+      .redirect(ok ? "/admin/pedidos?guardado=1" : "/admin/pedidos?error=No se pudo aprobar el pago.");
+  });
+
+  app.post("/admin/comprobantes/:orderId/rechazar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    const { receiptId } = request.body as { receiptId?: string };
+    const ok = receiptId ? await rechazarComprobanteManual(orderId, receiptId, request.admin!.username) : false;
+    return reply
+      .status(303)
+      .redirect(ok ? "/admin/pedidos?guardado=1" : "/admin/pedidos?error=No se pudo rechazar el pago.");
   });
 
   app.post("/admin/colaboradores", async (request, reply) => {

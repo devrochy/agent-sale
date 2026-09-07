@@ -5,6 +5,7 @@ import { redis } from "../shared/redis/client.js";
 import { resolveBehaviorConfig, DEBOUNCE_DELAY_MS } from "./behaviorConfig.js";
 import { scheduleDebounce } from "./debounceScheduler.js";
 import { appendInbound, processConversation } from "./loop.js";
+import { procesarMediaEntrante } from "./mediaIngestion.js";
 import { appendMessage, resolveConversation } from "./memory.js";
 import { tryCaptureSurveyReply } from "./satisfactionSurvey.js";
 import { sendTurnBubbles } from "./sendTurnResult.js";
@@ -98,11 +99,33 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     const [settings, { conversationId: pausedConversationId, customerBotPaused, conversationBotPaused }] =
       await Promise.all([getSettings(), resolveConversation(customerExternalId, customerName, origin)]);
     if (settings?.bot_paused || customerBotPaused || conversationBotPaused) {
-      await appendMessage(pausedConversationId, "inbound", "customer", message.body);
+      await appendMessage(
+        pausedConversationId,
+        "inbound",
+        "customer",
+        message.body || (message.media ? `[${message.media.type === "image" ? "Imagen" : "Audio"} adjunto]` : ""),
+      );
       entryLogger.info(
         { event: "orchestrator.bot_pausado" },
         "Bot pausado — mensaje guardado sin respuesta automática",
       );
+      await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
+      return;
+    }
+
+    // Medios entrantes (imagen/audio) — ruteo determinístico, nunca pasa
+    // por el LLM (ver mediaIngestion.ts). `false` significa "no hay nada
+    // implementado todavía para este caso" (audio, o imagen que no es un
+    // comprobante) — mismo descarte silencioso que existía antes de esta
+    // feature, solo que ahora vive acá y no en el parseo del webhook.
+    if (message.media) {
+      const manejado = await procesarMediaEntrante(message, origin, entryLogger);
+      if (!manejado) {
+        entryLogger.info(
+          { event: "gateway.mensaje_meta_ignorado", tipo: message.media.type },
+          "Media entrante sin manejo automático todavía — se descarta",
+        );
+      }
       await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
       return;
     }

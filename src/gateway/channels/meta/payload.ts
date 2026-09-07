@@ -43,6 +43,10 @@ export interface MetaMessage {
    * tipo URL no genera ningún mensaje de vuelta: abre el link directo.
    */
   button?: { payload?: string; text?: string };
+  /** Presente cuando `type === "image"` — el `id` es lo que necesita `media.ts` para descargarla (`GET /{id}`), no una URL directa. */
+  image?: { id?: string; mime_type?: string; sha256?: string; caption?: string };
+  /** Presente cuando `type === "audio"` — sin `caption` (WhatsApp no lo ofrece para audio). */
+  audio?: { id?: string; mime_type?: string };
 }
 
 export interface MetaStatusError {

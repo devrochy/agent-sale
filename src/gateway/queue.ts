@@ -1,4 +1,5 @@
 import type { Channel } from "../shared/db/connectionsDirectory.js";
+import type { InboundMediaRef } from "./channels/types.js";
 import { redis } from "../shared/redis/client.js";
 
 /**
@@ -27,6 +28,8 @@ export interface InboundMessage {
   /** Conexión por la que entró (Fase 19) — ausente en entradas anteriores al despliegue. */
   connectionId?: string;
   channel?: Channel;
+  /** Ausente para texto normal — presente cuando el cliente mandó una imagen o un audio (ver InboundMediaRef). */
+  media?: InboundMediaRef;
 }
 
 /**
@@ -59,6 +62,12 @@ export async function enqueueInboundMessage(message: InboundMessage): Promise<st
     message.connectionId ?? "",
     "channel",
     message.channel ?? "",
+    // Serializado y no campos sueltos (a diferencia del resto): es un objeto
+    // chico y opcional, y una entrada Redis Stream no tiene forma de
+    // representar "campo ausente" salvo con una convención propia — un JSON
+    // vacío ("") ya la expresa sin inventar una.
+    "media_json",
+    message.media ? JSON.stringify(message.media) : "",
   ) as Promise<string>;
 }
 
@@ -70,6 +79,17 @@ export async function enqueueInboundMessage(message: InboundMessage): Promise<st
  * anterior, que no traen los campos de conexión.
  */
 export function parseInboundFields(fields: Record<string, string>): InboundMessage {
+  let media: InboundMediaRef | undefined;
+  if (fields.media_json) {
+    try {
+      media = JSON.parse(fields.media_json) as InboundMediaRef;
+    } catch {
+      // Entrada corrupta o de un formato futuro que este release no conoce
+      // todavía — se procesa igual como si fuera texto, no se descarta el
+      // mensaje entero por esto.
+      media = undefined;
+    }
+  }
   return {
     messageSid: fields.message_sid ?? "",
     customerExternalId: fields.customer_phone ?? "",
@@ -78,5 +98,6 @@ export function parseInboundFields(fields: Record<string, string>): InboundMessa
     receivedAt: fields.received_at ?? "",
     connectionId: fields.connection_id || undefined,
     channel: (fields.channel || undefined) as Channel | undefined,
+    media,
   };
 }
