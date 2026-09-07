@@ -6,6 +6,7 @@ import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { cerrarPedido } from "../../../src/domains/commerce/cerrarPedido.js";
 import { cancelarPedido } from "../../../src/domains/commerce/cancelarPedido.js";
 import { confirmarDomicilioPedido } from "../../../src/domains/commerce/confirmarDomicilioPedido.js";
+import { actualizarDireccionPedido } from "../../../src/domains/commerce/actualizarDireccionPedido.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import {
@@ -260,6 +261,89 @@ describe("cerrar_pedido con confirmar_domicilio", () => {
     fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.encamino" }] }));
     const guiaDespues = await registrarGuia(orderId, { trackingNumber: "GUIA-FLUJO-1", carrier: "Servientrega" });
     expect(guiaDespues).toEqual({ ok: true });
+  });
+});
+
+describe("actualizar_direccion_pedido", () => {
+  async function nuevoPedidoAbierto(): Promise<string> {
+    const quoteId = await nuevaCotizacion();
+    const created = await crearPedido(
+      `sid-flujo-direccion-${Date.now()}-${Math.random()}`,
+      {
+        quote_id: quoteId,
+        payment_method: "efectivo_contraentrega",
+        delivery_method: "domicilio",
+        customer_data: customerData,
+      },
+      1000000,
+    );
+    return created.order_id!;
+  }
+
+  it("cambia la dirección del pedido sin tocar el perfil cuando guardar_permanente es false", async () => {
+    const orderId = await nuevoPedidoAbierto();
+
+    const result = await actualizarDireccionPedido({
+      order_id: orderId,
+      direccion_nueva: "Calle nueva temporal # 1-23",
+      guardar_permanente: false,
+    });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+
+    const order = await adminPool.query<{ delivery_address: string; address_confirmed_at: Date | null }>(
+      `SELECT delivery_address, address_confirmed_at FROM orders WHERE id = $1`,
+      [orderId],
+    );
+    expect(order.rows[0]!.delivery_address).toBe("Calle nueva temporal # 1-23");
+    expect(order.rows[0]!.address_confirmed_at).not.toBeNull();
+
+    const customer = await adminPool.query<{ address: string | null }>(`SELECT address FROM customers WHERE id = $1`, [
+      customerId,
+    ]);
+    // customerData usa save_permanently: false — crearPedido nunca escribe en
+    // customers.address con ese flag, así que sigue en null (el customer se
+    // creó con un INSERT mínimo en el beforeAll de este archivo).
+    expect(customer.rows[0]!.address).toBeNull();
+  });
+
+  it("además actualiza el perfil del cliente cuando guardar_permanente es true", async () => {
+    const orderId = await nuevoPedidoAbierto();
+
+    const result = await actualizarDireccionPedido({
+      order_id: orderId,
+      direccion_nueva: "Calle nueva permanente # 4-56",
+      guardar_permanente: true,
+    });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+
+    const customer = await adminPool.query<{ address: string | null }>(`SELECT address FROM customers WHERE id = $1`, [
+      customerId,
+    ]);
+    expect(customer.rows[0]!.address).toBe("Calle nueva permanente # 4-56");
+  });
+
+  it("devuelve pedido_no_abierto si el pedido ya no está abierto, sin tocar la dirección", async () => {
+    const orderId = await nuevoPedidoAbierto();
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.cancelado-direccion" }] }));
+    await cancelarPedido({ order_id: orderId });
+
+    const before = await adminPool.query<{ delivery_address: string | null }>(
+      `SELECT delivery_address FROM orders WHERE id = $1`,
+      [orderId],
+    );
+
+    const result = await actualizarDireccionPedido({
+      order_id: orderId,
+      direccion_nueva: "Dirección que no debería guardarse",
+      guardar_permanente: false,
+    });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+
+    const after = await adminPool.query<{ delivery_address: string | null }>(
+      `SELECT delivery_address FROM orders WHERE id = $1`,
+      [orderId],
+    );
+    expect(after.rows[0]!.delivery_address).toBe(before.rows[0]!.delivery_address);
   });
 });
 

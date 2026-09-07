@@ -22,6 +22,10 @@ import {
   type ConfirmarDomicilioPedidoInput,
 } from "../domains/commerce/confirmarDomicilioPedido.js";
 import {
+  actualizarDireccionPedido,
+  type ActualizarDireccionPedidoInput,
+} from "../domains/commerce/actualizarDireccionPedido.js";
+import {
   consultarEstadoPedido,
   type ConsultarEstadoPedidoInput,
 } from "../domains/commerce/consultarEstadoPedido.js";
@@ -98,6 +102,9 @@ export async function executeTool(
         break;
       case "confirmar_domicilio_pedido":
         output = await confirmarDomicilioPedido(toolUse.input as ConfirmarDomicilioPedidoInput);
+        break;
+      case "actualizar_direccion_pedido":
+        output = await actualizarDireccionPedido(toolUse.input as ActualizarDireccionPedidoInput);
         break;
       case "cerrar_pedido":
         output = await cerrarPedido(toolUse.input as CerrarPedidoInput);

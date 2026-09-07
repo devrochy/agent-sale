@@ -180,6 +180,23 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "actualizar_direccion_pedido",
+    description:
+      "Cambia la dirección de entrega de un pedido abierto. Llamar cuando el cliente responde 'Cambiar temporalmente' o 'Cambiar permanentemente' al botón de la plantilla 'confirmar_domicilio' — en cualquiera de los dos casos, primero pedile la dirección nueva por texto (nunca asumas una). Cuando la dé, llamá esta tool con 'order_id', 'direccion_nueva', y 'guardar_permanente' en true solo si tocó 'Cambiar permanentemente' (para que quede guardada en su perfil para próximos pedidos), false si tocó 'Cambiar temporalmente' (solo aplica a este pedido). Si devuelve 'pedido_no_abierto', avisale que ese pedido ya no admite cambios de dirección.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido cuya dirección se cambia." },
+        direccion_nueva: { type: "string", description: "Dirección de entrega nueva, tal como la dio el cliente." },
+        guardar_permanente: {
+          type: "boolean",
+          description: "true si el cliente tocó 'Cambiar permanentemente' (se guarda también en su perfil); false si tocó 'Cambiar temporalmente'.",
+        },
+      },
+      required: ["order_id", "direccion_nueva", "guardar_permanente"],
+    },
+  },
+  {
     name: "cerrar_pedido",
     description:
       "Manda la plantilla de WhatsApp 'pedido_confirmado' (resumen del pedido con 3 botones: Agregar productos, Cancelar pedido, Confirmar y pagar) y termina el turno esperando la respuesta del cliente. Llamar cuando el cliente confirme que ya no quiere agregar nada más a un pedido abierto (creado con crear_pedido, quizás ampliado con agregar_item_pedido) y esté listo para cerrarlo — en vez de redactar vos el resumen final, esta tool se lo manda con las 3 opciones ya armadas. Si el cliente responde con texto pidiendo agregar algo, usa agregar_item_pedido; si pide cancelar, usa cancelar_pedido; si toca 'Confirmar y pagar' no llega ningún mensaje nuevo (el botón abre un link directo), así que no hace falta que hagas nada más. Si devuelve 'plantilla_no_aprobada' o 'canal_no_soportado', no repitas el intento: seguí la conversación por texto normal, resumiendo vos el pedido y preguntando cómo quiere continuar.",

@@ -20,7 +20,7 @@ El agente (Claude) **nunca decide el texto exacto de una plantilla** — decide 
 |---|---|---|---|
 | `pedido_confirmado` | Utility | `cerrarPedido.ts` (tool `cerrar_pedido`) | No cierra el pedido con plantilla; `cerrar_pedido` devuelve `plantilla_no_aprobada` sin mandar nada |
 | `metodo_pago` | Utility | `preguntarMetodoPago.ts` (tool `preguntar_metodo_pago`) | Ídem, sin fallback de texto libre |
-| `confirmar_domicilio` | Utility | `cerrarPedido.ts` (2do envío, best-effort) + `confirmarDomicilioPedido.ts` (reenvío desde el panel) | El cierre del pedido no falla (`domicilio_status: "plantilla_no_aprobada"`); el panel puede reenviarla después o el admin confirma a mano |
+| `confirmar_domicilio` | Utility | `cerrarPedido.ts` (2do envío, best-effort) + `confirmarDomicilioPedido.ts` (reenvío desde el panel) | El cierre del pedido no falla (`domicilio_status: "plantilla_no_aprobada"`); el panel puede reenviarla después o el admin confirma a mano — si no está aprobada tampoco se puede usar `actualizar_direccion_pedido` (depende del mismo envío) |
 | `pago_aprobado` | Utility | `notificarPagoCliente.ts` (webhook de Wompi, pago `APPROVED`) | No se manda nada al cliente (los admins sí se enteran, por otro camino) |
 | `pago_rechazado` | Utility | `notificarPagoCliente.ts` (webhook de Wompi, pago `DECLINED`/`VOIDED`/`ERROR`) | Ídem |
 | `pedido_en_camino` | Utility | `registrarGuia.ts` (al registrar la guía por primera vez) | Cae al texto libre de siempre — sin regresión, solo pierde alcance fuera de la ventana de 24h |
@@ -48,9 +48,9 @@ El agente (Claude) **nunca decide el texto exacto de una plantilla** — decide 
 - **Variables:** `{{1}}` número de pedido · `{{2}}` dirección de entrega
 - **Cuerpo:** `Antes de alistar tu pedido #{{1}}, confirmanos si la dirección de entrega sigue siendo {{2}}, así seguimos con el despacho.`
 - **Ejemplos:** `FM-0001, Cra 45 #12-30, Bogotá`
-- **Botones:** 1 Quick Reply (`Confirmar dirección`)
-- **Código:** `src/domains/commerce/cerrarPedido.ts` (envío automático) y `src/domains/commerce/confirmarDomicilioPedido.ts` (reenvío/confirmación manual)
-- Gate relacionado: `registrarGuia.ts` exige `orders.address_confirmed_at IS NOT NULL` antes de aceptar una guía (migración `0059_orders_domicilio_confirmado.cjs`).
+- **Botones:** 3 Quick Reply — `Confirmar dirección` · `Cambiar temporalmente` (solo este pedido) · `Cambiar permanentemente` (además actualiza el perfil)
+- **Código:** `src/domains/commerce/cerrarPedido.ts` (envío automático) y `src/domains/commerce/confirmarDomicilioPedido.ts` (reenvío/confirmación manual); `src/domains/commerce/actualizarDireccionPedido.ts` resuelve los dos botones de cambio (tool `actualizar_direccion_pedido`) — actualiza `orders.delivery_address` siempre y `customers.address` solo si el cliente tocó "Cambiar permanentemente" (mismo criterio que `save_permanently` en `crearPedido.ts`).
+- Gate relacionado: `registrarGuia.ts` exige `orders.address_confirmed_at IS NOT NULL` antes de aceptar una guía (migración `0059_orders_domicilio_confirmado.cjs`) — cualquiera de los 3 botones deja esa columna en `now()`.
 
 ### `pago_aprobado`
 - **Variables:** `{{1}}` número de pedido · `{{2}}` monto pagado
@@ -115,6 +115,7 @@ Completar esta tabla a medida que se crean/aprueban desde `/admin/plantillas` �
 | Promoción (nombre a definir) | ⬜ | ⬜ | | |
 
 ## Historial de cambios
+- **2026-09-06:** `confirmar_domicilio` pasa de 1 a 3 botones — se agregan `Cambiar temporalmente` (solo ese pedido) y `Cambiar permanentemente` (también actualiza el perfil), con la tool nueva `actualizar_direccion_pedido` (`src/domains/commerce/actualizarDireccionPedido.ts`) resolviéndolos. Como la plantilla todavía no se había creado en Meta, se define directamente con los 3 botones (sin recrear nada).
 - **2026-09-03 — PR #96** (`feature/plantillas-meta`): gestión de plantillas desde `/admin/plantillas` + `pedido_confirmado` creada, aprobada y probada en vivo contra un número real, integrada a `cerrar_pedido`/`cancelar_pedido`.
 - **2026-09-05 — PR #97** (`feature/plantillas-flujo-completo`, apilado sobre #96): las 7 plantillas restantes + sus disparadores de dominio (`resolveApprovedTemplate.ts`, `preguntarMetodoPago.ts`, `confirmarDomicilioPedido.ts`, `notificarPagoCliente.ts`, `notificarPedidoCancelado.ts`, gate de domicilio en `registrarGuia.ts`, job `reactivarCotizacionesFrias.ts`). Ambos PRs mergeados a `develop` el mismo día.
 - **2026-09-05:** texto de `pedido_confirmado` revisado (se saca el saludo inicial) y definición final del cuerpo/variables de las 8 plantillas nuevas — ninguna abre con "Hola", todas asumen continuidad de una conversación ya en curso. Este documento pasa a ser la referencia única (reemplaza la versión pensada para Twilio, nunca implementada).
