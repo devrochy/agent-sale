@@ -68,4 +68,10 @@ export const env = {
   // bloquear el arranque de todo el proceso por una key que puede no
   // hacer falta nunca.
   geminiApiKey: process.env.GEMINI_API_KEY ?? "",
+  // Transcripción de audio (Whisper de OpenAI) — infraestructura interna
+  // para el pipeline de ingesta de medios (ver
+  // `media/transcribirAudio.ts`), no un proveedor de chat: opcional acá,
+  // se valida recién al usarla, igual que `anthropicApiKey` para el OCR
+  // del comprobante.
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
 };
