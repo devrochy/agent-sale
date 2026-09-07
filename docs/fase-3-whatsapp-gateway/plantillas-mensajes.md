@@ -106,7 +106,7 @@ Completar esta tabla a medida que se crean/aprueban desde `/admin/plantillas` �
 |---|---|---|---|---|
 | `pedido_confirmado` | ✅ | ✅ | 2026-09-03 | En revisión otra vez mientras se aplica el texto sin saludo de este documento |
 | `metodo_pago` | ⬜ | ⬜ | | |
-| `confirmar_domicilio` | ⬜ | ⬜ | | |
+| `confirmar_domicilio` | ✅ | ⬜ | 2026-09-06 | Primer intento rechazado por Meta con error genérico ("Invalid parameter", código 100, sin más detalle); reintentada con los mismos datos, sin cambios, y esta vez se creó bien — probable error transitorio del lado de Meta. En revisión. |
 | `pago_aprobado` | ⬜ | ⬜ | | |
 | `pago_rechazado` | ⬜ | ⬜ | | |
 | `pedido_en_camino` | ⬜ | ⬜ | | |
@@ -115,6 +115,7 @@ Completar esta tabla a medida que se crean/aprueban desde `/admin/plantillas` �
 | Promoción (nombre a definir) | ⬜ | ⬜ | | |
 
 ## Historial de cambios
+- **2026-09-06:** el mensaje de error de la Graph API (`src/gateway/channels/meta/graph.ts`) ahora prioriza `error_user_msg`/`error_user_title`/`error_data.details` sobre el genérico `error.message` — a raíz de que el primer intento de crear `confirmar_domicilio` solo mostró "Invalid parameter (código 100)", sin pista de la causa real.
 - **2026-09-06:** `confirmar_domicilio` pasa de 1 a 3 botones — se agregan `Cambiar temporalmente` (solo ese pedido) y `Cambiar permanentemente` (también actualiza el perfil), con la tool nueva `actualizar_direccion_pedido` (`src/domains/commerce/actualizarDireccionPedido.ts`) resolviéndolos. Como la plantilla todavía no se había creado en Meta, se define directamente con los 3 botones (sin recrear nada).
 - **2026-09-03 — PR #96** (`feature/plantillas-meta`): gestión de plantillas desde `/admin/plantillas` + `pedido_confirmado` creada, aprobada y probada en vivo contra un número real, integrada a `cerrar_pedido`/`cancelar_pedido`.
 - **2026-09-05 — PR #97** (`feature/plantillas-flujo-completo`, apilado sobre #96): las 7 plantillas restantes + sus disparadores de dominio (`resolveApprovedTemplate.ts`, `preguntarMetodoPago.ts`, `confirmarDomicilioPedido.ts`, `notificarPagoCliente.ts`, `notificarPedidoCancelado.ts`, gate de domicilio en `registrarGuia.ts`, job `reactivarCotizacionesFrias.ts`). Ambos PRs mergeados a `develop` el mismo día.
