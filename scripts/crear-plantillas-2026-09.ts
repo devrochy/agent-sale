@@ -115,14 +115,31 @@ async function main() {
         bodyExamples: "FM-0001",
       },
     },
+    {
+      // Sin nombre fijo en el código — "Mandar promoción" en Leads lista
+      // cualquier plantilla MARKETING aprobada (ver enviarPromocionCliente,
+      // adminPanel.ts). "promocion_general" es el nombre elegido acá.
+      name: "promocion_general",
+      input: {
+        connectionId,
+        name: "promocion_general",
+        category: "MARKETING",
+        language: "es",
+        body: "🔥 ¡{{1}} en ForMotos! {{2}}% de descuento en {{3}} hasta el {{4}}. ¡No te lo pierdas!",
+        bodyExamples: "Black Friday, 20, cascos, 30/11",
+      },
+    },
   ];
 
-  // "pedido_confirmado" a secas: Meta la bloqueó por 4 semanas tras el
-  // primer intento de borrar+recrear (ver docs/fase-3-whatsapp-gateway/
-  // plantillas-mensajes.md) — se crea con "_v2" para no esperar el mes.
+  // "pedido_confirmado" a secas: Meta la bloqueó al intentar borrar+recrear
+  // (dijo "4 weeks"). Se creó "_v2" en su lugar, pero borrarla para
+  // recrearla (bug del script, ver más abajo) la volvió a bloquear — otra
+  // vez con un mensaje de tiempo que no se cumplió ("less than 1 minute",
+  // y siguió bloqueada 5+ minutos). Se crea con "_v3" en vez de seguir
+  // reintentando a ciegas — ver docs/fase-3-whatsapp-gateway/plantillas-mensajes.md.
   const pedidoConfirmadoInput: TemplateInput = {
     connectionId,
-    name: "pedido_confirmado_v2",
+    name: "pedido_confirmado_v3",
     category: "UTILITY",
     language: "es",
     body: "✅ ¡Gracias, {{1}}! Tu pedido #{{2}} por {{3}} quedó confirmado. 📦 Entrega: {{4}}. Cualquier cosa, estamos acá para ayudarte.",
@@ -150,24 +167,31 @@ async function main() {
     }
   }
 
-  console.log("\n--- pedido_confirmado_v2 ---");
-  // "pedido_confirmado" (el nombre original) ya se borró en una corrida
-  // anterior y Meta bloqueó recrearla por 4 semanas — no se vuelve a tocar
-  // acá. Esto solo crea (o, si ya existe por una corrida previa de este
-  // mismo script, borra y recrea) "pedido_confirmado_v2".
-  const v2Actual = existentes.find((t) => t.name === "pedido_confirmado_v2");
-  if (!v2Actual) {
+  console.log("\n--- pedido_confirmado_v3 ---");
+  // "pedido_confirmado" y "pedido_confirmado_v2" quedaron bloqueadas por
+  // Meta (ver comentario más arriba) — no se vuelven a tocar acá. Mismo
+  // criterio que el loop de arriba: si "pedido_confirmado_v3" ya existe, se
+  // salta — NO se borra/recrea sola en cada corrida (eso fue justo el bug
+  // que bloqueó "_v2": una corrida pensada solo para "promocion_general"
+  // terminó borrándola sin necesidad). Para forzar un borrado+recreación
+  // real (ej. si hay que cambiar el cuerpo de nuevo), usar
+  // FORZAR_RECREACION_PEDIDO_CONFIRMADO=1 explícitamente — con el riesgo ya
+  // visto de quedar bloqueada un rato.
+  const actual = existentes.find((t) => t.name === "pedido_confirmado_v3");
+  if (!actual) {
     const resultado = await crearPlantilla(admin, pedidoConfirmadoInput);
-    console.log(resultado.ok ? "✅ pedido_confirmado_v2: creada." : `❌ pedido_confirmado_v2: ${resultado.error}`);
+    console.log(resultado.ok ? "✅ pedido_confirmado_v3: creada." : `❌ pedido_confirmado_v3: ${resultado.error}`);
+  } else if (process.env.FORZAR_RECREACION_PEDIDO_CONFIRMADO !== "1") {
+    console.log(`⏭  pedido_confirmado_v3: ya existe en la base (status=${actual.status}) — se salta.`);
   } else {
-    const borrado = await eliminarPlantilla(v2Actual.id);
+    const borrado = await eliminarPlantilla(actual.id);
     if (!borrado.ok) {
-      console.error(`❌ No se pudo borrar pedido_confirmado_v2 en Meta: ${borrado.error}`);
+      console.error(`❌ No se pudo borrar pedido_confirmado_v3 en Meta: ${borrado.error}`);
       console.error("No se intenta recrear — quedó como estaba.");
     } else {
-      console.log("🗑  pedido_confirmado_v2: borrada en Meta y en la base.");
+      console.log("🗑  pedido_confirmado_v3: borrada en Meta y en la base.");
       const resultado = await crearPlantilla(admin, pedidoConfirmadoInput);
-      console.log(resultado.ok ? "✅ pedido_confirmado_v2: recreada." : `❌ pedido_confirmado_v2: ${resultado.error}`);
+      console.log(resultado.ok ? "✅ pedido_confirmado_v3: recreada." : `❌ pedido_confirmado_v3: ${resultado.error}`);
     }
   }
 }
