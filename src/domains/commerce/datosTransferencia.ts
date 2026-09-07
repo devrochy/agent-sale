@@ -42,10 +42,15 @@ export function formatearDatosTransferencia(
   );
 }
 
+export type EnviarDatosTransferenciaResultado = "enviado" | "sin_cuentas" | "error_envio";
+
 /**
- * Manda los datos si hay al menos una cuenta activa. Devuelve si se mandó
- * algo, para que el caller pueda decirle al LLM que ya está hecho y no lo
- * repita con datos inventados.
+ * Manda los datos si hay al menos una cuenta activa. Devuelve un resultado
+ * de 3 vías (no un boolean) para que el caller pueda distinguir "la tienda
+ * no tiene cuentas cargadas" de "sí tiene, pero el envío falló" — son
+ * diagnósticos distintos y confundirlos le hace decir al LLM algo falso
+ * (ver confirmarPagoPedido.ts, que sí necesita la distinción; crearPedido.ts
+ * solo necesita el boolean "se mandó o no" para `transfer_details_sent`).
  *
  * Best-effort, mismo criterio que las notificaciones de `escalarHumano.ts`:
  * el pedido ya quedó creado y no se revierte porque falle un envío. Pero a
@@ -57,7 +62,7 @@ export async function enviarDatosTransferencia(
   conversationId: string,
   publicOrderNumber: string,
   total: number,
-): Promise<boolean> {
+): Promise<EnviarDatosTransferenciaResultado> {
   const cuentas = (await getTransferAccounts()).filter((account) => account.active);
   if (cuentas.length === 0) {
     // No es un error: una tienda puede no aceptar transferencias todavía.
@@ -66,7 +71,7 @@ export async function enviarDatosTransferencia(
       { event: "pedido.transferencia_sin_cuentas", public_order_number: publicOrderNumber },
       "Pedido por transferencia sin cuentas configuradas — no se mandaron datos",
     );
-    return false;
+    return "sin_cuentas";
   }
 
   try {
@@ -78,12 +83,12 @@ export async function enviarDatosTransferencia(
       { event: "pedido.datos_transferencia_enviados", public_order_number: publicOrderNumber },
       "Datos de transferencia enviados al cliente",
     );
-    return true;
+    return "enviado";
   } catch (error) {
     logger.warn(
       { error, event: "pedido.datos_transferencia_fallidos", public_order_number: publicOrderNumber },
       "No se pudieron enviar los datos de transferencia — hay que reenviarlos a mano",
     );
-    return false;
+    return "error_envio";
   }
 }

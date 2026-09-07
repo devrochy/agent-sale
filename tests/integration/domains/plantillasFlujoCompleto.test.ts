@@ -457,13 +457,55 @@ describe("confirmar_pago_pedido", () => {
     expect(result).toEqual({ order_id: orderId, status: "sin_pago_pendiente" });
   });
 
-  it("pedido cancelado devuelve pedido_cancelado", async () => {
+  it("pedido cancelado devuelve pedido_no_abierto", async () => {
     const orderId = await nuevoPedido("efectivo_contraentrega");
     fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.cancelado-pago" }] }));
     await cancelarPedido({ order_id: orderId });
 
     const result = await confirmarPagoPedido({ order_id: orderId });
-    expect(result).toEqual({ order_id: orderId, status: "pedido_cancelado" });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+  });
+
+  it("pedido ya despachado también devuelve pedido_no_abierto (no solo cancelado/expirado)", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(`UPDATE orders SET status = 'despachado' WHERE id = $1`, [orderId]);
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+  });
+
+  it("pago_en_linea rechazado devuelve pago_rechazado, sin reenviar el link viejo", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'rechazado', wompi_payment_link_url = $2 WHERE id = $1`,
+      [orderId, "https://checkout.wompi.co/l/test-rechazado"],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "pago_rechazado" });
+  });
+
+  it("transferencia con cuentas configuradas pero el envío falla devuelve error_envio_transferencia", async () => {
+    await saveTransferAccounts([
+      {
+        entity: "Bancolombia",
+        accountType: "Ahorros",
+        accountNumber: "123456789",
+        holderName: "ForMotos SAS",
+        holderDocument: "",
+        active: true,
+      },
+    ]);
+    // El auto-envío de crear_pedido debe funcionar; el que falla es el
+    // reenvío explícito de confirmar_pago_pedido — así se comprueba que no
+    // se confunde con "sin cuentas configuradas".
+    fetchMock
+      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-auto-2" }] }))
+      .mockRejectedValueOnce(new Error("network down"));
+    const orderId = await nuevoPedido("transferencia");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "error_envio_transferencia" });
   });
 
   it("pedido inexistente devuelve pedido_no_encontrado", async () => {
