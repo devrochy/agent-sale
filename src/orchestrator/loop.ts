@@ -165,12 +165,13 @@ function extractSingleMatchImageUrl(
  * mismo criterio determinístico que extractSingleMatchImageUrl —
  * "crear_pedido" y "agregar_item_pedido" pueden devolver "payment_link_url"
  * cuando el método es 'pago_en_linea' y el pedido queda (o sigue) pendiente
- * de pago con un total actualizado; nunca se confía en que el modelo copie
- * el link correctamente en su texto.
+ * de pago con un total actualizado; "confirmar_pago_pedido" lo reenvía
+ * cuando el cliente toca "Confirmar y pagar" (ver confirmarPagoPedido.ts).
+ * Nunca se confía en que el modelo copie el link correctamente en su texto.
  */
 function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): string | null {
   if (
-    (toolName !== "crear_pedido" && toolName !== "agregar_item_pedido") ||
+    (toolName !== "crear_pedido" && toolName !== "agregar_item_pedido" && toolName !== "confirmar_pago_pedido") ||
     toolResult.type !== "tool_result" ||
     toolResult.is_error
   ) {

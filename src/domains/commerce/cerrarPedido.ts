@@ -59,8 +59,8 @@ interface OrderRow {
  * en vez de que el propio LLM redacte el resumen final y la pregunta de
  * "¿confirmás?", se manda la plantilla aprobada "pedido_confirmado" con
  * sus 3 botones (Agregar productos / Cancelar pedido / Confirmar y pagar,
- * ver adminPanel.ts -> buildButtonsComponent) y se espera la respuesta del
- * cliente como un mensaje más — el LLM la interpreta en el turno
+ * los 3 Quick Reply — ver adminPanel.ts -> buildButtonsComponent) y se
+ * espera la respuesta del cliente como un mensaje más — el LLM la interpreta en el turno
  * siguiente igual que cualquier texto, sin un enrutador aparte (dos de
  * los tres caminos ya tienen tool: "agregar_item_pedido" y
  * "cancelar_pedido"; el tercero es el botón URL, que no vuelve a pasar
@@ -140,10 +140,12 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
       ],
     },
   ];
-  // El botón "Confirmar y pagar" (URL con sufijo dinámico, ver
-  // buildButtonsComponent) va siempre en el último índice del arreglo de
-  // botones — es el único con variable, así que su índice es
-  // `buttons.length - 1` sin necesidad de buscarlo por texto.
+  // "Confirmar y pagar" era un botón URL con sufijo dinámico; desde
+  // 2026-09-06 es un Quick Reply (resuelto por la tool confirmar_pago_pedido,
+  // ver confirmarPagoPedido.ts) — findUrlButtonIndex simplemente no
+  // encuentra ningún botón URL en la plantilla nueva y esto se salta solo.
+  // Se deja el chequeo por si en el futuro alguna otra plantilla vuelve a
+  // tener un botón URL con variable.
   const indiceBotonUrl = findUrlButtonIndex(plantilla);
   if (indiceBotonUrl >= 0) {
     components.push({

@@ -7,6 +7,8 @@ import { cerrarPedido } from "../../../src/domains/commerce/cerrarPedido.js";
 import { cancelarPedido } from "../../../src/domains/commerce/cancelarPedido.js";
 import { confirmarDomicilioPedido } from "../../../src/domains/commerce/confirmarDomicilioPedido.js";
 import { actualizarDireccionPedido } from "../../../src/domains/commerce/actualizarDireccionPedido.js";
+import { confirmarPagoPedido } from "../../../src/domains/commerce/confirmarPagoPedido.js";
+import { saveTransferAccounts } from "../../../src/shared/db/settingsDirectory.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import {
@@ -344,6 +346,127 @@ describe("actualizar_direccion_pedido", () => {
       [orderId],
     );
     expect(after.rows[0]!.delivery_address).toBe(before.rows[0]!.delivery_address);
+  });
+});
+
+describe("confirmar_pago_pedido", () => {
+  // `transfer_accounts` es un singleton compartido con todo el resto de la
+  // app (settingsDirectory.ts) — no se restaura al valor "original" porque
+  // puede venir sucio de otra corrida (ver
+  // docs/gotchas del entorno local); se deja en `[]` a propósito, que es lo
+  // que el resto de este archivo (describe "notificaciones de pago al
+  // cliente") ya asume sin configurar nada.
+  afterAll(async () => {
+    await saveTransferAccounts([]);
+  });
+
+  async function nuevoPedido(paymentMethod: "transferencia" | "efectivo_contraentrega"): Promise<string> {
+    const quoteId = await nuevaCotizacion();
+    const created = await crearPedido(
+      `sid-confirmar-pago-${Date.now()}-${Math.random()}`,
+      {
+        quote_id: quoteId,
+        payment_method: paymentMethod,
+        delivery_method: "domicilio",
+        customer_data: customerData,
+      },
+      1000000,
+    );
+    return created.order_id!;
+  }
+
+  it("transferencia con cuentas configuradas manda los datos y devuelve datos_transferencia_enviados", async () => {
+    await saveTransferAccounts([
+      {
+        entity: "Bancolombia",
+        accountType: "Ahorros",
+        accountNumber: "123456789",
+        holderName: "ForMotos SAS",
+        holderDocument: "",
+        active: true,
+      },
+    ]);
+    // crear_pedido con "transferencia" YA manda los datos apenas se confirma
+    // el pedido (ver crearPedido.ts) — acá se llama confirmar_pago_pedido de
+    // todas formas (reenvío si el cliente lo pide de nuevo tocando el
+    // botón), así que hacen falta 2 respuestas mockeadas de sendToConversation.
+    fetchMock
+      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-auto" }] }))
+      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-reenvio" }] }));
+    const orderId = await nuevoPedido("transferencia");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "datos_transferencia_enviados" });
+  });
+
+  it("transferencia sin cuentas configuradas devuelve sin_cuentas_configuradas", async () => {
+    await saveTransferAccounts([]);
+    const orderId = await nuevoPedido("transferencia");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "sin_cuentas_configuradas" });
+  });
+
+  it("pago_en_linea con link guardado devuelve link_pago_disponible", async () => {
+    // Wompi no está configurado en este fixture (ver describe "notificaciones
+    // de pago al cliente" más abajo) — se crea con transferencia (que sí
+    // queda 'confirmed') y se fuerza el estado de un pedido pago_en_linea a
+    // mano, mismo criterio que el resto del archivo.
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'pendiente', wompi_payment_link_url = $2 WHERE id = $1`,
+      [orderId, "https://checkout.wompi.co/l/test123"],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({
+      order_id: orderId,
+      status: "link_pago_disponible",
+      payment_link_url: "https://checkout.wompi.co/l/test123",
+    });
+  });
+
+  it("pago_en_linea ya aprobado devuelve ya_pagado", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'pagado', wompi_payment_link_url = $2 WHERE id = $1`,
+      [orderId, "https://checkout.wompi.co/l/test456"],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "ya_pagado" });
+  });
+
+  it("pago_en_linea sin link guardado devuelve sin_link_pago", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'pendiente', wompi_payment_link_url = NULL WHERE id = $1`,
+      [orderId],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "sin_link_pago" });
+  });
+
+  it("efectivo contra entrega devuelve sin_pago_pendiente", async () => {
+    const orderId = await nuevoPedido("efectivo_contraentrega");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "sin_pago_pendiente" });
+  });
+
+  it("pedido cancelado devuelve pedido_cancelado", async () => {
+    const orderId = await nuevoPedido("efectivo_contraentrega");
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.cancelado-pago" }] }));
+    await cancelarPedido({ order_id: orderId });
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_cancelado" });
+  });
+
+  it("pedido inexistente devuelve pedido_no_encontrado", async () => {
+    const result = await confirmarPagoPedido({ order_id: "00000000-0000-0000-0000-000000000000" });
+    expect(result).toEqual({ order_id: "00000000-0000-0000-0000-000000000000", status: "pedido_no_encontrado" });
   });
 });
 
