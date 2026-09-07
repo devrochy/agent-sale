@@ -23,7 +23,7 @@ export interface CerrarPedidoOutput {
   /**
    * Estado del segundo mensaje (confirmación de domicilio, ver
    * confirmarDomicilioPedido.ts) — independiente del de arriba: si
-   * "pedido_confirmado" se manda bien pero "confirmar_domicilio" todavía no
+   * "pedido_confirmado_v2" se manda bien pero "confirmar_domicilio" todavía no
    * está aprobada, el cierre del pedido no se considera fallido (el LLM ya
    * cerró la venta; el aviso de domicilio es un segundo mensaje aparte).
    * Ausente si el primer envío ya falló (no tiene sentido intentar el
@@ -57,7 +57,7 @@ interface OrderRow {
 /**
  * Tool cerrar_pedido — punto de cierre del pedido que pidió el usuario:
  * en vez de que el propio LLM redacte el resumen final y la pregunta de
- * "¿confirmás?", se manda la plantilla aprobada "pedido_confirmado" con
+ * "¿confirmás?", se manda la plantilla aprobada "pedido_confirmado_v2" con
  * sus 3 botones (Agregar productos / Cancelar pedido / Confirmar y pagar,
  * los 3 Quick Reply — ver adminPanel.ts -> buildButtonsComponent) y se
  * espera la respuesta del cliente como un mensaje más — el LLM la interpreta en el turno
@@ -114,7 +114,11 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
     return { order_id: input.order_id, status: "pedido_no_abierto" };
   }
 
-  const pedidoConfirmado = await resolveApprovedTemplate(order.connection_id, "pedido_confirmado");
+  // "pedido_confirmado" a secas quedó bloqueada por Meta (borrada y recreada
+  // el 2026-09-06 con el botón "Confirmar y pagar" nuevo — Meta no deja
+  // reusar el nombre por 4 semanas tras un borrado). "_v2" es la plantilla
+  // real desde entonces, ver docs/fase-3-whatsapp-gateway/plantillas-mensajes.md.
+  const pedidoConfirmado = await resolveApprovedTemplate(order.connection_id, "pedido_confirmado_v2");
   if (!pedidoConfirmado.ok) {
     return {
       order_id: input.order_id,
@@ -163,7 +167,7 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
     connection.credentials,
     connection.externalId,
     destinatario,
-    "pedido_confirmado",
+    "pedido_confirmado_v2",
     plantilla.language,
     components,
   );

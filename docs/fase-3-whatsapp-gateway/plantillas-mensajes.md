@@ -18,7 +18,7 @@ El agente (Claude) **nunca decide el texto exacto de una plantilla** — decide 
 
 | Plantilla | Categoría | Se dispara desde | Si no está aprobada |
 |---|---|---|---|
-| `pedido_confirmado` | Utility | `cerrarPedido.ts` (tool `cerrar_pedido`) | No cierra el pedido con plantilla; `cerrar_pedido` devuelve `plantilla_no_aprobada` sin mandar nada |
+| `pedido_confirmado_v2` | Utility | `cerrarPedido.ts` (tool `cerrar_pedido`) | No cierra el pedido con plantilla (ni manda `confirmar_domicilio`, que depende del mismo envío); `cerrar_pedido` devuelve `plantilla_no_aprobada` y el LLM sigue por texto libre |
 | `metodo_pago` | Utility | `preguntarMetodoPago.ts` (tool `preguntar_metodo_pago`) | Ídem, sin fallback de texto libre |
 | `confirmar_domicilio` | Utility | `cerrarPedido.ts` (2do envío, best-effort) + `confirmarDomicilioPedido.ts` (reenvío desde el panel) | El cierre del pedido no falla (`domicilio_status: "plantilla_no_aprobada"`); el panel puede reenviarla después o el admin confirma a mano — si no está aprobada tampoco se puede usar `actualizar_direccion_pedido` (depende del mismo envío) |
 | `pago_aprobado` | Utility | `notificarPagoCliente.ts` (webhook de Wompi, pago `APPROVED`) | No se manda nada al cliente (los admins sí se enteran, por otro camino) |
@@ -30,13 +30,13 @@ El agente (Claude) **nunca decide el texto exacto de una plantilla** — decide 
 
 ## Detalle por plantilla
 
-### `pedido_confirmado`
+### `pedido_confirmado_v2`
 - **Variables:** `{{1}}` nombre del cliente · `{{2}}` número de pedido · `{{3}}` monto · `{{4}}` método de entrega
 - **Cuerpo:** `✅ ¡Gracias, {{1}}! Tu pedido #{{2}} por {{3}} quedó confirmado. 📦 Entrega: {{4}}. Cualquier cosa, estamos acá para ayudarte.`
 - **Ejemplos:** `Juan Pérez, FM-0001, $150.000, Domicilio`
 - **Botones:** 3 Quick Reply — `Agregar productos` · `Cancelar pedido` · `Confirmar y pagar`
 - **Código:** `src/domains/commerce/cerrarPedido.ts`; el botón `Confirmar y pagar` lo resuelve `src/domains/commerce/confirmarPagoPedido.ts` (tool `confirmar_pago_pedido`).
-- ⚠️ **Cambio 2026-09-06:** `Confirmar y pagar` era un botón `URL` (`https://formotos.com/pago/{{1}}`, un sitio que nunca se conectó a este backend) — pasa a ser un Quick Reply más. Meta no tiene forma de *editar* una plantilla aprobada, así que se borró y se recreó desde cero (vuelve a `pending`, pasa por revisión otra vez).
+- ⚠️ **Por qué "_v2" y no `pedido_confirmado` a secas:** `Confirmar y pagar` era un botón `URL` (`https://formotos.com/pago/{{1}}`, un sitio que nunca se conectó a este backend) — pasaba a ser un Quick Reply más, y Meta no tiene forma de *editar* una plantilla aprobada, así que había que borrarla y recrearla. Al intentar recrearla el 2026-09-06 con el mismo nombre, Meta rechazó la creación: **bloquea reusar el nombre de una plantilla borrada por 4 semanas** ("Se está eliminando el idioma... vuelve a intentarlo en 4 weeks"), algo que no estaba documentado en ningún lado hasta pisarlo. Se optó por crearla ya mismo con el nombre `pedido_confirmado_v2` en vez de esperar el mes — recupera la plantilla automática de inmediato, al costo de un nombre menos prolijo. `pedido_confirmado` (el nombre original) queda libre en Meta recién a partir de la primera semana de octubre de 2026; si en algún momento se recrea, hay que decidir si se vuelve a ese nombre (y actualizar `cerrarPedido.ts`) o se sigue con `_v2`.
 
 ### `metodo_pago`
 - **Variables:** `{{1}}` nombre del cliente · `{{2}}` monto de la cotización
@@ -106,17 +106,19 @@ Completar esta tabla a medida que se crean/aprueban desde `/admin/plantillas` �
 
 | Plantilla | Creada | Aprobada | Fecha | Notas |
 |---|---|---|---|---|
-| `pedido_confirmado` | ✅ | ⬜ | 2026-09-06 | Borrada y recreada (cuerpo nuevo + botón "Confirmar y pagar" pasa de URL a Quick Reply) — vuelve a `pending`, en revisión otra vez |
-| `metodo_pago` | ⬜ | ⬜ | | |
+| `pedido_confirmado` (nombre original) | ❌ borrada | — | 2026-09-06 | Borrada al intentar recrearla con el cuerpo/botón nuevos; Meta bloqueó recrear con el mismo nombre por 4 semanas (~primera semana de octubre 2026). No se reintenta — reemplazada por `pedido_confirmado_v2`. |
+| `pedido_confirmado_v2` | ✅ | ⬜ | 2026-09-06 | Creada vía script (`scripts/crear-plantillas-2026-09.ts`) con el cuerpo nuevo y el botón "Confirmar y pagar" como Quick Reply. En revisión. |
+| `metodo_pago` | ✅ | ⬜ | 2026-09-06 | Creada vía script. En revisión. |
 | `confirmar_domicilio` | ✅ | ⬜ | 2026-09-06 | Primer intento rechazado por Meta con error genérico ("Invalid parameter", código 100, sin más detalle); reintentada con los mismos datos, sin cambios, y esta vez se creó bien — probable error transitorio del lado de Meta. En revisión. |
-| `pago_aprobado` | ⬜ | ⬜ | | |
-| `pago_rechazado` | ⬜ | ⬜ | | |
-| `pedido_en_camino` | ⬜ | ⬜ | | |
-| `carrito_abandonado` | ⬜ | ⬜ | | |
-| `pedido_cancelado` | ⬜ | ⬜ | | |
+| `pago_aprobado` | ✅ | ⬜ | 2026-09-06 | Creada vía script. Botón "Dejar reseña" con el origin de `PUBLIC_WEBHOOK_URL` vigente en ese momento (túnel de Cloudflare, efímero — si cambia, hay que recrear la plantilla). En revisión. |
+| `pago_rechazado` | ✅ | ⬜ | 2026-09-06 | Creada vía script. En revisión. |
+| `pedido_en_camino` | ✅ | ⬜ | 2026-09-06 | Creada vía script. En revisión. |
+| `carrito_abandonado` | ✅ | ⬜ | 2026-09-06 | Creada vía script, categoría Marketing. En revisión. |
+| `pedido_cancelado` | ✅ | ⬜ | 2026-09-06 | Creada vía script. En revisión. |
 | Promoción (nombre a definir) | ⬜ | ⬜ | | |
 
 ## Historial de cambios
+- **2026-09-06:** `metodo_pago`, `pago_aprobado`, `pago_rechazado`, `pedido_en_camino`, `carrito_abandonado` y `pedido_cancelado` creadas en Meta (`scripts/crear-plantillas-2026-09.ts`, reusa `crearPlantilla`/`eliminarPlantilla` de `adminPanel.ts` — mismo flujo que el panel). Al intentar recrear `pedido_confirmado` con el cuerpo/botón nuevos, Meta la borró bien pero **rechazó recrearla con el mismo nombre por 4 semanas** ("Se está eliminando el idioma... vuelve a intentarlo en 4 weeks", código 100/2388023) — no documentado en ningún lado hasta pisarlo. Se creó como `pedido_confirmado_v2` en su lugar (mismo cuerpo/botones) y se actualizó `cerrarPedido.ts`/`toolDefinitions.ts` para usar ese nombre — recupera la plantilla automática de inmediato en vez de esperar el mes.
 - **2026-09-06:** revisión de copy de las 7 plantillas restantes (emojis, tono más cercano) y la tool nueva `confirmar_pago_pedido` (`src/domains/commerce/confirmarPagoPedido.ts`) — el botón `Confirmar y pagar` de `pedido_confirmado` deja de ser un link a `formotos.com` (nunca conectado a este backend) y pasa a ser un Quick Reply que resuelve el pago de verdad según `orders.payment_method`: reenvía los datos de transferencia (`datosTransferencia.ts`) o el link de Wompi ya generado (`orders.wompi_payment_link_url`), o avisa que no hay nada que pagar si es contra entrega. Como Meta no tiene edición de plantillas, `pedido_confirmado` se borró y recreó (vuelve a `pending`).
 - **2026-09-06:** el mensaje de error de la Graph API (`src/gateway/channels/meta/graph.ts`) ahora prioriza `error_user_msg`/`error_user_title`/`error_data.details` sobre el genérico `error.message` — a raíz de que el primer intento de crear `confirmar_domicilio` solo mostró "Invalid parameter (código 100)", sin pista de la causa real.
 - **2026-09-06:** `confirmar_domicilio` pasa de 1 a 3 botones — se agregan `Cambiar temporalmente` (solo ese pedido) y `Cambiar permanentemente` (también actualiza el perfil), con la tool nueva `actualizar_direccion_pedido` (`src/domains/commerce/actualizarDireccionPedido.ts`) resolviéndolos. Como la plantilla todavía no se había creado en Meta, se define directamente con los 3 botones (sin recrear nada).

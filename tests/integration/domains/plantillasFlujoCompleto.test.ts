@@ -235,11 +235,13 @@ describe("cerrar_pedido con confirmar_domicilio", () => {
     expect(created.status).toBe("confirmed");
     const orderId = created.order_id!;
 
-    // pedido_confirmado no está aprobada en este archivo (solo se probó en
-    // el otro describe de admin.test.ts) — acá el foco es
-    // confirmar_domicilio, así que se aprueba también pedido_confirmado
-    // para no ensuciar el resultado con "plantilla_no_aprobada".
-    await crearPlantillaAprobada("pedido_confirmado", [
+    // pedido_confirmado_v2 no está aprobada en este archivo (solo se probó
+    // en el otro describe de admin.test.ts) — acá el foco es
+    // confirmar_domicilio, así que se aprueba también pedido_confirmado_v2
+    // para no ensuciar el resultado con "plantilla_no_aprobada". El nombre
+    // "_v2" es porque Meta bloqueó el nombre original 4 semanas tras
+    // borrarla (ver cerrarPedido.ts).
+    await crearPlantillaAprobada("pedido_confirmado_v2", [
       { type: "BODY", text: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}." },
     ]);
 
