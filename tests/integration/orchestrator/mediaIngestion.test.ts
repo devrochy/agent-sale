@@ -15,11 +15,15 @@ vi.mock("../../../src/media/transcribirAudio.js", () => ({
 vi.mock("../../../src/payments/ocrComprobante.js", () => ({
   analizarComprobante: vi.fn(),
 }));
+vi.mock("../../../src/domains/catalog/describirImagenProducto.js", () => ({
+  describirImagenProducto: vi.fn(),
+}));
 
 import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { downloadMedia } from "../../../src/gateway/channels/meta/media.js";
 import { transcribirAudio } from "../../../src/media/transcribirAudio.js";
 import { analizarComprobante } from "../../../src/payments/ocrComprobante.js";
+import { describirImagenProducto } from "../../../src/domains/catalog/describirImagenProducto.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { procesarMediaEntrante } from "../../../src/orchestrator/mediaIngestion.js";
@@ -55,8 +59,20 @@ let connectionId: string;
 let customerId: string;
 let productId: string;
 let variantId: string;
+let settingsId: string;
 
 beforeAll(async () => {
+  // `settings` es singleton y no nace de ninguna migración — en una base
+  // recién migrada (CI) todavía no existe ninguna fila. Mismo patrón que
+  // el resto de la suite (procesarComprobante.test.ts, crearPedido.test.ts,
+  // etc.): esta fila es de este archivo, se crea acá y se borra en
+  // afterAll — sin esto, saveTransferAccounts de acá abajo es un UPDATE
+  // que no toca ninguna fila.
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Media Ingestion Test') RETURNING id`,
+  );
+  settingsId = settings.rows[0]!.id;
+
   connectionId = await saveConnection({
     channel: "whatsapp",
     provider: "meta",
@@ -93,6 +109,7 @@ afterEach(() => {
   vi.mocked(downloadMedia).mockReset();
   vi.mocked(transcribirAudio).mockReset();
   vi.mocked(analizarComprobante).mockReset();
+  vi.mocked(describirImagenProducto).mockReset();
   entryLogger.info.mockReset();
   entryLogger.warn.mockReset();
 });
@@ -110,7 +127,7 @@ afterAll(async () => {
   await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
   await adminPool.query(`DELETE FROM channel_connections WHERE id = $1`, [connectionId]);
   invalidateConnectionsCache();
-  await saveTransferAccounts([]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
@@ -195,12 +212,35 @@ describe("procesarMediaEntrante — imagen", () => {
     return created.order_id!;
   }
 
-  it("sin pedido pendiente por transferencia -> no_manejado (posible foto de producto, Fase 3)", async () => {
+  it("sin pedido pendiente por transferencia y la foto muestra un producto -> continuar_como_texto con la descripción", async () => {
+    vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("foto-producto"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce("casco integral negro con visor ahumado");
+
     const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-1", mimeType: "image/jpeg" } });
-    // Este cliente no tiene ningún pedido por transferencia pendiente en este describe.
+    // Este cliente no tiene ningún pedido por transferencia pendiente en este describe todavía.
     const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
-    expect(resultado).toEqual({ kind: "no_manejado" });
-    expect(downloadMedia).not.toHaveBeenCalled();
+
+    expect(resultado).toEqual({
+      kind: "continuar_como_texto",
+      texto: "[Foto de producto] El cliente mandó una foto. Descripción automática: casco integral negro con visor ahumado",
+    });
+    expect(sendToConversation).not.toHaveBeenCalled();
+
+    const media = await adminPool.query(`SELECT kind FROM inbound_media WHERE conversation_id IN (SELECT id FROM conversations WHERE customer_id = $1) ORDER BY created_at DESC LIMIT 1`, [customerId]);
+    expect(media.rows[0]).toMatchObject({ kind: "image" });
+  });
+
+  it("sin pedido pendiente y la foto no muestra ningún producto reconocible -> procesado_completo, pide más detalle", async () => {
+    vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("foto-rara"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce(null);
+
+    const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-1b", mimeType: "image/jpeg" } });
+    const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(resultado).toEqual({ kind: "procesado_completo" });
+    expect(sendToConversation).toHaveBeenCalledTimes(1);
+    const [, texto] = vi.mocked(sendToConversation).mock.calls[0]!;
+    expect(texto).toContain("No pudimos reconocer bien qué buscás en esa foto");
   });
 
   it("con pedido pendiente por transferencia -> procesado_completo, corre todo el flujo de OCR", async () => {
@@ -215,5 +255,27 @@ describe("procesarMediaEntrante — imagen", () => {
     const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
 
     expect(resultado).toEqual({ kind: "procesado_completo" });
+    // El ruteo es determinístico: con un pedido esperando comprobante, la
+    // foto SIEMPRE se trata como comprobante — nunca se le pregunta a la
+    // visión "qué producto es esto".
+    expect(describirImagenProducto).not.toHaveBeenCalled();
+  });
+
+  it("un reintento con el MISMO messageSid reusa la descripción ya pagada, no vuelve a llamar a la visión", async () => {
+    vi.mocked(downloadMedia).mockResolvedValue({ buffer: Buffer.from("foto-producto"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce("guantes de cuero café");
+    const messageSid = `sid-media-img-cache-${Date.now()}`;
+
+    const mensaje = nuevoMensaje({ messageSid, media: { type: "image", mediaId: "media-img-cache", mimeType: "image/jpeg" } });
+    const primero = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+    // Mismo mensaje otra vez (simula un reintento de la cola).
+    const segundo = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(primero).toEqual({
+      kind: "continuar_como_texto",
+      texto: "[Foto de producto] El cliente mandó una foto. Descripción automática: guantes de cuero café",
+    });
+    expect(segundo).toEqual(primero);
+    expect(describirImagenProducto).toHaveBeenCalledTimes(1); // no 2 — el segundo intento reusó la cache
   });
 });
