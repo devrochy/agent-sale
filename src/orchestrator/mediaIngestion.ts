@@ -7,6 +7,8 @@ import { transcribirAudio } from "../media/transcribirAudio.js";
 import { getCachedMediaResult, setCachedMediaResult } from "../shared/mediaResultCache.js";
 import { getConnection } from "../shared/db/connectionsDirectory.js";
 import { guardarMediaEntrante } from "../shared/db/inboundMediaDirectory.js";
+import { getOpenAiConfig } from "../shared/db/settingsDirectory.js";
+import { env } from "../config/env.js";
 import { appendMessage, resolveConversation, type InboundOrigin } from "./memory.js";
 
 type EntryLogger = { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void };
@@ -252,7 +254,10 @@ async function procesarAudioEntrante(
       texto = cacheado.value;
       entryLogger.info({ event: "audio.transcripcion_cacheada" }, "Reusando transcripción ya hecha (reintento)");
     } else {
-      texto = await transcribirAudio(media.buffer, media.mimeType);
+      // BYOK (panel) con fallback a env.openaiApiKey — ver comentario en
+      // settingsDirectory.ts → getOpenAiConfig.
+      const { apiKey } = await getOpenAiConfig();
+      texto = await transcribirAudio(media.buffer, media.mimeType, apiKey || env.openaiApiKey);
       await setCachedMediaResult(message.messageSid, texto);
     }
   } catch (error) {

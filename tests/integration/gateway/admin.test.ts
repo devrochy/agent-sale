@@ -2321,6 +2321,89 @@ describe("panel admin", () => {
     });
   });
 
+  describe("configuración — OpenAI (transcripción de audio)", () => {
+    const fetchMock = vi.fn();
+
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("key válida (OpenAI la acepta) se guarda cifrada y el panel muestra el hint enmascarado", async () => {
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [] }) });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/openai",
+        payload: new URLSearchParams({ apiKey: "sk-test-abcd1234" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/configuracion?guardado=1");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.openai.com/v1/models");
+      expect((init as RequestInit & { headers: Record<string, string> }).headers.Authorization).toBe(
+        "Bearer sk-test-abcd1234",
+      );
+
+      try {
+        const row = await adminPool.query<{ openai_api_key_encrypted: string | null }>(
+          `SELECT openai_api_key_encrypted FROM settings`,
+        );
+        expect(row.rows[0]!.openai_api_key_encrypted).toBeTruthy();
+        expect(row.rows[0]!.openai_api_key_encrypted).not.toContain("sk-test-abcd1234"); // cifrada, no en claro
+
+        const configPage = await app.inject({
+          method: "GET",
+          url: "/admin/configuracion",
+          headers: { cookie: sessionCookie },
+        });
+        expect(configPage.body).toContain("••••1234");
+      } finally {
+        await adminPool.query(`UPDATE settings SET openai_api_key_encrypted = NULL`);
+      }
+    });
+
+    it("key rechazada por OpenAI no se guarda y vuelve con error", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: { message: "Incorrect API key provided" } }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/openai",
+        payload: new URLSearchParams({ apiKey: "sk-invalida" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+
+      const row = await adminPool.query<{ openai_api_key_encrypted: string | null }>(
+        `SELECT openai_api_key_encrypted FROM settings`,
+      );
+      expect(row.rows[0]!.openai_api_key_encrypted).toBeNull();
+    });
+
+    it("sin ninguna key (ni la nueva ni una guardada antes) devuelve error, sin llamar a OpenAI", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/openai",
+        payload: new URLSearchParams({ apiKey: "" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe("pedidos — estados, filtros y entrega", () => {
     it("la tabla trae filtros por estado, pago y entrega", async () => {
       const response = await app.inject({

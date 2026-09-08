@@ -1,5 +1,3 @@
-import { env } from "../config/env.js";
-
 /**
  * Transcripción de audio entrante (notas de voz de WhatsApp) — Whisper de
  * OpenAI, llamada directa sin SDK (mismo criterio que Wompi/Meta, ADR-033:
@@ -12,6 +10,13 @@ import { env } from "../config/env.js";
  * el caller (`mediaIngestion.ts`) le pide al cliente que lo reenvíe o lo
  * escriba. Si la llamada a la API falla de verdad (red, auth, 5xx), sí
  * lanza — ese caso lo reintenta el consumer de la cola.
+ *
+ * No resuelve la API key acá adentro (a diferencia de `ocrComprobante.ts`,
+ * que sí lee `env.anthropicApiKey` directo): la key de OpenAI es BYOK
+ * configurable desde el panel (`settingsDirectory.ts` →
+ * `getOpenAiConfig`), con `env.openaiApiKey` como fallback — esa resolución
+ * vive en el caller (`mediaIngestion.ts`) para no acoplar esta función,
+ * fácil de testear en aislado, a la base de datos.
  */
 
 const MIME_A_EXTENSION: Record<string, string> = {
@@ -35,8 +40,8 @@ interface WhisperResponse {
   error?: { message?: string };
 }
 
-export async function transcribirAudio(buffer: Buffer, mimeType: string): Promise<string | null> {
-  if (!env.openaiApiKey) {
+export async function transcribirAudio(buffer: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
+  if (!apiKey) {
     throw new Error("No hay OPENAI_API_KEY configurada — no se puede transcribir audio");
   }
 
@@ -51,7 +56,7 @@ export async function transcribirAudio(buffer: Buffer, mimeType: string): Promis
 
   const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
-    headers: { Authorization: `Bearer ${env.openaiApiKey}` },
+    headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
   });
 

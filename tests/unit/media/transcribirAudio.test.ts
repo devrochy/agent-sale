@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const originalKey = process.env.OPENAI_API_KEY;
+import { transcribirAudio } from "../../../src/media/transcribirAudio.js";
 
 beforeEach(() => {
-  process.env.OPENAI_API_KEY = "sk-test-key";
-  vi.resetModules();
+  vi.resetAllMocks();
 });
 
 afterEach(() => {
-  process.env.OPENAI_API_KEY = originalKey;
   vi.unstubAllGlobals();
 });
 
@@ -20,9 +17,8 @@ describe("transcribirAudio", () => {
   it("manda el audio a Whisper y devuelve el texto transcripto", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ text: "Hola, tienen cascos talla M?" }));
     vi.stubGlobal("fetch", fetchMock);
-    const { transcribirAudio } = await import("../../../src/media/transcribirAudio.js");
 
-    const resultado = await transcribirAudio(Buffer.from("audio-falso"), "audio/ogg; codecs=opus");
+    const resultado = await transcribirAudio(Buffer.from("audio-falso"), "audio/ogg; codecs=opus", "sk-test-key");
 
     expect(resultado).toBe("Hola, tienen cascos talla M?");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -36,9 +32,8 @@ describe("transcribirAudio", () => {
   it("devuelve null (no lanza) cuando Whisper no transcribe nada en claro", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ text: "" }));
     vi.stubGlobal("fetch", fetchMock);
-    const { transcribirAudio } = await import("../../../src/media/transcribirAudio.js");
 
-    const resultado = await transcribirAudio(Buffer.from("silencio"), "audio/ogg");
+    const resultado = await transcribirAudio(Buffer.from("silencio"), "audio/ogg", "sk-test-key");
 
     expect(resultado).toBeNull();
   });
@@ -46,18 +41,15 @@ describe("transcribirAudio", () => {
   it("lanza si OpenAI rechaza la llamada (auth, rate limit, etc.)", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ error: { message: "Invalid API key" } }, 401));
     vi.stubGlobal("fetch", fetchMock);
-    const { transcribirAudio } = await import("../../../src/media/transcribirAudio.js");
 
-    await expect(transcribirAudio(Buffer.from("x"), "audio/ogg")).rejects.toThrow(/Invalid API key/);
+    await expect(transcribirAudio(Buffer.from("x"), "audio/ogg", "sk-test-key")).rejects.toThrow(/Invalid API key/);
   });
 
-  it("lanza si no hay OPENAI_API_KEY configurada, sin llamar a fetch", async () => {
-    delete process.env.OPENAI_API_KEY;
+  it("lanza si no se le pasó ninguna API key, sin llamar a fetch", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const { transcribirAudio } = await import("../../../src/media/transcribirAudio.js");
 
-    await expect(transcribirAudio(Buffer.from("x"), "audio/ogg")).rejects.toThrow(/OPENAI_API_KEY/);
+    await expect(transcribirAudio(Buffer.from("x"), "audio/ogg", "")).rejects.toThrow(/OPENAI_API_KEY/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

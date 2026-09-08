@@ -192,6 +192,43 @@ export async function saveWompiConfig(config: {
 }
 
 /**
+ * Config BYOK de OpenAI (transcripción de audio entrante con Whisper, ver
+ * `media/transcribirAudio.ts`) — mismo criterio que getLlmConfig/
+ * getWompiConfig: única función que lee y desencripta la key, para que no
+ * viaje "de paso" en cargas de página que no la necesitan. `apiKey` acá es
+ * la fuente de verdad primaria; sin ella, transcribirAudio.ts cae a
+ * `env.openaiApiKey` (ver comentario ahí) para no romper despliegues que
+ * ya la tengan solo por variable de entorno.
+ */
+export interface OpenAiConfig {
+  apiKey: string | null;
+}
+
+export async function getOpenAiConfig(): Promise<OpenAiConfig> {
+  const result = await pool.query<{ openai_api_key_encrypted: string | null }>(
+    "SELECT openai_api_key_encrypted FROM settings",
+  );
+  const row = result.rows[0];
+  return {
+    apiKey: row?.openai_api_key_encrypted ? decryptSecret(row.openai_api_key_encrypted) : null,
+  };
+}
+
+/**
+ * Guarda la API key de OpenAI — llamar solo después de validarla con una
+ * llamada de prueba real (ver "Probar y guardar" en adminPanel.ts), nunca
+ * antes.
+ */
+export async function saveOpenAiConfig(config: { apiKey: string }): Promise<void> {
+  await pool.query("UPDATE settings SET openai_api_key_encrypted = $1", [encryptSecret(config.apiKey)]);
+}
+
+/** Vuelve a depender de `env.OPENAI_API_KEY` (ver `media/transcribirAudio.ts`). */
+export async function clearOpenAiConfig(): Promise<void> {
+  await pool.query("UPDATE settings SET openai_api_key_encrypted = NULL");
+}
+
+/**
  * Overrides de escalamiento (ver
  * migrations/0014_tenants_escalation_config.cjs, columna conservada tal
  * cual en el rename a `settings`) — `null` si no se configuró nada, en
