@@ -312,7 +312,13 @@ export async function crearPedido(
         quote.conversation_id,
         quote.customer_id,
         input.payment_method,
-        paymentLink ? "pendiente" : "pagado",
+        // 'pendiente' para pago_en_linea (Wompi, vía paymentLink) y para
+        // transferencia (Fase de comprobante con OCR — ver
+        // procesarComprobante.ts: nadie revisaba nunca esto antes, el
+        // pedido nacía 'pagado' sin evidencia real). El resto
+        // (efectivo_contraentrega, tarjeta) sigue naciendo 'pagado': no hay
+        // forma de validar esos por acá, y no es lo que se pidió.
+        paymentLink || input.payment_method === "transferencia" ? "pendiente" : "pagado",
         input.delivery_method,
         idempotencyKey,
         quote.total,

@@ -230,13 +230,70 @@ describe("metaInboundAdapter.parseInbound", () => {
     expect(metaInboundAdapter.parseInbound(request(callbackDeEstado("delivered")))).toEqual([]);
   });
 
-  it("ignora los tipos que el pipeline no procesa, sin encolar un cuerpo vacío", () => {
+  it("normaliza una imagen entrante con su referencia de media (id, mime_type, caption)", () => {
     const conImagen = mensajeEntrante({
       messages: [
-        { from: "573184935933", id: "wamid.img", timestamp: "1786300000", type: "image", image: { id: "x" } },
+        {
+          from: "573184935933",
+          id: "wamid.img",
+          timestamp: "1786300000",
+          type: "image",
+          image: { id: "x", mime_type: "image/png", caption: "acá está el comprobante" },
+        },
       ],
     });
-    expect(metaInboundAdapter.parseInbound(request(conImagen))).toEqual([]);
+    const [mensaje, ...resto] = metaInboundAdapter.parseInbound(request(conImagen));
+    expect(resto).toHaveLength(0);
+    expect(mensaje).toEqual({
+      externalMessageId: "wamid.img",
+      customerExternalId: "whatsapp:+573184935933",
+      customerName: "Rob",
+      body: "acá está el comprobante",
+      receivedAt: new Date(1786300000 * 1000).toISOString(),
+      media: { type: "image", mediaId: "x", mimeType: "image/png", caption: "acá está el comprobante" },
+    });
+  });
+
+  it("normaliza una imagen sin caption con body vacío (no undefined) y sin mime_type con el default", () => {
+    const conImagen = mensajeEntrante({
+      messages: [
+        { from: "573184935933", id: "wamid.img2", timestamp: "1786300000", type: "image", image: { id: "x" } },
+      ],
+    });
+    const [mensaje] = metaInboundAdapter.parseInbound(request(conImagen));
+    expect(mensaje?.body).toBe("");
+    expect(mensaje?.media).toEqual({ type: "image", mediaId: "x", mimeType: "image/jpeg", caption: undefined });
+  });
+
+  it("normaliza un audio entrante con su referencia de media", () => {
+    const conAudio = mensajeEntrante({
+      messages: [
+        {
+          from: "573184935933",
+          id: "wamid.audio",
+          timestamp: "1786300000",
+          type: "audio",
+          audio: { id: "y", mime_type: "audio/ogg" },
+        },
+      ],
+    });
+    const [mensaje] = metaInboundAdapter.parseInbound(request(conAudio));
+    expect(mensaje?.body).toBe("");
+    expect(mensaje?.media).toEqual({ type: "audio", mediaId: "y", mimeType: "audio/ogg" });
+  });
+
+  it("ignora los tipos que el pipeline sigue sin procesar (ubicación, video, sticker...)", () => {
+    const conUbicacion = mensajeEntrante({
+      messages: [{ from: "573184935933", id: "wamid.loc", timestamp: "1786300000", type: "location" }],
+    });
+    expect(metaInboundAdapter.parseInbound(request(conUbicacion))).toEqual([]);
+  });
+
+  it("ignora una imagen sin id de media (payload inesperado) en vez de encolar un cuerpo vacío", () => {
+    const conImagenRota = mensajeEntrante({
+      messages: [{ from: "573184935933", id: "wamid.imgrota", timestamp: "1786300000", type: "image", image: {} }],
+    });
+    expect(metaInboundAdapter.parseInbound(request(conImagenRota))).toEqual([]);
   });
 
   it("normaliza el tap de un botón QUICK_REPLY de una plantilla (type: button) como si fuera texto", () => {

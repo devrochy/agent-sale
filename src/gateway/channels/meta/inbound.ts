@@ -4,6 +4,7 @@ import { logger } from "../../../shared/observability/logger.js";
 import type {
   DeliveryStatusUpdate,
   InboundAdapter,
+  InboundMediaRef,
   NormalizedInbound,
   RawInboundRequest,
 } from "../types.js";
@@ -203,10 +204,12 @@ export const metaInboundAdapter: InboundAdapter = {
    * que manda Meta acá). El tap llega con el título del botón, nunca con
    * su `payload`/`id`: es lo que hace que el LLM lo pueda interpretar como
    * cualquier mensaje de texto ("Cancelar pedido"), sin un router aparte.
-   * Los demás tipos (imagen, audio, ubicación, `interactive`) se ignoran
-   * en silencio: el pipeline de entrada es 100% texto hoy, igual que con
-   * Twilio, y tragarse un tipo desconocido es preferible a encolar un
-   * mensaje vacío que el agente respondería sin sentido.
+   * Los tipos que siguen sin procesarse (ubicación, `interactive`, video,
+   * documento, sticker) se ignoran en silencio, igual que con Twilio.
+   * Imagen y audio SÍ se normalizan desde la ingesta de medios (ver
+   * `gateway/channels/meta/media.ts`): acá solo se captura la referencia
+   * (`media.id`), la descarga real la hace el consumer de la cola, fuera
+   * del hot path del webhook.
    */
   parseInbound(raw: RawInboundRequest): NormalizedInbound[] {
     const payload = parseMetaPayload(raw.rawBody);
@@ -221,13 +224,30 @@ export const metaInboundAdapter: InboundAdapter = {
     for (const value of metaValues(payload)) {
       for (const mensaje of value.messages ?? []) {
         const botonTocado = mensaje.type === "button" ? mensaje.button?.text : undefined;
-        const body = mensaje.type === "text" ? mensaje.text?.body : botonTocado;
+
+        let media: InboundMediaRef | undefined;
+        if (mensaje.type === "image" && mensaje.image?.id) {
+          media = {
+            type: "image",
+            mediaId: mensaje.image.id,
+            mimeType: mensaje.image.mime_type ?? "image/jpeg",
+            caption: mensaje.image.caption,
+          };
+        } else if (mensaje.type === "audio" && mensaje.audio?.id) {
+          media = { type: "audio", mediaId: mensaje.audio.id, mimeType: mensaje.audio.mime_type ?? "audio/ogg" };
+        }
+
+        // `body` vacío (no `undefined`) para un media sin caption — así pasa
+        // el chequeo de abajo; el texto real (transcripción o descripción de
+        // la foto) lo produce el pipeline de ingesta después de descargar.
+        const body = mensaje.type === "text" ? mensaje.text?.body : media ? (media.caption ?? "") : botonTocado;
         if (body === undefined || !mensaje.id || !mensaje.from) {
-          // Sin esto el descarte es invisible: el cliente manda un audio o una
-          // foto, no recibe nada, y no queda una sola línea que lo explique.
+          // Sin esto el descarte es invisible: el cliente manda algo que
+          // seguimos sin soportar (ubicación, video, sticker...), no recibe
+          // nada, y no queda una sola línea que lo explique.
           logger.info(
             { event: "gateway.mensaje_meta_ignorado", tipo: mensaje.type ?? "desconocido" },
-            "Mensaje de Meta ignorado: el pipeline de entrada solo procesa texto",
+            "Mensaje de Meta ignorado: tipo no soportado por el pipeline de entrada",
           );
           continue;
         }
@@ -237,6 +257,7 @@ export const metaInboundAdapter: InboundAdapter = {
           customerName: nombreDelContacto(value, mensaje.from),
           body,
           receivedAt: receivedAtFrom(mensaje.timestamp),
+          media,
         });
       }
     }

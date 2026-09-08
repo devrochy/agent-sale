@@ -131,6 +131,7 @@ export async function handleInboundWebhook(
       receivedAt: mensaje.receivedAt,
       connectionId: connection.id,
       channel: connection.channel,
+      media: mensaje.media,
     });
     enqueued += 1;
 

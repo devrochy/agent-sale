@@ -33,6 +33,23 @@ export interface RawInboundRequest {
   url: string;
 }
 
+/**
+ * Adjunto de un mensaje entrante (imagen o audio) — ver
+ * `gateway/channels/meta/media.ts` para la descarga real. `mediaId` es el
+ * identificador que exige la Graph API para el `GET` de la URL temporal, no
+ * una URL en sí (WhatsApp nunca manda una URL directa). `body` sigue
+ * llegando vacío/ausente para estos mensajes: el texto (transcripción o
+ * descripción de la foto) lo produce el pipeline de ingesta después de
+ * descargar el media, no `parseInbound`.
+ */
+export interface InboundMediaRef {
+  type: "image" | "audio";
+  mediaId: string;
+  mimeType: string;
+  /** Solo lo manda Meta para imágenes — WhatsApp no ofrece caption en audio. */
+  caption?: string;
+}
+
 /** Un mensaje entrante ya normalizado, sin rastro del proveedor que lo trajo. */
 export interface NormalizedInbound {
   /** Identificador del mensaje en el proveedor — base de la idempotencia. */
@@ -42,6 +59,8 @@ export interface NormalizedInbound {
   customerName?: string;
   body: string;
   receivedAt: string;
+  /** Ausente para mensajes de texto normales — presente cuando el cliente mandó una imagen o un audio. */
+  media?: InboundMediaRef;
 }
 
 /**

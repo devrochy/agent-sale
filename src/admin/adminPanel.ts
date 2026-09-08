@@ -26,6 +26,8 @@ import {
   cambiarEstadoPedido,
 } from "../domains/commerce/estadoPedido.js";
 import { notificarPedidoCancelado } from "../domains/commerce/notificarPedidoCancelado.js";
+import { getInboundMedia } from "../shared/db/inboundMediaDirectory.js";
+import { listReceiptsPendientesDeRevision, type PaymentReceiptConPedido } from "../shared/db/paymentReceiptsDirectory.js";
 import { env } from "../config/env.js";
 import { outboundAdapterFor } from "../gateway/channels/registry.js";
 import { sendToConversation, sendWhatsAppMessage } from "../gateway/sendMessage.js";
@@ -6696,6 +6698,60 @@ export async function confirmarImportacionCsv(
   return { creados, actualizados, errores };
 }
 
+/**
+ * Comprobantes de transferencia escalados tras agotar los reintentos
+ * automáticos (ver `procesarComprobante.ts`) — hasta esta sección no había
+ * ningún control manual de pago por transferencia en el panel, la única
+ * forma de resolverlos era a mano en la base. Se muestra arriba de la
+ * tabla de pedidos, no como columna/diálogo por fila: son pocos casos
+ * (solo llegan acá los que el OCR no pudo resolver solo) y necesitan
+ * atención inmediata, mezclarlos entre el resto de los pedidos los
+ * escondería.
+ */
+async function renderComprobantesPendientesSection(pendientes: PaymentReceiptConPedido[]): Promise<string> {
+  if (pendientes.length === 0) {
+    return "";
+  }
+  const items = await Promise.all(
+    pendientes.map(async (r) => {
+      const media = await getInboundMedia(r.inboundMediaId);
+      const imgSrc = media ? `data:${media.mimeType};base64,${media.buffer.toString("base64")}` : "";
+      const dialogId = `comprobante-${r.orderId}`;
+      const lecturaOcr = [
+        r.ocrMonto !== null ? `Monto leído: ${formatCOP(r.ocrMonto)}` : "Monto: no se pudo leer",
+        r.ocrCuenta ? `Cuenta leída: ${escapeHtml(r.ocrCuenta)}` : "Cuenta: no se pudo leer",
+      ].join(" · ");
+      return `<div class="comprobante-item">
+        <div>
+          <p><strong>${escapeHtml(r.publicOrderNumber)}</strong> — ${escapeHtml(r.customerName ?? "Cliente")}</p>
+          <p class="hint">Total del pedido: ${formatCOP(r.total)} · ${lecturaOcr}</p>
+        </div>
+        <button type="button" data-open-dialog="${dialogId}" class="btn btn--ghost btn--sm">Revisar comprobante</button>
+        <dialog id="${dialogId}" class="modal">
+          <div class="blockhead"><h2>Comprobante — ${escapeHtml(r.publicOrderNumber)}</h2></div>
+          <p class="hint">${lecturaOcr}</p>
+          ${imgSrc ? `<img src="${imgSrc}" alt="Comprobante de transferencia del pedido ${escapeHtml(r.publicOrderNumber)}" style="max-width:100%;border-radius:8px;">` : `<p class="hint">No se pudo cargar la imagen del comprobante.</p>`}
+          <div class="formfoot">
+            <form method="POST" action="/admin/comprobantes/${r.orderId}/rechazar" data-confirm="¿Rechazar el pago de ${escapeHtml(r.publicOrderNumber)}? El cliente va a tener que mandar un pedido nuevo si quiere reintentar.">
+              <input type="hidden" name="receiptId" value="${r.id}">
+              <button type="submit" class="btn btn--ghost act--redline">Rechazar</button>
+            </form>
+            <form method="POST" action="/admin/comprobantes/${r.orderId}/aprobar" data-confirm="¿Aprobar el pago de ${escapeHtml(r.publicOrderNumber)}? El pedido queda marcado como pagado.">
+              <input type="hidden" name="receiptId" value="${r.id}">
+              <button type="submit" class="btn btn--primary">Aprobar</button>
+            </form>
+            <button type="button" data-close-dialog="${dialogId}" class="btn btn--ghost">Cerrar</button>
+          </div>
+        </dialog>
+      </div>`;
+    }),
+  );
+  return `<div class="panel" style="margin-bottom:16px;">
+    <div class="blockhead"><h2>Comprobantes pendientes de revisión (${pendientes.length})</h2></div>
+    ${items.join("")}
+  </div>`;
+}
+
 export async function renderPedidosPage(
   admin: AdminRecord,
   query: { error?: string; guardado?: string } = {},
@@ -6706,6 +6762,7 @@ export async function renderPedidosPage(
   }
 
   const banner = queryToastsHtml(query, "Guía registrada.");
+  const comprobantesSection = await renderComprobantesPendientesSection(await listReceiptsPendientesDeRevision());
 
   const rows = await withTransaction(async (client) => {
     const result = await client.query<PedidoRow>(
@@ -6920,6 +6977,7 @@ export async function renderPedidosPage(
       <p>${rows.length} ${rows.length === 1 ? "pedido" : "pedidos"} de ${escapeHtml(brandName(tenant))}.</p>
     </div>
     ${banner}
+    ${comprobantesSection}
     <div class="panel tablewrap" data-table data-page-size="20">
       <div class="tabletools">
         <input type="search" class="searchbox" data-table-search placeholder="Buscar por número, cliente, producto o guía…" aria-label="Buscar pedidos">

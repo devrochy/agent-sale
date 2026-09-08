@@ -95,7 +95,10 @@ describe("consultarEstadoPedido", () => {
     expect(result.found).toBe(true);
     expect(result.public_order_number).toBe(publicOrderNumberA);
     expect(result.status).toBe("abierto");
-    expect(result.payment_status).toBe("pagado");
+    // "transferencia" nace en 'pendiente' desde el comprobante con OCR (ver
+    // procesarComprobante.ts) — antes nacía 'pagado' sin que nadie lo
+    // revisara nunca.
+    expect(result.payment_status).toBe("pendiente");
     expect(result.delivery_method).toBe("domicilio");
     expect(result.tracking_number).toBeNull();
     expect(result.total).toBe(100000);
