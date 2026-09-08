@@ -26,7 +26,6 @@ import {
   cambiarEstadoPedido,
 } from "../domains/commerce/estadoPedido.js";
 import { notificarPedidoCancelado } from "../domains/commerce/notificarPedidoCancelado.js";
-import { aprobarComprobanteManual, rechazarComprobanteManual } from "../domains/commerce/procesarComprobante.js";
 import { getInboundMedia } from "../shared/db/inboundMediaDirectory.js";
 import { listReceiptsPendientesDeRevision, type PaymentReceiptConPedido } from "../shared/db/paymentReceiptsDirectory.js";
 import { env } from "../config/env.js";
