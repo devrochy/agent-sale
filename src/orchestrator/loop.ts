@@ -162,19 +162,18 @@ function extractSingleMatchImageUrl(
 
 /**
  * Link de pago de Wompi a anexar a la respuesta (Fase 12.4, ver ADR-024):
- * mismo criterio determinístico que extractSingleMatchImageUrl —
- * "crear_pedido" y "agregar_item_pedido" pueden devolver "payment_link_url"
- * cuando el método es 'pago_en_linea' y el pedido queda (o sigue) pendiente
- * de pago con un total actualizado; "confirmar_pago_pedido" lo reenvía
- * cuando el cliente toca "Confirmar y pagar" (ver confirmarPagoPedido.ts).
- * Nunca se confía en que el modelo copie el link correctamente en su texto.
+ * mismo criterio determinístico que extractSingleMatchImageUrl. Solo
+ * "confirmar_pago_pedido" (el botón "Confirmar y pagar", o un pedido
+ * directo del cliente por texto) lo devuelve — "crear_pedido",
+ * "agregar_item_pedido" y "actualizar_metodo_pago_pedido" generan y
+ * guardan el link igual (`orders.wompi_payment_link_url`), pero ya no lo
+ * devuelven: confirmar el pedido y confirmar el pago son dos momentos
+ * distintos del flujo (decisión del usuario, 2026-09-08), y compartir el
+ * link antes de que el cliente lo pida sería mezclar los dos. Nunca se
+ * confía en que el modelo copie el link correctamente en su texto.
  */
 function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): string | null {
-  if (
-    (toolName !== "crear_pedido" && toolName !== "agregar_item_pedido" && toolName !== "confirmar_pago_pedido") ||
-    toolResult.type !== "tool_result" ||
-    toolResult.is_error
-  ) {
+  if (toolName !== "confirmar_pago_pedido" || toolResult.type !== "tool_result" || toolResult.is_error) {
     return null;
   }
   try {

@@ -181,7 +181,7 @@ describe("pedirCambioMetodoPago", () => {
 });
 
 describe("actualizarMetodoPagoPedido", () => {
-  it("cambia a transferencia con cuentas configuradas: actualiza el pedido y manda los datos", async () => {
+  it("cambia a transferencia: actualiza el pedido sin mandar los datos (eso es exclusivo de 'Confirmar y pagar')", async () => {
     await saveTransferAccounts([
       {
         entity: "Bancolombia",
@@ -193,11 +193,11 @@ describe("actualizarMetodoPagoPedido", () => {
       },
     ]);
     const orderId = await nuevoPedidoAbierto();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ messages: [{ id: "wamid.cambio-pago-transferencia" }] }));
 
     const result = await actualizarMetodoPagoPedido({ order_id: orderId, payment_method: "transferencia" });
 
-    expect(result).toEqual({ order_id: orderId, status: "actualizado", transfer_details_sent: true });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+    expect(fetchMock).not.toHaveBeenCalled();
     const order = await adminPool.query<{ payment_method: string; payment_status: string }>(
       `SELECT payment_method, payment_status FROM orders WHERE id = $1`,
       [orderId],
@@ -205,15 +205,6 @@ describe("actualizarMetodoPagoPedido", () => {
     expect(order.rows[0]).toEqual({ payment_method: "transferencia", payment_status: "pendiente" });
 
     await saveTransferAccounts([]);
-  });
-
-  it("cambia a transferencia sin cuentas configuradas: actualiza igual pero transfer_details_sent es false", async () => {
-    await saveTransferAccounts([]);
-    const orderId = await nuevoPedidoAbierto();
-
-    const result = await actualizarMetodoPagoPedido({ order_id: orderId, payment_method: "transferencia" });
-
-    expect(result).toEqual({ order_id: orderId, status: "actualizado", transfer_details_sent: false });
   });
 
   it("cambia a pago_en_linea sin Wompi configurado: devuelve wompi_no_configurado sin tocar el pedido", async () => {
@@ -259,20 +250,20 @@ describe("actualizarMetodoPagoPedido", () => {
 
       const result = await actualizarMetodoPagoPedido({ order_id: orderId, payment_method: "pago_en_linea" });
 
-      expect(result).toEqual({
-        order_id: orderId,
-        status: "actualizado",
-        payment_link_url: `https://checkout.wompi.co/l/${paymentLinkId}`,
-      });
+      // El link ya no viene en el output (eso es exclusivo de "Confirmar y
+      // pagar", ver confirmarPagoPedido.ts) — se guarda igual en el pedido.
+      expect(result).toEqual({ order_id: orderId, status: "actualizado" });
       const order = await adminPool.query<{
         payment_method: string;
         payment_status: string;
         wompi_payment_link_id: string;
-      }>(`SELECT payment_method, payment_status, wompi_payment_link_id FROM orders WHERE id = $1`, [orderId]);
+        wompi_payment_link_url: string;
+      }>(`SELECT payment_method, payment_status, wompi_payment_link_id, wompi_payment_link_url FROM orders WHERE id = $1`, [orderId]);
       expect(order.rows[0]).toEqual({
         payment_method: "pago_en_linea",
         payment_status: "pendiente",
         wompi_payment_link_id: paymentLinkId,
+        wompi_payment_link_url: `https://checkout.wompi.co/l/${paymentLinkId}`,
       });
       const link = await adminPool.query(`SELECT order_id FROM wompi_payment_links WHERE payment_link_id = $1`, [
         paymentLinkId,

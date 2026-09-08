@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
+import { agregarItemPedido } from "../../../src/domains/commerce/agregarItemPedido.js";
 import { cancelarPedido } from "../../../src/domains/commerce/cancelarPedido.js";
 import {
   confirmarDomicilioPedido,
@@ -181,6 +182,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  await adminPool.query(`DELETE FROM order_item_batches WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`, [conversationId]);
   await adminPool.query(`DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE conversation_id = $1)`, [conversationId]);
   await adminPool.query(`DELETE FROM orders WHERE conversation_id = $1`, [conversationId]);
   await adminPool.query(`DELETE FROM quote_items WHERE quote_id IN (SELECT id FROM quotes WHERE conversation_id = $1)`, [conversationId]);
@@ -290,6 +292,46 @@ describe("pedir_confirmacion_domicilio con confirmar_domicilio_pedido", () => {
     fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.encamino" }] }));
     const guiaDespues = await registrarGuia(orderId, { trackingNumber: "GUIA-FLUJO-1", carrier: "Servientrega" });
     expect(guiaDespues).toEqual({ ok: true });
+  });
+});
+
+describe("agregar_item_pedido reenvía pedido_confirmado_v3 automáticamente", () => {
+  it("al agregar un producto, manda sola la plantilla con el total actualizado (sin preguntar por texto)", async () => {
+    const quoteId = await nuevaCotizacion();
+    const created = await crearPedido(
+      `sid-agregar-flujo-${Date.now()}`,
+      {
+        quote_id: quoteId,
+        payment_method: "efectivo_contraentrega",
+        delivery_method: "domicilio",
+        customer_data: customerData,
+      },
+      1000000,
+    );
+    expect(created.status).toBe("confirmed");
+    const orderId = created.order_id!;
+
+    // Este describe corre después del de "confirmar_domicilio_pedido" (ver
+    // arriba), que ya dejó "pedido_confirmado_v3" aprobada — mismo criterio
+    // de orden que el resto del archivo.
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.agregaritem-flujo" }] }));
+    const resultado = await agregarItemPedido(
+      `sid-agregar-flujo-lote-${Date.now()}`,
+      { order_id: orderId, items: [{ variant_id: variantId, quantity: 1 }] },
+      1000000,
+    );
+
+    expect(resultado.status).toBe("actualizado");
+    expect(resultado.total).toBe(created.total * 2);
+    expect(resultado.pedido_confirmado_status).toBe("enviado");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0]!;
+    const payload = JSON.parse((init as RequestInit).body as string);
+    expect(payload.template.name).toBe("pedido_confirmado_v3");
+    expect(payload.template.components[0].parameters[2]).toEqual({
+      type: "text",
+      text: `$${(created.total * 2).toLocaleString("es-CO")}`,
+    });
   });
 });
 
@@ -417,13 +459,11 @@ describe("confirmar_pago_pedido", () => {
         active: true,
       },
     ]);
-    // crear_pedido con "transferencia" YA manda los datos apenas se confirma
-    // el pedido (ver crearPedido.ts) — acá se llama confirmar_pago_pedido de
-    // todas formas (reenvío si el cliente lo pide de nuevo tocando el
-    // botón), así que hacen falta 2 respuestas mockeadas de sendToConversation.
-    fetchMock
-      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-auto" }] }))
-      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-reenvio" }] }));
+    // crear_pedido con "transferencia" ya NO manda los datos automáticamente
+    // (ver decisión del 2026-09-08: confirmar el pedido y confirmar el pago
+    // son dos momentos distintos) — el único envío de este test es el de
+    // confirmar_pago_pedido, resolviendo el botón "Confirmar y pagar".
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-reenvio" }] }));
     const orderId = await nuevoPedido("transferencia");
 
     const result = await confirmarPagoPedido({ order_id: orderId });
@@ -525,12 +565,11 @@ describe("confirmar_pago_pedido", () => {
         active: true,
       },
     ]);
-    // El auto-envío de crear_pedido debe funcionar; el que falla es el
-    // reenvío explícito de confirmar_pago_pedido — así se comprueba que no
-    // se confunde con "sin cuentas configuradas".
-    fetchMock
-      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-auto-2" }] }))
-      .mockRejectedValueOnce(new Error("network down"));
+    // crear_pedido ya no manda nada automático (ver arriba) — el único
+    // intento de envío es el de confirmar_pago_pedido, y ese es el que
+    // falla acá, para comprobar que no se confunde con "sin cuentas
+    // configuradas".
+    fetchMock.mockRejectedValueOnce(new Error("network down"));
     const orderId = await nuevoPedido("transferencia");
 
     const result = await confirmarPagoPedido({ order_id: orderId });

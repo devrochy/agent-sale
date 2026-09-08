@@ -8,7 +8,6 @@ import { createPaymentLink, MIN_AMOUNT_COP } from "../../payments/wompiClient.js
 import { canonicalToMetaRecipient } from "../../gateway/channels/meta/addresses.js";
 import { resolveApprovedTemplate } from "../../gateway/channels/meta/resolveApprovedTemplate.js";
 import { sendTemplateMessage } from "../../gateway/channels/meta/templates.js";
-import { enviarDatosTransferencia } from "./datosTransferencia.js";
 import type { PaymentMethod } from "./crearPedido.js";
 
 function formatearMonto(total: number): string {
@@ -113,10 +112,6 @@ export type ActualizarMetodoPagoPedidoStatus =
 export interface ActualizarMetodoPagoPedidoOutput {
   order_id: string;
   status: ActualizarMetodoPagoPedidoStatus;
-  /** Solo presente cuando status es "actualizado" y el método nuevo es 'pago_en_linea'. */
-  payment_link_url?: string;
-  /** Solo presente cuando status es "actualizado" y el método nuevo es 'transferencia'. */
-  transfer_details_sent?: boolean;
 }
 
 /**
@@ -127,6 +122,13 @@ export interface ActualizarMetodoPagoPedidoOutput {
  * dos métodos). El link de pago viejo (si había uno pendiente) se limpia
  * al cambiar de método: no tiene sentido dejarlo colgado apuntando a un
  * método que el cliente ya no eligió.
+ *
+ * Ni el link de Wompi nuevo ni los datos de transferencia se comparten acá
+ * — se generan/guardan igual (`wompi_payment_link_id`/url, ver
+ * crearPedido.ts para el mismo criterio), pero cambiar el método de pago
+ * de un pedido no es "confirmar y pagar": eso sigue siendo exclusivo de
+ * `confirmar_pago_pedido` (el botón de la plantilla, o un pedido directo
+ * del cliente por texto — ver systemPrompt.ts).
  */
 export async function actualizarMetodoPagoPedido(
   input: ActualizarMetodoPagoPedidoInput,
@@ -165,12 +167,6 @@ export async function actualizarMetodoPagoPedido(
   if (paymentLink) {
     await createWompiPaymentLink(input.order_id, paymentLink.paymentLinkId);
     await guardarPaymentLinkUrl(input.order_id, paymentLink.url);
-    return { order_id: input.order_id, status: "actualizado", payment_link_url: paymentLink.url };
-  }
-
-  if (input.payment_method === "transferencia") {
-    const resultado = await enviarDatosTransferencia(order.conversation_id, order.public_order_number, total);
-    return { order_id: input.order_id, status: "actualizado", transfer_details_sent: resultado === "enviado" };
   }
 
   return { order_id: input.order_id, status: "actualizado" };

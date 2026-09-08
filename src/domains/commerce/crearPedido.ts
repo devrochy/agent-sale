@@ -6,7 +6,6 @@ import {
 } from "../../shared/db/index.js";
 import { createPaymentLink, MIN_AMOUNT_COP } from "../../payments/wompiClient.js";
 import { buildIdempotencyKey } from "./idempotency.js";
-import { enviarDatosTransferencia } from "./datosTransferencia.js";
 
 export type PaymentMethod =
   | "transferencia"
@@ -62,16 +61,6 @@ export interface CrearPedidoOutput {
    * Solo presente cuando order_id no es null.
    */
   public_order_number?: string;
-  /** Solo presente cuando payment_method es 'pago_en_linea' y status 'confirmed' (ver ADR-024). */
-  payment_link_url?: string;
-  /**
-   * `true` cuando ya se le mandaron al cliente los datos de transferencia
-   * en un mensaje aparte (ver datosTransferencia.ts). El LLM NO recibe las
-   * cuentas: solo este booleano, para que confirme que ya los mandamos en
-   * vez de dictarlos de memoria. `false` si el pago es por transferencia y
-   * todavía no hay ninguna cuenta cargada en Configuración.
-   */
-  transfer_details_sent?: boolean;
   /** Solo presente cuando status es 'faltan_datos_cliente' (ver ADR-033). */
   missing_fields?: MissingCustomerField[];
   existing_data?: {
@@ -411,29 +400,22 @@ export async function crearPedido(
   // resolvió (el pedido quedó comprometido/commiteado). Insertarlo
   // *dentro* de la transacción del pedido violaría el FK a `orders`: esa
   // fila todavía no sería visible desde otra conexión hasta el COMMIT.
+  //
+  // El link SÍ se genera y se guarda acá (wompi_payment_link_id/url, sin
+  // ella el panel no puede reabrirla ni reenviarla — ver migración 0056),
+  // pero YA NO se agrega a la respuesta al cliente en este punto. Confirmar
+  // el pedido con el asistente ("crear_pedido") y confirmar el pago
+  // ("Confirmar y pagar" en la plantilla pedido_confirmado_v3, ver
+  // confirmarPagoPedido.ts) son dos momentos distintos del flujo (decisión
+  // explícita del usuario, 2026-09-08): la cuenta bancaria o el link de
+  // Wompi solo se comparten cuando el cliente toca ese botón, o los pide
+  // directamente por texto (ver systemPrompt.ts, tool
+  // "confirmar_pago_pedido") — nunca al confirmar el pedido en sí. Antes
+  // esta tool devolvía "payment_link_url" acá mismo y el LLM lo agregaba a
+  // su respuesta de inmediato, mezclado con la confirmación del pedido.
   if (paymentLink && created.status === "confirmed") {
     await createWompiPaymentLink(created.order_id, paymentLink.paymentLinkId);
-    // La URL se le manda al cliente por WhatsApp y hasta ahora moría ahí:
-    // solo se guardaba el id del link. Sin ella el panel no puede
-    // reabrirla ni reenviarla, que es justo lo que hace falta cuando el
-    // cliente dice "no me llegó" (ver migración 0056).
     await guardarPaymentLinkUrl(created.order_id, paymentLink.url);
-    return { ...created, payment_link_url: paymentLink.url };
-  }
-
-  // Los datos de transferencia van en un mensaje aparte, fuera del turno
-  // del LLM y con los valores tal como están guardados — ver el docblock de
-  // datosTransferencia.ts para por qué no pueden pasar por el modelo.
-  if (input.payment_method === "transferencia" && created.status === "confirmed") {
-    const resultado = await enviarDatosTransferencia(
-      quote.conversation_id,
-      created.public_order_number ?? "",
-      created.total,
-    );
-    // El contrato con el LLM (systemPrompt.ts) es un boolean simple: se
-    // mandó o no. La distinción entre "sin cuentas" y "falló el envío" solo
-    // le hace falta a confirmar_pago_pedido (ver datosTransferencia.ts).
-    return { ...created, transfer_details_sent: resultado === "enviado" };
   }
 
   return created;
