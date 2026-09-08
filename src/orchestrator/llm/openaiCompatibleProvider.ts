@@ -119,10 +119,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
     systemPrompt,
     tools,
     messages,
+    forceToolName,
   }: {
     systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
+    forceToolName?: string;
   }): Promise<TurnResponse> {
     const baseUrl = this.config.baseUrl ?? env.llmBaseUrl;
     const apiKey = this.config.apiKey ?? env.llmApiKey;
@@ -141,6 +143,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
         model,
         messages: toOpenAIMessages(systemPrompt.join("\n\n"), messages),
         tools: toOpenAITools(tools),
+        // Mismo formato que OpenAI (DeepSeek es API-compatible, ver
+        // ADR-010) — forzar la función por nombre en vez de "auto" es lo
+        // que garantiza el encadenado de tools que el prompt pide (ver
+        // forceToolName en types.ts).
+        ...(forceToolName ? { tool_choice: { type: "function", function: { name: forceToolName } } } : {}),
       }),
     });
 
