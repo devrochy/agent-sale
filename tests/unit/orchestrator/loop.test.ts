@@ -559,3 +559,186 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
     expect(updateMessageContent).not.toHaveBeenCalled();
   });
 });
+
+// Corte estructural del turno para tools que ya mandan su propia plantilla
+// (ver esTurnoSilencioso en loop.ts) — la garantía de código contra el
+// texto de más que el modelo agrega incluso con la instrucción explícita
+// del prompt de "no respondas nada".
+describe("runTurn — corte de turno silencioso", () => {
+  beforeEach(() => {
+    mockConverse.mockReset();
+    vi.mocked(resolveLlmProvider).mockReset();
+    vi.mocked(executeTool).mockReset();
+    vi.mocked(escalarHumano).mockReset();
+    vi.mocked(resolveConversation).mockReset();
+    vi.mocked(loadHistory).mockReset();
+    vi.mocked(appendMessage).mockReset();
+    vi.mocked(updateState).mockReset();
+    vi.mocked(getEscalationConfig).mockReset();
+    vi.mocked(getBehaviorConfig).mockReset();
+    vi.mocked(getBrandVoiceConfig).mockReset();
+    vi.mocked(recordAudit).mockReset();
+
+    vi.mocked(resolveLlmProvider).mockResolvedValue({
+      provider: { converse: mockConverse },
+      model: "test-model",
+      providerKey: "env-default",
+    });
+    vi.mocked(resolveConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      customerId: "customer-1",
+      state: {},
+      customerBotPaused: false,
+      conversationBotPaused: false,
+    });
+    vi.mocked(loadHistory).mockResolvedValue([]);
+    vi.mocked(getEscalationConfig).mockResolvedValue(null);
+    vi.mocked(getBehaviorConfig).mockResolvedValue(null);
+    vi.mocked(getBrandVoiceConfig).mockResolvedValue(null);
+  });
+
+  it("batch 100% silencioso (preguntar_metodo_pago enviado) corta el turno sin volver a llamar al LLM", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({ quote_id: "q1", status: "enviado" }),
+    });
+    mockConverse.mockResolvedValueOnce({
+      stopReason: "tool_use",
+      content: [{ type: "tool_use", id: "toolu_1", name: "preguntar_metodo_pago", input: { quote_id: "q1" } }],
+      usage: USAGE,
+    });
+
+    const result = await runTurn("+573000000000", "quiero comprar", "sid-silencioso-1");
+
+    expect(mockConverse).toHaveBeenCalledTimes(1);
+    expect(result.responseText).toBe("");
+    expect(updateState).toHaveBeenCalledWith("conv-1", { step: "resuelto", turnos_sin_resolver: 0 });
+  });
+
+  it("cadena generar_cotizacion + aplicar_promocion + preguntar_metodo_pago (todas silenciosas) corta el turno", async () => {
+    vi.mocked(executeTool).mockImplementation(async (_c, _cu, _m, _t, toolUse) => {
+      if (toolUse.name === "generar_cotizacion") {
+        return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", subtotal: 200000, total: 200000 }) };
+      }
+      if (toolUse.name === "aplicar_promocion") {
+        return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", promotion_applied: null, subtotal: 200000, discount: 0, total: 200000 }) };
+      }
+      return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", status: "enviado" }) };
+    });
+    mockConverse.mockResolvedValueOnce({
+      stopReason: "tool_use",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "generar_cotizacion", input: {} },
+        { type: "tool_use", id: "toolu_2", name: "aplicar_promocion", input: { quote_id: "q1" } },
+        { type: "tool_use", id: "toolu_3", name: "preguntar_metodo_pago", input: { quote_id: "q1" } },
+      ],
+      usage: USAGE,
+    });
+
+    const result = await runTurn("+573000000000", "quiero un casco talla M", "sid-silencioso-2");
+
+    expect(mockConverse).toHaveBeenCalledTimes(1);
+    expect(result.responseText).toBe("");
+  });
+
+  it("generar_cotizacion + aplicar_promocion SIN preguntar_metodo_pago sigue necesitando texto del LLM", async () => {
+    // Mismo escenario que "promoción proactiva" más arriba en este archivo:
+    // sin una tool terminal en el batch (nada que le muestre el total al
+    // cliente todavía), no alcanza con que las auxiliares hayan salido bien.
+    vi.mocked(executeTool).mockImplementation(async (_c, _cu, _m, _t, toolUse) => {
+      if (toolUse.name === "generar_cotizacion") {
+        return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", subtotal: 200000, total: 200000 }) };
+      }
+      return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", promotion_applied: null, subtotal: 200000, discount: 0, total: 200000 }) };
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "generar_cotizacion", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "aplicar_promocion", input: { quote_id: "q1" } },
+        ],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Tu casco queda en $200.000."));
+
+    const result = await runTurn("+573000000000", "quiero un casco", "sid-silencioso-3");
+
+    expect(mockConverse).toHaveBeenCalledTimes(2);
+    expect(result.responseText).toBe("Tu casco queda en $200.000.");
+  });
+
+  it("batch mixto (consultar_estado_pedido + cancelar_pedido) sigue llamando al LLM", async () => {
+    vi.mocked(executeTool).mockImplementation(async (_c, _cu, _m, _t, toolUse) => {
+      if (toolUse.name === "consultar_estado_pedido") {
+        return {
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: JSON.stringify({ found: true, public_order_number: "FM-0001", status: "abierto" }),
+        };
+      }
+      return {
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: JSON.stringify({ order_id: "o1", status: "cancelado" }),
+      };
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "consultar_estado_pedido", input: { public_order_number: "FM-0001" } },
+          { type: "tool_use", id: "toolu_2", name: "cancelar_pedido", input: { order_id: "o1" } },
+        ],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Tu pedido FM-0001 está abierto y ya lo cancelé como pediste."));
+
+    const result = await runTurn("+573000000000", "cómo va mi pedido, cancelalo", "sid-silencioso-4");
+
+    expect(mockConverse).toHaveBeenCalledTimes(2);
+    expect(result.responseText).toBe("Tu pedido FM-0001 está abierto y ya lo cancelé como pediste.");
+  });
+
+  it("una tool silenciosa con status de fallo (plantilla_no_aprobada) no corta el turno", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({ quote_id: "q1", status: "plantilla_no_aprobada" }),
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "preguntar_metodo_pago", input: { quote_id: "q1" } }],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("¿Cómo preferís pagar: transferencia, contra entrega o en línea?"));
+
+    const result = await runTurn("+573000000000", "quiero comprar", "sid-silencioso-5");
+
+    expect(mockConverse).toHaveBeenCalledTimes(2);
+    expect(result.responseText).toBe("¿Cómo preferís pagar: transferencia, contra entrega o en línea?");
+  });
+
+  it("una tool silenciosa con is_error no corta el turno", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: "Pedido no encontrado.",
+      is_error: true,
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "cancelar_pedido", input: { order_id: "o1" } }],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("No encontré ese pedido."));
+
+    const result = await runTurn("+573000000000", "cancela mi pedido", "sid-silencioso-6");
+
+    expect(mockConverse).toHaveBeenCalledTimes(2);
+    expect(result.responseText).toBe("No encontré ese pedido.");
+  });
+});

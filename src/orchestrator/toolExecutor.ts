@@ -31,6 +31,12 @@ import {
   type ConfirmarPagoPedidoInput,
 } from "../domains/commerce/confirmarPagoPedido.js";
 import {
+  actualizarMetodoPagoPedido,
+  pedirCambioMetodoPago,
+  type ActualizarMetodoPagoPedidoInput,
+  type PedirCambioMetodoPagoInput,
+} from "../domains/commerce/cambiarMetodoPagoPedido.js";
+import {
   consultarEstadoPedido,
   type ConsultarEstadoPedidoInput,
 } from "../domains/commerce/consultarEstadoPedido.js";
@@ -116,6 +122,12 @@ export async function executeTool(
         break;
       case "confirmar_pago_pedido":
         output = await confirmarPagoPedido(toolUse.input as ConfirmarPagoPedidoInput);
+        break;
+      case "cambiar_metodo_pago_pedido":
+        output = await pedirCambioMetodoPago(toolUse.input as PedirCambioMetodoPagoInput);
+        break;
+      case "actualizar_metodo_pago_pedido":
+        output = await actualizarMetodoPagoPedido(toolUse.input as ActualizarMetodoPagoPedidoInput);
         break;
       case "cancelar_pedido":
         output = await cancelarPedido(toolUse.input as CancelarPedidoInput);
