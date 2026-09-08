@@ -248,4 +248,22 @@ describe("procesarMediaEntrante — imagen", () => {
     // visión "qué producto es esto".
     expect(describirImagenProducto).not.toHaveBeenCalled();
   });
+
+  it("un reintento con el MISMO messageSid reusa la descripción ya pagada, no vuelve a llamar a la visión", async () => {
+    vi.mocked(downloadMedia).mockResolvedValue({ buffer: Buffer.from("foto-producto"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce("guantes de cuero café");
+    const messageSid = `sid-media-img-cache-${Date.now()}`;
+
+    const mensaje = nuevoMensaje({ messageSid, media: { type: "image", mediaId: "media-img-cache", mimeType: "image/jpeg" } });
+    const primero = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+    // Mismo mensaje otra vez (simula un reintento de la cola).
+    const segundo = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(primero).toEqual({
+      kind: "continuar_como_texto",
+      texto: "[Foto de producto] El cliente mandó una foto. Descripción automática: guantes de cuero café",
+    });
+    expect(segundo).toEqual(primero);
+    expect(describirImagenProducto).toHaveBeenCalledTimes(1); // no 2 — el segundo intento reusó la cache
+  });
 });
