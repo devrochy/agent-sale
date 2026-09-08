@@ -83,7 +83,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "crear_pedido",
     description:
-      "Convierte una cotización aceptada por el cliente en un pedido confirmado. Llamar solo después de que el cliente confirme explícitamente que quiere comprar, con método de pago y de entrega ya acordados.",
+      "Convierte una cotización en un pedido confirmado — llamala apenas mandes la plantilla 'metodo_pago' y el cliente responda con uno de sus 3 botones, no hace falta ninguna otra confirmación de texto.",
     inputSchema: {
       type: "object",
       properties: {
@@ -97,7 +97,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         delivery_method: {
           type: "string",
           enum: ["domicilio", "recoger_en_tienda"],
-          description: "Método de entrega acordado con el cliente.",
+          description:
+            "Opcional — no se lo preguntes al cliente, por defecto es 'domicilio'. Pasá 'recoger_en_tienda' únicamente si el cliente lo pide por su cuenta, sin que se lo hayas preguntado.",
         },
         customer_data: {
           type: "object",
@@ -125,13 +126,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           required: ["address", "id_document", "full_name", "save_permanently"],
         },
       },
-      required: ["quote_id", "payment_method", "delivery_method"],
+      required: ["quote_id", "payment_method"],
     },
   },
   {
     name: "agregar_item_pedido",
     description:
-      "Suma productos a un pedido ya confirmado en la misma conversación, mientras siga abierto (todavía no despachado) — sin crear un pedido ni una cotización nueva. Usar cuando el cliente pide agregar algo más después de que crear_pedido ya devolvió status 'confirmed'. Vuelve a validar precio y stock reales, igual que generar_cotizacion.",
+      "Suma productos a un pedido ya confirmado en la misma conversación, mientras siga abierto (todavía no despachado) — sin crear un pedido ni una cotización nueva. Usar cuando el cliente pide agregar algo más después de que crear_pedido ya devolvió status 'confirmed'. Vuelve a validar precio y stock reales, igual que generar_cotizacion. Cuando devuelva 'status': 'actualizado', preguntale al cliente si el método de pago y la dirección siguen siendo los mismos ahora que el total cambió, o si quiere cambiar alguno — si pide cambiar la dirección, usa 'pedir_confirmacion_domicilio'; si pide cambiar el método de pago, usa 'cambiar_metodo_pago_pedido'.",
     inputSchema: {
       type: "object",
       properties: {
@@ -158,7 +159,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "preguntar_metodo_pago",
     description:
-      "Manda la plantilla de WhatsApp 'metodo_pago' con 3 botones (Transferencia / Pago en línea / Contra entrega) para que el cliente elija cómo pagar, en vez de preguntarlo por texto libre. Llamar cuando el cliente confirme que quiere comprar y todavía no haya dicho el método de pago. No agregues texto propio en ese turno — la plantilla ya le muestra las 3 opciones, cualquier frase tuya (ej. 'te mandé las opciones arriba') sería redundante. Cuando responda con uno de los 3 botones, mapealo a payment_method ('Transferencia'→'transferencia', 'Pago en línea'→'pago_en_linea', 'Contra entrega'→'efectivo_contraentrega') y seguí a crear_pedido con ese valor — no vuelvas a preguntar. Si devuelve 'status' distinto de 'enviado', no reintentes: preguntá el método de pago por texto normal.",
+      "Manda la plantilla de WhatsApp 'metodo_pago' con 3 botones (Transferencia / Pago en línea / Contra entrega) para que el cliente elija cómo pagar, en vez de preguntarlo por texto libre. Llamala EN EL MISMO TURNO que generar_cotizacion/aplicar_promocion, encadenada, apenas termines de cotizar — nunca antes le preguntes por texto si confirma el pedido ni cómo quiere pagar, la plantilla ya cubre las dos cosas (tocar un botón ES la confirmación). No agregues texto propio en ese turno — la plantilla ya le muestra las 3 opciones, cualquier frase tuya (ej. 'te mandé las opciones arriba') sería redundante. Cuando responda con uno de los 3 botones, mapealo a payment_method ('Transferencia'→'transferencia', 'Pago en línea'→'pago_en_linea', 'Contra entrega'→'efectivo_contraentrega') y seguí a crear_pedido con ese valor — no vuelvas a preguntar. Si devuelve 'status' distinto de 'enviado', no reintentes: ahí sí seguí por texto normal, resumiendo la cotización y preguntando cómo quiere pagar.",
     inputSchema: {
       type: "object",
       properties: {
@@ -221,9 +222,38 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "cambiar_metodo_pago_pedido",
+    description:
+      "Manda de nuevo la plantilla de WhatsApp 'metodo_pago' (3 botones: Transferencia / Pago en línea / Contra entrega), esta vez atada a un pedido ya confirmado en vez de a una cotización. Usar cuando, después de agregar_item_pedido, el cliente diga que quiere cambiar el método de pago. No agregues texto propio en este turno — la plantilla ya le muestra las opciones. Cuando responda con uno de los 3 botones, mapealo igual que siempre ('Transferencia'→'transferencia', 'Pago en línea'→'pago_en_linea', 'Contra entrega'→'efectivo_contraentrega') y llamá 'actualizar_metodo_pago_pedido' con ese valor — no vuelvas a preguntar.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido ya confirmado cuyo método de pago se va a cambiar." },
+      },
+      required: ["order_id"],
+    },
+  },
+  {
+    name: "actualizar_metodo_pago_pedido",
+    description:
+      "Aplica el cambio de método de pago de un pedido ya confirmado, resuelto por el botón que tocó el cliente en la plantilla que mandó 'cambiar_metodo_pago_pedido'. Según 'status': 'actualizado' con 'transfer_details_sent': true → ya se le mandaron los datos de la cuenta nueva en un mensaje aparte (nunca escribas vos un número de cuenta), confirmale que 'te acabo de pasar los datos' y pedile el comprobante. 'actualizado' con 'transfer_details_sent': false → la tienda todavía no cargó ninguna cuenta, decile que en un momento le pasan los datos y usa escalar_a_humano. 'actualizado' con 'payment_link_url' → el link se agrega solo al final de tu respuesta (nunca lo escribas vos), explicá que el pedido queda pendiente hasta que pague ese link. 'actualizado' sin ninguno de los anteriores (efectivo o tarjeta) → confirmale simplemente que el método de pago quedó actualizado. 'wompi_no_configurado' → ese método no está disponible por ahora, ofrecé transferencia o efectivo contra entrega en su lugar. 'wompi_monto_minimo' → el total del pedido es muy bajo para pagarlo en línea, ofrecé transferencia o efectivo contra entrega. 'pedido_no_abierto' → avisale que ese pedido ya no admite cambios de pago.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido cuyo método de pago se actualiza." },
+        payment_method: {
+          type: "string",
+          enum: ["transferencia", "efectivo_contraentrega", "tarjeta", "pago_en_linea"],
+          description: "Nuevo método de pago, mapeado del botón que tocó el cliente.",
+        },
+      },
+      required: ["order_id", "payment_method"],
+    },
+  },
+  {
     name: "cancelar_pedido",
     description:
-      "Cancela un pedido todavía abierto y manda automáticamente la plantilla 'pedido_cancelado' al cliente con el número de pedido — no revierte pagos ni libera stock, solo cambia su estado. Llamar cuando el cliente pida cancelar explícitamente (por texto, o al tocar el botón 'Cancelar pedido' del resumen 'pedido_confirmado_v3'). No repitas la cancelación con tus propias palabras en este turno (la plantilla ya se la mandó) — como mucho, una frase corta preguntando si necesita algo más.",
+      "Cancela un pedido y manda automáticamente la plantilla 'pedido_cancelado' al cliente con el número de pedido, así que llamala SOLO cuando el cliente ya haya confirmado explícitamente que quiere cancelar (un 'sí' claro a tu pregunta) — nunca la primera vez que menciona cancelar, sea por texto o al tocar el botón 'Cancelar pedido' del resumen 'pedido_confirmado_v3': ahí primero preguntale si está seguro, mencionando qué se cancela (el producto y el monto), y esperá su confirmación. No revierte pagos ni libera stock, solo cambia el estado del pedido. No repitas la cancelación con tus propias palabras después de llamarla (la plantilla ya se la mandó).",
     inputSchema: {
       type: "object",
       properties: {

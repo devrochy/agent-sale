@@ -185,6 +185,87 @@ function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): stri
   }
 }
 
+/**
+ * Tools que ya mandan su propia plantilla de WhatsApp (o no necesitan
+ * texto del LLM por otro motivo) cuando su resultado cae en uno de los
+ * `status` de este set — ver systemPrompt.ts, instrucciones de "no
+ * agregues texto propio" para cada una. En la práctica el modelo (DeepSeek)
+ * no respeta esa instrucción de forma consistente (confirmado con logs
+ * reales: sigue agregando 2-4 burbujas de texto de más incluso con la
+ * instrucción explícita) — `esTurnoSilencioso` es la garantía de código,
+ * usada junto con (no en vez de) esas instrucciones de prompt.
+ *
+ * "Terminales": mandan la plantilla que hace innecesario el texto del LLM
+ * — el batch necesita AL MENOS UNA para poder cortar (ver esTurnoSilencioso).
+ *
+ * "Auxiliares" (`generar_cotizacion`/`aplicar_promocion`): nunca alcanzan
+ * SOLAS para cortar el turno — sin una terminal en el mismo batch (ej. el
+ * LLM las llama para mencionar proactivamente un descuento, sin
+ * "preguntar_metodo_pago" todavía) el cliente sigue necesitando el texto
+ * que resume la cotización. Solo se admiten como acompañantes silenciosas
+ * cuando SÍ hay una terminal en el batch (el flujo nuevo de
+ * "generar_cotizacion" → "aplicar_promocion" → "preguntar_metodo_pago" en
+ * el mismo turno, ver systemPrompt.ts). No tienen un `status` de éxito fijo
+ * (la primera siempre devuelve "draft", la segunda no tiene campo `status`
+ * en absoluto) — alcanza con que no hayan tirado error.
+ */
+const TOOLS_AUXILIARES_SILENCIOSAS = new Set(["generar_cotizacion", "aplicar_promocion"]);
+const TOOLS_TERMINALES_SILENCIOSAS: Record<string, ReadonlySet<string>> = {
+  preguntar_metodo_pago: new Set(["enviado"]),
+  pedir_confirmacion_domicilio: new Set(["enviado"]),
+  confirmar_domicilio_pedido: new Set(["confirmado"]),
+  actualizar_direccion_pedido: new Set(["actualizado"]),
+  cancelar_pedido: new Set(["cancelado"]),
+  // "link_pago_disponible" queda afuera a propósito: el link se anexa
+  // recién si el LLM escribe algo (ver extractPaymentLinkUrl más abajo),
+  // así que ese status SÍ necesita que el modelo redacte el turno.
+  confirmar_pago_pedido: new Set(["datos_transferencia_enviados"]),
+  cambiar_metodo_pago_pedido: new Set(["enviado"]),
+};
+
+/**
+ * `true` solo si TODAS las tool_use del batch son silenciosas-con-éxito
+ * (auxiliar o terminal) Y al menos una es terminal — no alcanza con que lo
+ * sea la última, ni con que el batch sea 100% auxiliares. Un batch mixto
+ * con una tool que sí necesita texto (ej. "consultar_estado_pedido" +
+ * "cancelar_pedido" en el mismo turno) sigue necesitando que el LLM
+ * redacte lo que el cliente preguntó aparte; exigir el 100% del batch
+ * evita perder ese texto.
+ */
+function esTurnoSilencioso(
+  toolUseBlocks: Array<Extract<ContentBlock, { type: "tool_use" }>>,
+  toolResults: ContentBlock[],
+): boolean {
+  if (toolUseBlocks.length === 0) {
+    return false;
+  }
+  let tieneTerminal = false;
+  const todoSilencioso = toolUseBlocks.every((toolUse, index) => {
+    const toolResult = toolResults[index];
+    if (!toolResult || toolResult.type !== "tool_result" || toolResult.is_error) {
+      return false;
+    }
+    if (TOOLS_AUXILIARES_SILENCIOSAS.has(toolUse.name)) {
+      return true;
+    }
+    const statusesOk = TOOLS_TERMINALES_SILENCIOSAS[toolUse.name];
+    if (!statusesOk) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(toolResult.content) as { status?: string };
+      if (typeof parsed.status === "string" && statusesOk.has(parsed.status)) {
+        tieneTerminal = true;
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  });
+  return todoSilencioso && tieneTerminal;
+}
+
 async function escalateAndReply(
   conversationId: string,
   reason: EscalationReason,
@@ -482,6 +563,22 @@ export async function processConversation(
           "monto_alto",
           `El pedido ($${montoAltoAmount}) supera el umbral configurado ($${escalationConfig.montoAltoThreshold}) — crear_pedido se negó a confirmarlo.`,
         );
+      }
+
+      // Corte estructural (ver esTurnoSilencioso más arriba): si TODO el
+      // batch de este turno ya mandó su propia plantilla, no se vuelve a
+      // llamar al LLM — evita el texto de más que el modelo agrega incluso
+      // cuando el prompt le pide explícitamente que no lo haga.
+      // `responseText: ""` (nunca `null`, que tiene la semántica específica
+      // de "conversación escalada" en el resto del código) — splitForBubbles
+      // lo recorta a `[]`, sendTurnBubbles no manda ninguna burbuja.
+      if (esTurnoSilencioso(toolUseBlocks, toolResults)) {
+        turnLogger.info(
+          { event: "orchestrator.turno_silencioso", tools: toolUseBlocks.map((t) => t.name) },
+          "Batch de tools 100% silencioso — se corta el turno sin volver a llamar al LLM",
+        );
+        await updateState(conversationId, { step: "resuelto", turnos_sin_resolver: 0 });
+        return { responseText: "", mediaUrl };
       }
 
       continue;

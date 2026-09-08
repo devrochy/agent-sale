@@ -34,9 +34,17 @@ export interface CustomerData {
 export interface CrearPedidoInput {
   quote_id: string;
   payment_method: PaymentMethod;
-  delivery_method: DeliveryMethod;
+  /**
+   * Opcional — por defecto "domicilio" (ver DEFAULT_DELIVERY_METHOD). El
+   * flujo automático ya no le pregunta al cliente el método de entrega
+   * (ver systemPrompt.ts); el LLM solo manda "recoger_en_tienda" si el
+   * cliente lo pide por su cuenta, sin que se le pregunte.
+   */
+  delivery_method?: DeliveryMethod;
   customer_data?: CustomerData;
 }
+
+const DEFAULT_DELIVERY_METHOD: DeliveryMethod = "domicilio";
 
 export interface CrearPedidoOutput {
   order_id: string | null;
@@ -319,7 +327,7 @@ export async function crearPedido(
         // (efectivo_contraentrega, tarjeta) sigue naciendo 'pagado': no hay
         // forma de validar esos por acá, y no es lo que se pidió.
         paymentLink || input.payment_method === "transferencia" ? "pendiente" : "pagado",
-        input.delivery_method,
+        input.delivery_method ?? DEFAULT_DELIVERY_METHOD,
         idempotencyKey,
         quote.total,
         paymentLink?.paymentLinkId ?? null,
