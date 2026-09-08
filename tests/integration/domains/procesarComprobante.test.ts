@@ -15,11 +15,16 @@ import { analizarComprobante } from "../../../src/payments/ocrComprobante.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import {
+  aprobarComprobanteManual,
   buscarPedidoPendienteTransferencia,
   procesarComprobante,
+  rechazarComprobanteManual,
 } from "../../../src/domains/commerce/procesarComprobante.js";
 import { guardarMediaEntrante } from "../../../src/shared/db/inboundMediaDirectory.js";
-import { listReceiptsPendientesDeRevision } from "../../../src/shared/db/paymentReceiptsDirectory.js";
+import {
+  listReceiptsPendientesDeRevision,
+  registrarPaymentReceipt,
+} from "../../../src/shared/db/paymentReceiptsDirectory.js";
 import {
   saveReportRecipient,
   saveTransferAccounts,
@@ -155,6 +160,7 @@ describe("procesarComprobante", () => {
     const resultado = await procesarComprobante({
       orderId,
       inboundMediaId,
+      messageSid: `wamid-comprobante-aprobado-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
     });
@@ -172,6 +178,7 @@ describe("procesarComprobante", () => {
     const resultado = await procesarComprobante({
       orderId,
       inboundMediaId,
+      messageSid: `wamid-comprobante-monto-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
     });
@@ -192,6 +199,7 @@ describe("procesarComprobante", () => {
     const resultado = await procesarComprobante({
       orderId,
       inboundMediaId,
+      messageSid: `wamid-comprobante-cuenta-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
     });
@@ -208,6 +216,7 @@ describe("procesarComprobante", () => {
     const resultado = await procesarComprobante({
       orderId,
       inboundMediaId,
+      messageSid: `wamid-comprobante-ilegible-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
     });
@@ -227,9 +236,23 @@ describe("procesarComprobante", () => {
     const { orderId, inboundMediaId } = await nuevoPedidoConMedia();
     vi.mocked(analizarComprobante).mockResolvedValue({ monto: null, cuentaDestino: null });
 
-    // 2 intentos fallidos primero (no escalan todavía, LIMITE_INTENTOS=2).
-    await procesarComprobante({ orderId, inboundMediaId, buffer: Buffer.from("x"), mimeType: "image/jpeg" });
-    await procesarComprobante({ orderId, inboundMediaId, buffer: Buffer.from("x"), mimeType: "image/jpeg" });
+    // 2 intentos fallidos primero (no escalan todavía, LIMITE_INTENTOS=2) —
+    // 3 fotos DISTINTAS del cliente (no reintentos de la cola sobre la
+    // misma), por eso cada una lleva su propio messageSid.
+    await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid: `wamid-comprobante-escala-1-${Date.now()}`,
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+    });
+    await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid: `wamid-comprobante-escala-2-${Date.now()}`,
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+    });
     vi.mocked(sendToConversation).mockClear();
     vi.mocked(sendWhatsAppMessage).mockClear();
 
@@ -237,6 +260,7 @@ describe("procesarComprobante", () => {
     const resultado = await procesarComprobante({
       orderId,
       inboundMediaId,
+      messageSid: `wamid-comprobante-escala-3-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
     });
@@ -252,5 +276,130 @@ describe("procesarComprobante", () => {
 
     const pendientes = await listReceiptsPendientesDeRevision();
     expect(pendientes.some((r) => r.orderId === orderId)).toBe(true);
+  });
+
+  it("un segundo comprobante válido sobre un pedido ya aprobado no duplica el registro (marcarPagoAprobado ya no está pendiente)", async () => {
+    await saveTransferAccounts([CUENTA_TIENDA]);
+    const { orderId, inboundMediaId } = await nuevoPedidoConMedia();
+    vi.mocked(analizarComprobante).mockResolvedValue({ monto: 200000, cuentaDestino: "111-222333-44" });
+
+    const primero = await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid: `wamid-comprobante-dup-1-${Date.now()}`,
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+    });
+    const segundo = await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid: `wamid-comprobante-dup-2-${Date.now()}`, // otra foto, no un reintento del mismo mensaje
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+    });
+
+    expect(primero).toBe("aprobado");
+    expect(segundo).toBe("aprobado"); // no revienta ni lo reporta como error, simplemente no repite el trabajo
+    const receipts = await adminPool.query<{ resultado: string }>(
+      `SELECT resultado FROM payment_receipts WHERE order_id = $1 AND resultado = 'aprobado_auto'`,
+      [orderId],
+    );
+    expect(receipts.rowCount).toBe(1); // no dos — antes del fix quedaban dos filas y se avisaba "pago aprobado" dos veces
+  });
+
+  it("si la llamada de OCR falla de verdad (no 'no se pudo leer'), escala directo y avisa al cliente", async () => {
+    const { orderId, inboundMediaId } = await nuevoPedidoConMedia();
+    vi.mocked(analizarComprobante).mockRejectedValueOnce(new Error("Anthropic devolvió 500"));
+
+    const resultado = await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid: `wamid-comprobante-error-ocr-${Date.now()}`,
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+    });
+
+    expect(resultado).toBe("error_tecnico");
+    expect(sendToConversation).toHaveBeenCalledTimes(1); // antes: nada, el cliente no se enteraba
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1); // se notifica al admin igual que un escalado normal
+    const pendientes = await listReceiptsPendientesDeRevision();
+    expect(pendientes.some((r) => r.orderId === orderId)).toBe(true);
+  });
+
+  it("un reintento con el MISMO messageSid reusa el resultado de OCR ya pagado, no vuelve a llamar a Claude", async () => {
+    await saveTransferAccounts([CUENTA_TIENDA]);
+    const { orderId, inboundMediaId } = await nuevoPedidoConMedia();
+    vi.mocked(analizarComprobante).mockResolvedValueOnce({ monto: 200000, cuentaDestino: "111-222333-44" });
+    const messageSid = `wamid-comprobante-cache-${Date.now()}`;
+
+    await procesarComprobante({ orderId, inboundMediaId, messageSid, buffer: Buffer.from("x"), mimeType: "image/jpeg" });
+    // Segundo "intento" del mismo mensaje (simula un reintento de la cola
+    // tras un fallo posterior al OCR) — mismo messageSid a propósito.
+    const segundo = await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid,
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+    });
+
+    expect(segundo).toBe("aprobado");
+    expect(analizarComprobante).toHaveBeenCalledTimes(1); // no 2 — el segundo intento reusó la cache
+  });
+});
+
+describe("aprobarComprobanteManual / rechazarComprobanteManual", () => {
+  it("aprueba a mano un comprobante escalado y lo marca en el receipt correcto", async () => {
+    const { orderId, inboundMediaId } = await nuevoPedidoConMedia();
+    const receiptId = await registrarPaymentReceipt({
+      orderId,
+      inboundMediaId,
+      ocrMonto: null,
+      ocrCuenta: null,
+      resultado: "pendiente_revision",
+    });
+
+    const resultado = await aprobarComprobanteManual(orderId, receiptId, "devlocal");
+
+    expect(resultado).toBe(true);
+    const row = await adminPool.query<{ payment_status: string }>(`SELECT payment_status FROM orders WHERE id = $1`, [orderId]);
+    expect(row.rows[0]!.payment_status).toBe("pagado");
+    const receipt = await adminPool.query<{ resultado: string }>(`SELECT resultado FROM payment_receipts WHERE id = $1`, [receiptId]);
+    expect(receipt.rows[0]!.resultado).toBe("aprobado_admin");
+  });
+
+  it("rechaza a mano un comprobante escalado y marca el pedido como rechazado", async () => {
+    const { orderId, inboundMediaId } = await nuevoPedidoConMedia();
+    const receiptId = await registrarPaymentReceipt({
+      orderId,
+      inboundMediaId,
+      ocrMonto: null,
+      ocrCuenta: null,
+      resultado: "pendiente_revision",
+    });
+
+    const resultado = await rechazarComprobanteManual(orderId, receiptId, "devlocal");
+
+    expect(resultado).toBe(true);
+    const row = await adminPool.query<{ payment_status: string }>(`SELECT payment_status FROM orders WHERE id = $1`, [orderId]);
+    expect(row.rows[0]!.payment_status).toBe("rechazado");
+  });
+
+  it("no aprueba si el receiptId no pertenece a ese orderId (formulario desincronizado)", async () => {
+    const { orderId: orderId1, inboundMediaId } = await nuevoPedidoConMedia();
+    const { orderId: orderId2 } = await nuevoPedidoConMedia();
+    const receiptDeOtroPedido = await registrarPaymentReceipt({
+      orderId: orderId2,
+      inboundMediaId,
+      ocrMonto: null,
+      ocrCuenta: null,
+      resultado: "pendiente_revision",
+    });
+
+    const resultado = await aprobarComprobanteManual(orderId1, receiptDeOtroPedido, "devlocal");
+
+    expect(resultado).toBe(false);
+    const row = await adminPool.query<{ payment_status: string }>(`SELECT payment_status FROM orders WHERE id = $1`, [orderId1]);
+    expect(row.rows[0]!.payment_status).toBe("pendiente"); // no se tocó
   });
 });

@@ -34,6 +34,23 @@ export async function registrarPaymentReceipt(input: RegistrarPaymentReceiptInpu
   });
 }
 
+export interface PaymentReceiptRecord {
+  id: string;
+  orderId: string;
+}
+
+/** Usado para confirmar que un `receiptId` que llega del panel de verdad pertenece al `orderId` sobre el que se está actuando, antes de aprobar/rechazar a mano — ver `/admin/comprobantes`. */
+export async function getPaymentReceipt(receiptId: string): Promise<PaymentReceiptRecord | null> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{ id: string; order_id: string }>(
+      `SELECT id, order_id FROM payment_receipts WHERE id = $1`,
+      [receiptId],
+    );
+    const row = result.rows[0];
+    return row ? { id: row.id, orderId: row.order_id } : null;
+  });
+}
+
 /** Usado cuando un admin resuelve a mano un comprobante escalado (ver `/admin/comprobantes`). */
 export async function actualizarResultadoReceipt(
   receiptId: string,

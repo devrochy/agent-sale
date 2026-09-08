@@ -74,6 +74,7 @@ export async function procesarMediaEntrante(
     const resultado = await procesarComprobante({
       orderId: pedido.orderId,
       inboundMediaId,
+      messageSid: message.messageSid,
       buffer: media.buffer,
       mimeType: media.mimeType,
     });

@@ -1,9 +1,14 @@
 import { resolveNotificationRecipients } from "../../admin/auth/adminsDirectory.js";
 import { sendWhatsAppMessage, sendToConversation } from "../../gateway/sendMessage.js";
-import { analizarComprobante } from "../../payments/ocrComprobante.js";
+import { analizarComprobante, type ComprobanteAnalizado } from "../../payments/ocrComprobante.js";
+import { getCachedMediaResult, setCachedMediaResult } from "../../shared/mediaResultCache.js";
 import { withTransaction } from "../../shared/db/withTransaction.js";
 import { getReportRecipient, getTransferAccounts } from "../../shared/db/settingsDirectory.js";
-import { actualizarResultadoReceipt, registrarPaymentReceipt } from "../../shared/db/paymentReceiptsDirectory.js";
+import {
+  actualizarResultadoReceipt,
+  getPaymentReceipt,
+  registrarPaymentReceipt,
+} from "../../shared/db/paymentReceiptsDirectory.js";
 import { logger } from "../../shared/observability/logger.js";
 import { marcarPagoAprobado, marcarPagoRechazado } from "./estadoPedido.js";
 import { notificarClientePagoAprobado, notificarClientePagoRechazado } from "./notificarPagoCliente.js";
@@ -123,13 +128,33 @@ export type ProcesarComprobanteResultado =
   | "aprobado"
   | "rechazado_datos"
   | "pedir_otra_foto"
-  | "escalado";
+  | "escalado"
+  | "error_tecnico";
 
 export interface ProcesarComprobanteInput {
   orderId: string;
   inboundMediaId: string;
+  /** Id del mensaje en el proveedor — clave de la cache de idempotencia (ver `mediaResultCache.ts`), para no volver a pagar el OCR si un reintento de la cola repite este mismo mensaje. */
+  messageSid: string;
   buffer: Buffer;
   mimeType: string;
+}
+
+/**
+ * OCR con cache de idempotencia por `messageSid`: si un reintento de la
+ * cola (`consumer.ts`) vuelve a llamar esto para el mismo mensaje —porque
+ * algo DESPUÉS del OCR falló, no el OCR en sí—, reusa el resultado ya
+ * pagado en vez de volver a llamar a Claude.
+ */
+async function analizarComprobanteConCache(input: ProcesarComprobanteInput): Promise<ComprobanteAnalizado> {
+  const cacheado = await getCachedMediaResult<ComprobanteAnalizado>(input.messageSid);
+  if (cacheado) {
+    logger.info({ event: "comprobante.ocr_cacheado", order_id: input.orderId }, "Reusando lectura de OCR ya hecha (reintento)");
+    return cacheado.value;
+  }
+  const analisis = await analizarComprobante(input.buffer, input.mimeType);
+  await setCachedMediaResult(input.messageSid, analisis);
+  return analisis;
 }
 
 export async function procesarComprobante(input: ProcesarComprobanteInput): Promise<ProcesarComprobanteResultado> {
@@ -138,7 +163,29 @@ export async function procesarComprobante(input: ProcesarComprobanteInput): Prom
     throw new Error(`Pedido no encontrado al procesar comprobante: ${input.orderId}`);
   }
 
-  const analisis = await analizarComprobante(input.buffer, input.mimeType);
+  let analisis: ComprobanteAnalizado;
+  try {
+    analisis = await analizarComprobanteConCache(input);
+  } catch (error) {
+    // Un fallo real de la llamada (red, rate limit, key inválida) — no es
+    // "no se pudo leer con certeza" (eso ya lo maneja el resto de la
+    // función devolviendo un resultado normal). Se trata como escalado
+    // directo: sin esto, el cliente que mandó su comprobante no recibía
+    // ningún aviso y el fallo solo quedaba en el log del dead-letter.
+    logger.warn(
+      { error, event: "comprobante.error_ocr", order_id: input.orderId },
+      "Falló la llamada de OCR — se escala directo en vez de reintentar en silencio",
+    );
+    await registrarPaymentReceipt({
+      orderId: input.orderId,
+      inboundMediaId: input.inboundMediaId,
+      ocrMonto: null,
+      ocrCuenta: null,
+      resultado: "pendiente_revision",
+    });
+    await escalar(orden, input.orderId);
+    return "error_tecnico";
+  }
 
   // Ninguno de los dos datos se pudo leer con certeza, o coincidieron pero
   // no pasaron la validación de abajo — en ambos casos es "no se pudo
@@ -156,6 +203,23 @@ export async function procesarComprobante(input: ProcesarComprobanteInput): Prom
   }
 
   if (legible && montoCoincide && cuentaCoincide) {
+    // El segundo parámetro es `wompi_transaction_id` en el schema (nace
+    // pensado solo para Wompi, ver estadoPedido.ts) — para transferencia se
+    // usa como referencia genérica de qué comprobante aprobó el pago.
+    // El guard real está en marcarPagoAprobado (`payment_status = 'pendiente'`
+    // en el UPDATE) — devuelve `null` si el pedido ya no estaba pendiente
+    // (dos fotos del mismo comprobante, o un admin que ya lo aprobó a mano
+    // mientras esta corría). Sin chequear esto se registraba OTRO receipt y
+    // se le mandaba al cliente un segundo aviso de "pago aprobado" y un
+    // segundo token de reseña por el mismo pago.
+    const total = await marcarPagoAprobado(input.orderId, `comprobante:${input.inboundMediaId}`);
+    if (total === null) {
+      logger.info(
+        { event: "comprobante.ya_estaba_pagado", order_id: input.orderId },
+        "El pedido ya no estaba pendiente cuando el OCR terminó de leer — no se duplica la aprobación",
+      );
+      return "aprobado";
+    }
     await registrarPaymentReceipt({
       orderId: input.orderId,
       inboundMediaId: input.inboundMediaId,
@@ -163,10 +227,6 @@ export async function procesarComprobante(input: ProcesarComprobanteInput): Prom
       ocrCuenta: analisis.cuentaDestino,
       resultado: "aprobado_auto",
     });
-    // El segundo parámetro es `wompi_transaction_id` en el schema (nace
-    // pensado solo para Wompi, ver estadoPedido.ts) — para transferencia se
-    // usa como referencia genérica de qué comprobante aprobó el pago.
-    await marcarPagoAprobado(input.orderId, `comprobante:${input.inboundMediaId}`);
     await notificarClientePagoAprobado(input.orderId);
     return "aprobado";
   }
@@ -186,6 +246,17 @@ export async function procesarComprobante(input: ProcesarComprobanteInput): Prom
     });
     const intentos = await incrementarIntentosComprobante(input.orderId);
     if (intentos > LIMITE_INTENTOS) {
+      // El receipt de arriba quedó en 'rechazado_auto' — sin este segundo
+      // registro en 'pendiente_revision', listReceiptsPendientesDeRevision
+      // (que mira solo el ÚLTIMO receipt de cada pedido) no encuentra este
+      // pedido y nunca aparece en el panel, aunque sí se escaló.
+      await registrarPaymentReceipt({
+        orderId: input.orderId,
+        inboundMediaId: input.inboundMediaId,
+        ocrMonto: analisis.monto,
+        ocrCuenta: analisis.cuentaDestino,
+        resultado: "pendiente_revision",
+      });
       await escalar(orden, input.orderId);
       return "escalado";
     }
@@ -253,6 +324,18 @@ export async function aprobarComprobanteManual(
   receiptId: string,
   adminUsername: string,
 ): Promise<boolean> {
+  // `orders` y `payment_receipts` se actualizan cada uno por su propio id,
+  // sin ningún join entre los dos — sin este chequeo, un formulario
+  // desincronizado (doble submit, una pestaña vieja) podría aprobar el
+  // pago de un pedido y marcar como resuelto el receipt de OTRO.
+  const receipt = await getPaymentReceipt(receiptId);
+  if (!receipt || receipt.orderId !== orderId) {
+    logger.warn(
+      { event: "comprobante.receipt_no_coincide", order_id: orderId, receipt_id: receiptId },
+      "El receipt no existe o no pertenece a este pedido — se ignora la acción",
+    );
+    return false;
+  }
   const total = await marcarPagoAprobado(orderId, `comprobante-admin:${adminUsername}`);
   if (total === null) {
     return false;
@@ -280,6 +363,14 @@ export async function rechazarComprobanteManual(
   receiptId: string,
   adminUsername: string,
 ): Promise<boolean> {
+  const receipt = await getPaymentReceipt(receiptId);
+  if (!receipt || receipt.orderId !== orderId) {
+    logger.warn(
+      { event: "comprobante.receipt_no_coincide", order_id: orderId, receipt_id: receiptId },
+      "El receipt no existe o no pertenece a este pedido — se ignora la acción",
+    );
+    return false;
+  }
   const aplicado = await marcarPagoRechazado(orderId, `Comprobante rechazado a mano por ${adminUsername}.`);
   if (!aplicado) {
     return false;
