@@ -133,6 +133,7 @@ import {
   getBehaviorConfig,
   getBrandVoiceConfig,
   getLlmConfig,
+  getOpenAiConfig,
   getReportFrequencyDays,
   getReportRecipient,
   getReviewLink,
@@ -141,6 +142,7 @@ import {
   saveBehaviorConfig,
   saveBrandVoiceConfig,
   saveLlmConfig,
+  saveOpenAiConfig,
   saveReportFrequencyDays,
   saveReportRecipient,
   saveReviewLink,
@@ -9242,6 +9244,11 @@ export async function renderConfiguracionPage(
   const wompiConfig = await getWompiConfig();
   const maskedWompiKey = wompiConfig.privateKey ? `••••${wompiConfig.privateKey.slice(-4)}` : null;
   const maskedEventsSecret = wompiConfig.eventsSecret ? `••••${wompiConfig.eventsSecret.slice(-4)}` : null;
+  const openAiConfig = await getOpenAiConfig();
+  const maskedOpenAiKey = openAiConfig.apiKey ? `••••${openAiConfig.apiKey.slice(-4)}` : null;
+  const openAiKeyHint = maskedOpenAiKey
+    ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedOpenAiKey)}</span>. Dejar el campo vacío para conservarla.`
+    : "Sin key propia — sin ella, el asistente no puede transcribir audio.";
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
   const currentModel = llmConfig.model ?? currentEntry?.defaultModel ?? "";
@@ -9430,6 +9437,20 @@ export async function renderConfiguracionPage(
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
         <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
+      </div>
+    </section>
+    <section class="block" aria-label="Transcripción de audio">
+      <div class="blockhead"><h2>Transcripción de audio</h2><span class="hint">BYOK</span></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/configuracion/openai">
+          <div class="field">
+            <label for="openai-apikey">API key de OpenAI</label>
+            <input type="password" id="openai-apikey" name="apiKey" autocomplete="off">
+            <p class="hint">${openAiKeyHint}</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
+        </form>
+        <p class="hint">Se usa para transcribir las notas de voz que llegan por WhatsApp (Whisper) — sin esta key, el asistente le pide al cliente que escriba el mensaje.</p>
       </div>
     </section>
     </div>
@@ -9939,6 +9960,41 @@ export async function guardarCobros(
   }
 
   await saveWompiConfig({ privateKey, eventsSecret });
+  return { ok: true };
+}
+
+/**
+ * API key de OpenAI, usada por `media/transcribirAudio.ts` (Whisper) para
+ * transcribir notas de voz entrantes — mismo criterio de "Probar y
+ * guardar" que Cobros/Modelo de IA: antes de persistir se valida con una
+ * llamada liviana y barata (`GET /v1/models`, no cuesta nada y no requiere
+ * mandar audio real) para no guardar una key que después falla en el
+ * primer audio real que llegue. Campo vacío conserva el valor ya guardado.
+ */
+export async function guardarOpenAiConfig(
+  input: { apiKey: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const existing = await getOpenAiConfig();
+  const apiKey = input.apiKey.trim() || existing.apiKey;
+
+  if (!apiKey) {
+    return { ok: false, error: "Hace falta la API key de OpenAI." };
+  }
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+      return { ok: false, error: body.error?.message ?? `OpenAI rechazó la key (HTTP ${response.status}).` };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error desconocido probando la conexión con OpenAI.";
+    return { ok: false, error: message };
+  }
+
+  await saveOpenAiConfig({ apiKey });
   return { ok: true };
 }
 

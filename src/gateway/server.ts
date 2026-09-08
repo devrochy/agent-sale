@@ -41,6 +41,7 @@ import {
   guardarCredencialesConexion,
   guardarInfoLead,
   guardarModeloIa,
+  guardarOpenAiConfig,
   guardarPerfil,
   guardarPermisosColaborador,
   guardarPromocion,
@@ -871,6 +872,15 @@ export async function buildServer() {
       privateKey: privateKey ?? "",
       eventsSecret: eventsSecret ?? "",
     });
+    const redirectUrl = result.ok
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/configuracion/openai", async (request, reply) => {
+    const { apiKey } = request.body as { apiKey?: string };
+    const result = await guardarOpenAiConfig({ apiKey: apiKey ?? "" });
     const redirectUrl = result.ok
       ? "/admin/configuracion?guardado=1"
       : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
