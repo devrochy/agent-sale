@@ -53,6 +53,7 @@ let customerId: string;
 let conversationId: string;
 let productId: string;
 let variantId: string;
+let settingsId: string;
 
 const customerData = {
   address: "Calle 10 # 20-30",
@@ -78,6 +79,18 @@ function okJsonResponse(body: Record<string, unknown>) {
 }
 
 beforeAll(async () => {
+  // `settings` es singleton y no nace de ninguna migración — en una base
+  // recién migrada (CI) todavía no existe ninguna fila. Mismo patrón que
+  // el resto de la suite (procesarComprobante.test.ts, crearPedido.test.ts,
+  // etc.): esta fila es de este archivo, se crea acá y se borra en
+  // afterAll — sin esto, el describe "confirmar_pago_pedido" de más abajo
+  // llama saveTransferAccounts contra una tabla vacía y el UPDATE no toca
+  // ninguna fila.
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Flujo Plantillas Test') RETURNING id`,
+  );
+  settingsId = settings.rows[0]!.id;
+
   const passwordHash = await hashPassword("clave-de-prueba-flujo-plantillas");
   adminId = await createAdmin(
     "admin-flujo-plantillas",
@@ -179,6 +192,7 @@ afterAll(async () => {
   invalidateConnectionsCache();
   await adminPool.query(`DELETE FROM admin_permissions WHERE admin_id = $1`, [adminId]);
   await adminPool.query(`DELETE FROM admins WHERE id = $1`, [adminId]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
