@@ -7,7 +7,6 @@ import {
   submitReview,
 } from "../../../src/reviews/reviewView.js";
 import { createReviewToken } from "../../../src/shared/db/reviewTokenDirectory.js";
-import { ensureSettingsRow } from "../../../src/shared/db/settingsDirectory.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 
 const { Pool } = pg;
@@ -16,7 +15,6 @@ const app = await buildServer();
 
 const REVIEW_LINK = "https://ejemplo.com/review";
 let settingsId: string;
-let reviewLinkOriginal: string | null;
 let phoneCounter = 0;
 
 async function seedConversationWithScore(score: number | null): Promise<string> {
@@ -36,18 +34,11 @@ async function seedConversationWithScore(score: number | null): Promise<string> 
 beforeAll(async () => {
   await app.ready();
 
-  // `settings` es singleton (ver settingsBootstrap.test.ts) — insertar una
-  // fila propia acá asumía que la tabla venía vacía, y en un runner donde
-  // otro archivo ya la sembró (ensureSettingsRow) terminaba con DOS filas:
-  // la que lee la app vía `SELECT ... LIMIT 1` (sin ORDER BY) podía ser
-  // cualquiera de las dos, no necesariamente esta con el review_link seteado.
-  await ensureSettingsRow();
-  const settings = await adminPool.query<{ id: string; review_link: string | null }>(
-    `SELECT id, review_link FROM settings LIMIT 1`,
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name, review_link) VALUES ('Review View Test', $1) RETURNING id`,
+    [REVIEW_LINK],
   );
   settingsId = settings.rows[0]!.id;
-  reviewLinkOriginal = settings.rows[0]!.review_link;
-  await adminPool.query(`UPDATE settings SET review_link = $1 WHERE id = $2`, [REVIEW_LINK, settingsId]);
 });
 
 afterAll(async () => {
@@ -74,9 +65,7 @@ afterAll(async () => {
     [phonePattern],
   );
   await adminPool.query(`DELETE FROM customers WHERE external_id LIKE $1`, [phonePattern]);
-  // Restaura en vez de borrar — esta fila no es "de este archivo", es LA
-  // fila singleton (mismo criterio que settingsBootstrap.test.ts).
-  await adminPool.query(`UPDATE settings SET review_link = $1 WHERE id = $2`, [reviewLinkOriginal, settingsId]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await app.close();
   await adminPool.end();
   await appPool.end();

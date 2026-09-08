@@ -26,7 +26,6 @@ import {
   registrarPaymentReceipt,
 } from "../../../src/shared/db/paymentReceiptsDirectory.js";
 import {
-  ensureSettingsRow,
   saveReportRecipient,
   saveTransferAccounts,
   type TransferAccount,
@@ -58,15 +57,19 @@ let conversationId: string;
 let customerId: string;
 let productId: string;
 let variantId: string;
+let settingsId: string;
 
 beforeAll(async () => {
-  // `settings` es singleton y no nace de ninguna migración (ver
-  // `ensureSettingsRow`) — en una base recién migrada (CI) todavía no
-  // existe ninguna fila hasta que algo la siembra. Sin esto,
-  // saveTransferAccounts/saveReportRecipient de acá abajo son UPDATEs que
-  // no tocan ninguna fila, y getTransferAccounts() sigue devolviendo []
-  // pase lo que pase. Idempotente: no hace nada si la fila ya existe.
-  await ensureSettingsRow();
+  // `settings` es singleton y no nace de ninguna migración — en una base
+  // recién migrada (CI) todavía no existe ninguna fila. Mismo patrón que
+  // el resto de la suite (crearPedido.test.ts, escalarHumano.test.ts,
+  // etc.): esta fila es de este archivo, se crea acá y se borra en
+  // afterAll — sin esto, saveTransferAccounts/saveReportRecipient de acá
+  // abajo son UPDATEs que no tocan ninguna fila.
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Procesar Comprobante Test') RETURNING id`,
+  );
+  settingsId = settings.rows[0]!.id;
 
   const customer = await adminPool.query<{ id: string }>(
     `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
@@ -108,8 +111,7 @@ afterAll(async () => {
   await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
   await deleteProduct(adminPool, productId);
   await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
-  await saveTransferAccounts([]);
-  await saveReportRecipient(null);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
