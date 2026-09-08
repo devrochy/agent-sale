@@ -26,6 +26,7 @@ import {
   registrarPaymentReceipt,
 } from "../../../src/shared/db/paymentReceiptsDirectory.js";
 import {
+  ensureSettingsRow,
   saveReportRecipient,
   saveTransferAccounts,
   type TransferAccount,
@@ -59,6 +60,14 @@ let productId: string;
 let variantId: string;
 
 beforeAll(async () => {
+  // `settings` es singleton y no nace de ninguna migración (ver
+  // `ensureSettingsRow`) — en una base recién migrada (CI) todavía no
+  // existe ninguna fila hasta que algo la siembra. Sin esto,
+  // saveTransferAccounts/saveReportRecipient de acá abajo son UPDATEs que
+  // no tocan ninguna fila, y getTransferAccounts() sigue devolviendo []
+  // pase lo que pase. Idempotente: no hace nada si la fila ya existe.
+  await ensureSettingsRow();
+
   const customer = await adminPool.query<{ id: string }>(
     `INSERT INTO customers (external_id) VALUES ($1) RETURNING id`,
     [PHONE],
