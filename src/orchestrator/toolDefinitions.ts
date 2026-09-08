@@ -180,13 +180,42 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "actualizar_direccion_pedido",
+    description:
+      "Cambia la dirección de entrega de un pedido abierto. Llamar cuando el cliente responde 'Cambiar temporalmente' o 'Cambiar permanentemente' al botón de la plantilla 'confirmar_domicilio' — en cualquiera de los dos casos, primero pedile la dirección nueva por texto (nunca asumas una). Cuando la dé, llamá esta tool con 'order_id', 'direccion_nueva', y 'guardar_permanente' en true solo si tocó 'Cambiar permanentemente' (para que quede guardada en su perfil para próximos pedidos), false si tocó 'Cambiar temporalmente' (solo aplica a este pedido). Si devuelve 'pedido_no_abierto', avisale que ese pedido ya no admite cambios de dirección.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido cuya dirección se cambia." },
+        direccion_nueva: { type: "string", description: "Dirección de entrega nueva, tal como la dio el cliente." },
+        guardar_permanente: {
+          type: "boolean",
+          description: "true si el cliente tocó 'Cambiar permanentemente' (se guarda también en su perfil); false si tocó 'Cambiar temporalmente'.",
+        },
+      },
+      required: ["order_id", "direccion_nueva", "guardar_permanente"],
+    },
+  },
+  {
     name: "cerrar_pedido",
     description:
-      "Manda la plantilla de WhatsApp 'pedido_confirmado' (resumen del pedido con 3 botones: Agregar productos, Cancelar pedido, Confirmar y pagar) y termina el turno esperando la respuesta del cliente. Llamar cuando el cliente confirme que ya no quiere agregar nada más a un pedido abierto (creado con crear_pedido, quizás ampliado con agregar_item_pedido) y esté listo para cerrarlo — en vez de redactar vos el resumen final, esta tool se lo manda con las 3 opciones ya armadas. Si el cliente responde con texto pidiendo agregar algo, usa agregar_item_pedido; si pide cancelar, usa cancelar_pedido; si toca 'Confirmar y pagar' no llega ningún mensaje nuevo (el botón abre un link directo), así que no hace falta que hagas nada más. Si devuelve 'plantilla_no_aprobada' o 'canal_no_soportado', no repitas el intento: seguí la conversación por texto normal, resumiendo vos el pedido y preguntando cómo quiere continuar.",
+      "Manda la plantilla de WhatsApp 'pedido_confirmado_v3' (resumen del pedido con 3 botones: Agregar productos, Cancelar pedido, Confirmar y pagar) y termina el turno esperando la respuesta del cliente. Llamar cuando el cliente confirme que ya no quiere agregar nada más a un pedido abierto (creado con crear_pedido, quizás ampliado con agregar_item_pedido) y esté listo para cerrarlo — en vez de redactar vos el resumen final, esta tool se lo manda con las 3 opciones ya armadas. Si el cliente responde con texto pidiendo agregar algo, usa agregar_item_pedido; si pide cancelar, usa cancelar_pedido; si toca 'Confirmar y pagar', usa confirmar_pago_pedido con el order_id. Si devuelve 'plantilla_no_aprobada' o 'canal_no_soportado', no repitas el intento: seguí la conversación por texto normal, resumiendo vos el pedido y preguntando cómo quiere continuar.",
     inputSchema: {
       type: "object",
       properties: {
         order_id: { type: "string", description: "UUID del pedido abierto a cerrar (de crear_pedido)." },
+      },
+      required: ["order_id"],
+    },
+  },
+  {
+    name: "confirmar_pago_pedido",
+    description:
+      "Resuelve el botón 'Confirmar y pagar' de la plantilla 'pedido_confirmado_v3' según el método de pago que el cliente ya eligió al crear el pedido — no hace falta volver a preguntarlo. Llamar cuando el cliente toca ese botón, con el 'order_id'. Según 'status': 'datos_transferencia_enviados' → ya se le mandaron los datos de la cuenta en un mensaje aparte (mismo criterio que crear_pedido: nunca escribas vos un número de cuenta), confirmale que 'te acabo de pasar los datos' y pedile el comprobante. 'sin_cuentas_configuradas' → la tienda todavía no cargó ninguna cuenta, decile que en un momento le pasan los datos y usa escalar_a_humano. 'error_envio_transferencia' → hubo un problema técnico mandando los datos (no es que falten cuentas), avisale que ya te fijás y usa escalar_a_humano. 'link_pago_disponible' → el link ya se agrega solo al final de tu respuesta (nunca lo escribas vos), solo explicá que el pedido queda pendiente hasta que pague ese link. 'sin_link_pago' → avisale que hubo un problema generando el link y usa escalar_a_humano. 'ya_pagado' → confirmale que el pago ya está registrado, no hace falta pagar de nuevo. 'pago_rechazado' → ese intento de pago en línea ya fue rechazado, ese link no sirve más — explicale que hay que hacer un pedido nuevo para reintentar, nunca reenvíes el link viejo. 'sin_pago_pendiente' (pago contra entrega) → recordale que no hay nada que pagar ahora, paga en efectivo al recibir. 'pedido_no_abierto' → avisale que ese pedido ya no admite cambios de pago (cancelado, despachado o entregado). 'pedido_no_encontrado' → algo no cuadra, no inventes nada y escalá si insiste.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        order_id: { type: "string", description: "UUID del pedido cuyo pago se confirma." },
       },
       required: ["order_id"],
     },

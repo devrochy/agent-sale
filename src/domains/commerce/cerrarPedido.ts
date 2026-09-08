@@ -23,7 +23,7 @@ export interface CerrarPedidoOutput {
   /**
    * Estado del segundo mensaje (confirmación de domicilio, ver
    * confirmarDomicilioPedido.ts) — independiente del de arriba: si
-   * "pedido_confirmado" se manda bien pero "confirmar_domicilio" todavía no
+   * "pedido_confirmado_v3" se manda bien pero "confirmar_domicilio" todavía no
    * está aprobada, el cierre del pedido no se considera fallido (el LLM ya
    * cerró la venta; el aviso de domicilio es un segundo mensaje aparte).
    * Ausente si el primer envío ya falló (no tiene sentido intentar el
@@ -57,10 +57,10 @@ interface OrderRow {
 /**
  * Tool cerrar_pedido — punto de cierre del pedido que pidió el usuario:
  * en vez de que el propio LLM redacte el resumen final y la pregunta de
- * "¿confirmás?", se manda la plantilla aprobada "pedido_confirmado" con
+ * "¿confirmás?", se manda la plantilla aprobada "pedido_confirmado_v3" con
  * sus 3 botones (Agregar productos / Cancelar pedido / Confirmar y pagar,
- * ver adminPanel.ts -> buildButtonsComponent) y se espera la respuesta del
- * cliente como un mensaje más — el LLM la interpreta en el turno
+ * los 3 Quick Reply — ver adminPanel.ts -> buildButtonsComponent) y se
+ * espera la respuesta del cliente como un mensaje más — el LLM la interpreta en el turno
  * siguiente igual que cualquier texto, sin un enrutador aparte (dos de
  * los tres caminos ya tienen tool: "agregar_item_pedido" y
  * "cancelar_pedido"; el tercero es el botón URL, que no vuelve a pasar
@@ -114,7 +114,14 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
     return { order_id: input.order_id, status: "pedido_no_abierto" };
   }
 
-  const pedidoConfirmado = await resolveApprovedTemplate(order.connection_id, "pedido_confirmado");
+  // "pedido_confirmado" (y luego "_v2") quedaron bloqueadas por Meta al
+  // intentar borrar+recrear con el botón "Confirmar y pagar" nuevo el
+  // 2026-09-06 — Meta no deja reusar el nombre de una plantilla borrada por
+  // un tiempo que su propio mensaje de error no refleja bien (dijo "4 weeks"
+  // la primera vez, "less than 1 minute" la segunda, y siguió bloqueada 5+
+  // minutos). "_v3" es la plantilla real desde entonces, ver
+  // docs/fase-3-whatsapp-gateway/plantillas-mensajes.md.
+  const pedidoConfirmado = await resolveApprovedTemplate(order.connection_id, "pedido_confirmado_v3");
   if (!pedidoConfirmado.ok) {
     return {
       order_id: input.order_id,
@@ -140,10 +147,12 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
       ],
     },
   ];
-  // El botón "Confirmar y pagar" (URL con sufijo dinámico, ver
-  // buildButtonsComponent) va siempre en el último índice del arreglo de
-  // botones — es el único con variable, así que su índice es
-  // `buttons.length - 1` sin necesidad de buscarlo por texto.
+  // "Confirmar y pagar" era un botón URL con sufijo dinámico; desde
+  // 2026-09-06 es un Quick Reply (resuelto por la tool confirmar_pago_pedido,
+  // ver confirmarPagoPedido.ts) — findUrlButtonIndex simplemente no
+  // encuentra ningún botón URL en la plantilla nueva y esto se salta solo.
+  // Se deja el chequeo por si en el futuro alguna otra plantilla vuelve a
+  // tener un botón URL con variable.
   const indiceBotonUrl = findUrlButtonIndex(plantilla);
   if (indiceBotonUrl >= 0) {
     components.push({
@@ -161,7 +170,7 @@ export async function cerrarPedido(input: CerrarPedidoInput): Promise<CerrarPedi
     connection.credentials,
     connection.externalId,
     destinatario,
-    "pedido_confirmado",
+    "pedido_confirmado_v3",
     plantilla.language,
     components,
   );

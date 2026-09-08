@@ -6,6 +6,9 @@ import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { cerrarPedido } from "../../../src/domains/commerce/cerrarPedido.js";
 import { cancelarPedido } from "../../../src/domains/commerce/cancelarPedido.js";
 import { confirmarDomicilioPedido } from "../../../src/domains/commerce/confirmarDomicilioPedido.js";
+import { actualizarDireccionPedido } from "../../../src/domains/commerce/actualizarDireccionPedido.js";
+import { confirmarPagoPedido } from "../../../src/domains/commerce/confirmarPagoPedido.js";
+import { saveTransferAccounts } from "../../../src/shared/db/settingsDirectory.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import {
@@ -50,6 +53,7 @@ let customerId: string;
 let conversationId: string;
 let productId: string;
 let variantId: string;
+let settingsId: string;
 
 const customerData = {
   address: "Calle 10 # 20-30",
@@ -75,6 +79,18 @@ function okJsonResponse(body: Record<string, unknown>) {
 }
 
 beforeAll(async () => {
+  // `settings` es singleton y no nace de ninguna migración — en una base
+  // recién migrada (CI) todavía no existe ninguna fila. Mismo patrón que
+  // el resto de la suite (procesarComprobante.test.ts, crearPedido.test.ts,
+  // etc.): esta fila es de este archivo, se crea acá y se borra en
+  // afterAll — sin esto, el describe "confirmar_pago_pedido" de más abajo
+  // llama saveTransferAccounts contra una tabla vacía y el UPDATE no toca
+  // ninguna fila.
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Flujo Plantillas Test') RETURNING id`,
+  );
+  settingsId = settings.rows[0]!.id;
+
   const passwordHash = await hashPassword("clave-de-prueba-flujo-plantillas");
   adminId = await createAdmin(
     "admin-flujo-plantillas",
@@ -176,6 +192,7 @@ afterAll(async () => {
   invalidateConnectionsCache();
   await adminPool.query(`DELETE FROM admin_permissions WHERE admin_id = $1`, [adminId]);
   await adminPool.query(`DELETE FROM admins WHERE id = $1`, [adminId]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
@@ -232,11 +249,13 @@ describe("cerrar_pedido con confirmar_domicilio", () => {
     expect(created.status).toBe("confirmed");
     const orderId = created.order_id!;
 
-    // pedido_confirmado no está aprobada en este archivo (solo se probó en
-    // el otro describe de admin.test.ts) — acá el foco es
-    // confirmar_domicilio, así que se aprueba también pedido_confirmado
-    // para no ensuciar el resultado con "plantilla_no_aprobada".
-    await crearPlantillaAprobada("pedido_confirmado", [
+    // pedido_confirmado_v3 no está aprobada en este archivo (solo se probó
+    // en el otro describe de admin.test.ts) — acá el foco es
+    // confirmar_domicilio, así que se aprueba también pedido_confirmado_v3
+    // para no ensuciar el resultado con "plantilla_no_aprobada". El nombre
+    // "_v3" es porque Meta bloqueó "pedido_confirmado" y "_v2" al borrarlas
+    // (ver cerrarPedido.ts).
+    await crearPlantillaAprobada("pedido_confirmado_v3", [
       { type: "BODY", text: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}." },
     ]);
 
@@ -260,6 +279,252 @@ describe("cerrar_pedido con confirmar_domicilio", () => {
     fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.encamino" }] }));
     const guiaDespues = await registrarGuia(orderId, { trackingNumber: "GUIA-FLUJO-1", carrier: "Servientrega" });
     expect(guiaDespues).toEqual({ ok: true });
+  });
+});
+
+describe("actualizar_direccion_pedido", () => {
+  async function nuevoPedidoAbierto(): Promise<string> {
+    const quoteId = await nuevaCotizacion();
+    const created = await crearPedido(
+      `sid-flujo-direccion-${Date.now()}-${Math.random()}`,
+      {
+        quote_id: quoteId,
+        payment_method: "efectivo_contraentrega",
+        delivery_method: "domicilio",
+        customer_data: customerData,
+      },
+      1000000,
+    );
+    return created.order_id!;
+  }
+
+  it("cambia la dirección del pedido sin tocar el perfil cuando guardar_permanente es false", async () => {
+    const orderId = await nuevoPedidoAbierto();
+
+    const result = await actualizarDireccionPedido({
+      order_id: orderId,
+      direccion_nueva: "Calle nueva temporal # 1-23",
+      guardar_permanente: false,
+    });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+
+    const order = await adminPool.query<{ delivery_address: string; address_confirmed_at: Date | null }>(
+      `SELECT delivery_address, address_confirmed_at FROM orders WHERE id = $1`,
+      [orderId],
+    );
+    expect(order.rows[0]!.delivery_address).toBe("Calle nueva temporal # 1-23");
+    expect(order.rows[0]!.address_confirmed_at).not.toBeNull();
+
+    const customer = await adminPool.query<{ address: string | null }>(`SELECT address FROM customers WHERE id = $1`, [
+      customerId,
+    ]);
+    // customerData usa save_permanently: false — crearPedido nunca escribe en
+    // customers.address con ese flag, así que sigue en null (el customer se
+    // creó con un INSERT mínimo en el beforeAll de este archivo).
+    expect(customer.rows[0]!.address).toBeNull();
+  });
+
+  it("además actualiza el perfil del cliente cuando guardar_permanente es true", async () => {
+    const orderId = await nuevoPedidoAbierto();
+
+    const result = await actualizarDireccionPedido({
+      order_id: orderId,
+      direccion_nueva: "Calle nueva permanente # 4-56",
+      guardar_permanente: true,
+    });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+
+    const customer = await adminPool.query<{ address: string | null }>(`SELECT address FROM customers WHERE id = $1`, [
+      customerId,
+    ]);
+    expect(customer.rows[0]!.address).toBe("Calle nueva permanente # 4-56");
+  });
+
+  it("devuelve pedido_no_abierto si el pedido ya no está abierto, sin tocar la dirección", async () => {
+    const orderId = await nuevoPedidoAbierto();
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.cancelado-direccion" }] }));
+    await cancelarPedido({ order_id: orderId });
+
+    const before = await adminPool.query<{ delivery_address: string | null }>(
+      `SELECT delivery_address FROM orders WHERE id = $1`,
+      [orderId],
+    );
+
+    const result = await actualizarDireccionPedido({
+      order_id: orderId,
+      direccion_nueva: "Dirección que no debería guardarse",
+      guardar_permanente: false,
+    });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+
+    const after = await adminPool.query<{ delivery_address: string | null }>(
+      `SELECT delivery_address FROM orders WHERE id = $1`,
+      [orderId],
+    );
+    expect(after.rows[0]!.delivery_address).toBe(before.rows[0]!.delivery_address);
+  });
+});
+
+describe("confirmar_pago_pedido", () => {
+  // `transfer_accounts` es un singleton compartido con todo el resto de la
+  // app (settingsDirectory.ts) — no se restaura al valor "original" porque
+  // puede venir sucio de otra corrida (ver
+  // docs/gotchas del entorno local); se deja en `[]` a propósito, que es lo
+  // que el resto de este archivo (describe "notificaciones de pago al
+  // cliente") ya asume sin configurar nada.
+  afterAll(async () => {
+    await saveTransferAccounts([]);
+  });
+
+  async function nuevoPedido(paymentMethod: "transferencia" | "efectivo_contraentrega"): Promise<string> {
+    const quoteId = await nuevaCotizacion();
+    const created = await crearPedido(
+      `sid-confirmar-pago-${Date.now()}-${Math.random()}`,
+      {
+        quote_id: quoteId,
+        payment_method: paymentMethod,
+        delivery_method: "domicilio",
+        customer_data: customerData,
+      },
+      1000000,
+    );
+    return created.order_id!;
+  }
+
+  it("transferencia con cuentas configuradas manda los datos y devuelve datos_transferencia_enviados", async () => {
+    await saveTransferAccounts([
+      {
+        entity: "Bancolombia",
+        accountType: "Ahorros",
+        accountNumber: "123456789",
+        holderName: "ForMotos SAS",
+        holderDocument: "",
+        active: true,
+      },
+    ]);
+    // crear_pedido con "transferencia" YA manda los datos apenas se confirma
+    // el pedido (ver crearPedido.ts) — acá se llama confirmar_pago_pedido de
+    // todas formas (reenvío si el cliente lo pide de nuevo tocando el
+    // botón), así que hacen falta 2 respuestas mockeadas de sendToConversation.
+    fetchMock
+      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-auto" }] }))
+      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-reenvio" }] }));
+    const orderId = await nuevoPedido("transferencia");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "datos_transferencia_enviados" });
+  });
+
+  it("transferencia sin cuentas configuradas devuelve sin_cuentas_configuradas", async () => {
+    await saveTransferAccounts([]);
+    const orderId = await nuevoPedido("transferencia");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "sin_cuentas_configuradas" });
+  });
+
+  it("pago_en_linea con link guardado devuelve link_pago_disponible", async () => {
+    // Wompi no está configurado en este fixture (ver describe "notificaciones
+    // de pago al cliente" más abajo) — se crea con transferencia (que sí
+    // queda 'confirmed') y se fuerza el estado de un pedido pago_en_linea a
+    // mano, mismo criterio que el resto del archivo.
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'pendiente', wompi_payment_link_url = $2 WHERE id = $1`,
+      [orderId, "https://checkout.wompi.co/l/test123"],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({
+      order_id: orderId,
+      status: "link_pago_disponible",
+      payment_link_url: "https://checkout.wompi.co/l/test123",
+    });
+  });
+
+  it("pago_en_linea ya aprobado devuelve ya_pagado", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'pagado', wompi_payment_link_url = $2 WHERE id = $1`,
+      [orderId, "https://checkout.wompi.co/l/test456"],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "ya_pagado" });
+  });
+
+  it("pago_en_linea sin link guardado devuelve sin_link_pago", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'pendiente', wompi_payment_link_url = NULL WHERE id = $1`,
+      [orderId],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "sin_link_pago" });
+  });
+
+  it("efectivo contra entrega devuelve sin_pago_pendiente", async () => {
+    const orderId = await nuevoPedido("efectivo_contraentrega");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "sin_pago_pendiente" });
+  });
+
+  it("pedido cancelado devuelve pedido_no_abierto", async () => {
+    const orderId = await nuevoPedido("efectivo_contraentrega");
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.cancelado-pago" }] }));
+    await cancelarPedido({ order_id: orderId });
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+  });
+
+  it("pedido ya despachado también devuelve pedido_no_abierto (no solo cancelado/expirado)", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(`UPDATE orders SET status = 'despachado' WHERE id = $1`, [orderId]);
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+  });
+
+  it("pago_en_linea rechazado devuelve pago_rechazado, sin reenviar el link viejo", async () => {
+    const orderId = await nuevoPedido("transferencia");
+    await adminPool.query(
+      `UPDATE orders SET payment_method = 'pago_en_linea', payment_status = 'rechazado', wompi_payment_link_url = $2 WHERE id = $1`,
+      [orderId, "https://checkout.wompi.co/l/test-rechazado"],
+    );
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "pago_rechazado" });
+  });
+
+  it("transferencia con cuentas configuradas pero el envío falla devuelve error_envio_transferencia", async () => {
+    await saveTransferAccounts([
+      {
+        entity: "Bancolombia",
+        accountType: "Ahorros",
+        accountNumber: "123456789",
+        holderName: "ForMotos SAS",
+        holderDocument: "",
+        active: true,
+      },
+    ]);
+    // El auto-envío de crear_pedido debe funcionar; el que falla es el
+    // reenvío explícito de confirmar_pago_pedido — así se comprueba que no
+    // se confunde con "sin cuentas configuradas".
+    fetchMock
+      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.transferencia-auto-2" }] }))
+      .mockRejectedValueOnce(new Error("network down"));
+    const orderId = await nuevoPedido("transferencia");
+
+    const result = await confirmarPagoPedido({ order_id: orderId });
+    expect(result).toEqual({ order_id: orderId, status: "error_envio_transferencia" });
+  });
+
+  it("pedido inexistente devuelve pedido_no_encontrado", async () => {
+    const result = await confirmarPagoPedido({ order_id: "00000000-0000-0000-0000-000000000000" });
+    expect(result).toEqual({ order_id: "00000000-0000-0000-0000-000000000000", status: "pedido_no_encontrado" });
   });
 });
 

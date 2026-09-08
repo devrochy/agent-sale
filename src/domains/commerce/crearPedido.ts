@@ -417,12 +417,15 @@ export async function crearPedido(
   // del LLM y con los valores tal como están guardados — ver el docblock de
   // datosTransferencia.ts para por qué no pueden pasar por el modelo.
   if (input.payment_method === "transferencia" && created.status === "confirmed") {
-    const enviados = await enviarDatosTransferencia(
+    const resultado = await enviarDatosTransferencia(
       quote.conversation_id,
       created.public_order_number ?? "",
       created.total,
     );
-    return { ...created, transfer_details_sent: enviados };
+    // El contrato con el LLM (systemPrompt.ts) es un boolean simple: se
+    // mandó o no. La distinción entre "sin cuentas" y "falló el envío" solo
+    // le hace falta a confirmar_pago_pedido (ver datosTransferencia.ts).
+    return { ...created, transfer_details_sent: resultado === "enviado" };
   }
 
   return created;
