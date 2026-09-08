@@ -34,8 +34,8 @@ interface QuoteRow {
  * sobre una cotización, no un pedido: en este punto del flujo el pedido
  * todavía no existe (payment_method es un input obligatorio de
  * crear_pedido), así que no hay order_id ni botón URL que armar — solo el
- * nombre del cliente y el total, igual que hace cerrarPedido.ts con
- * pedido_confirmado pero una cotización más temprano en el flujo.
+ * nombre del cliente y el total, igual que hace enviarPedidoConfirmado.ts
+ * con pedido_confirmado_v3 pero una cotización más temprano en el flujo.
  */
 export async function preguntarMetodoPago(
   input: PreguntarMetodoPagoInput,

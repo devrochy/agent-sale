@@ -16,7 +16,8 @@ export type ResolveApprovedTemplateResult =
  * confirmación de domicilio, pago aprobado/rechazado, pedido en camino,
  * pedido cancelado, reactivación de cotizaciones frías). Nace acá y no
  * copiado en cada uno porque ya eran 7 lugares repitiendo el mismo chequeo
- * (ver cerrarPedido.ts, que lo tenía inline antes de este refactor).
+ * (originalmente estaba inline en lo que era la tool "cerrar_pedido",
+ * hoy repartida entre pedirConfirmacionDomicilio y enviarPedidoConfirmado.ts).
  *
  * Las plantillas de Meta solo aplican a WhatsApp Cloud API — Twilio
  * gestiona las suyas por fuera de este proyecto (ver el docblock de

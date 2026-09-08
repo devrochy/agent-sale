@@ -3,9 +3,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
-import { cerrarPedido } from "../../../src/domains/commerce/cerrarPedido.js";
 import { cancelarPedido } from "../../../src/domains/commerce/cancelarPedido.js";
-import { confirmarDomicilioPedido } from "../../../src/domains/commerce/confirmarDomicilioPedido.js";
+import {
+  confirmarDomicilioPedido,
+  pedirConfirmacionDomicilio,
+} from "../../../src/domains/commerce/confirmarDomicilioPedido.js";
 import { actualizarDireccionPedido } from "../../../src/domains/commerce/actualizarDireccionPedido.js";
 import { confirmarPagoPedido } from "../../../src/domains/commerce/confirmarPagoPedido.js";
 import { saveTransferAccounts } from "../../../src/shared/db/settingsDirectory.js";
@@ -32,10 +34,11 @@ import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 /**
  * Cubre el flujo nuevo de plantillas alrededor de un pedido (Fase de "8
  * plantillas nuevas de Meta") de punta a punta a nivel de dominio, sin pasar
- * por el panel: preguntar_metodo_pago, cerrar_pedido (con el segundo envío
- * de confirmar_domicilio), confirmar_domicilio_pedido, el gate de
- * registrarGuia, y las notificaciones de pago aprobado/rechazado y pedido
- * cancelado. Mismo criterio de mock de `fetch` que
+ * por el panel: preguntar_metodo_pago, pedir_confirmacion_domicilio (que
+ * manda "confirmar_domicilio" sola) → confirmar_domicilio_pedido/
+ * actualizar_direccion_pedido (que recién ahí mandan "pedido_confirmado_v3"),
+ * el gate de registrarGuia, y las notificaciones de pago aprobado/rechazado
+ * y pedido cancelado. Mismo criterio de mock de `fetch` que
  * tests/integration/gateway/admin.test.ts (describe "plantillas"): estas
  * funciones llaman a gateway/channels/meta/templates.ts directo, no pasan
  * por outboundAdapterFor/registry.js.
@@ -229,11 +232,9 @@ describe("preguntar_metodo_pago", () => {
   });
 });
 
-describe("cerrar_pedido con confirmar_domicilio", () => {
-  it("manda pedido_confirmado y confirmar_domicilio, y confirmar_domicilio_pedido cierra el ciclo", async () => {
-    fetchMock
-      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.pedidoconf" }] }))
-      .mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.domicilio" }] }));
+describe("pedir_confirmacion_domicilio con confirmar_domicilio_pedido", () => {
+  it("manda confirmar_domicilio sola primero; recién al confirmar la dirección se manda pedido_confirmado_v3", async () => {
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.domicilio" }] }));
 
     const quoteId = await nuevaCotizacion();
     const created = await crearPedido(
@@ -250,20 +251,18 @@ describe("cerrar_pedido con confirmar_domicilio", () => {
     const orderId = created.order_id!;
 
     // pedido_confirmado_v3 no está aprobada en este archivo (solo se probó
-    // en el otro describe de admin.test.ts) — acá el foco es
-    // confirmar_domicilio, así que se aprueba también pedido_confirmado_v3
-    // para no ensuciar el resultado con "plantilla_no_aprobada". El nombre
+    // en el otro describe de admin.test.ts) — se aprueba acá para que el
+    // segundo paso (confirmar_domicilio_pedido) la pueda mandar. El nombre
     // "_v3" es porque Meta bloqueó "pedido_confirmado" y "_v2" al borrarlas
-    // (ver cerrarPedido.ts).
+    // (ver enviarPedidoConfirmado.ts).
     await crearPlantillaAprobada("pedido_confirmado_v3", [
       { type: "BODY", text: "Hola {{1}}, tu pedido #{{2}} por {{3}} fue confirmado. Método de entrega: {{4}}." },
     ]);
 
-    const cierre = await cerrarPedido({ order_id: orderId });
-    expect(cierre.status).toBe("enviado");
-    expect(cierre.domicilio_status).toBe("enviado");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [, initDomicilio] = fetchMock.mock.calls[1]!;
+    const pedido = await pedirConfirmacionDomicilio({ order_id: orderId });
+    expect(pedido).toEqual({ order_id: orderId, status: "enviado" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, initDomicilio] = fetchMock.mock.calls[0]!;
     const payloadDomicilio = JSON.parse((initDomicilio as RequestInit).body as string);
     expect(payloadDomicilio.template.name).toBe("confirmar_domicilio");
 
@@ -271,9 +270,21 @@ describe("cerrar_pedido con confirmar_domicilio", () => {
     const guiaAntes = await registrarGuia(orderId, { trackingNumber: "GUIA-FLUJO-1", carrier: "Servientrega" });
     expect(guiaAntes.ok).toBe(false);
 
-    // El tap de "Confirmar dirección" llega como texto normal → tool.
+    // El tap de "Confirmar dirección" llega como texto normal → tool. Esto
+    // manda, recién ahora, el resumen "pedido_confirmado_v3".
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.pedidoconf" }] }));
     const confirmacion = await confirmarDomicilioPedido({ order_id: orderId });
-    expect(confirmacion).toEqual({ order_id: orderId, status: "confirmado" });
+    expect(confirmacion).toEqual({ order_id: orderId, status: "confirmado", pedido_confirmado_status: "enviado" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, initPedido] = fetchMock.mock.calls[1]!;
+    const payloadPedido = JSON.parse((initPedido as RequestInit).body as string);
+    expect(payloadPedido.template.name).toBe("pedido_confirmado_v3");
+
+    // Un segundo tap a "Confirmar dirección" no vuelve a mandar el resumen
+    // (idempotencia: AND address_confirmed_at IS NULL en el UPDATE).
+    const segundaConfirmacion = await confirmarDomicilioPedido({ order_id: orderId });
+    expect(segundaConfirmacion).toEqual({ order_id: orderId, status: "pedido_no_abierto" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // Ahora sí se puede despachar.
     fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.encamino" }] }));
@@ -301,12 +312,15 @@ describe("actualizar_direccion_pedido", () => {
   it("cambia la dirección del pedido sin tocar el perfil cuando guardar_permanente es false", async () => {
     const orderId = await nuevoPedidoAbierto();
 
+    // pedido_confirmado_v3 ya quedó aprobada por el describe anterior — acá
+    // solo hace falta el fetchMock para el envío automático del resumen.
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.pedidoconf-temporal" }] }));
     const result = await actualizarDireccionPedido({
       order_id: orderId,
       direccion_nueva: "Calle nueva temporal # 1-23",
       guardar_permanente: false,
     });
-    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado", pedido_confirmado_status: "enviado" });
 
     const order = await adminPool.query<{ delivery_address: string; address_confirmed_at: Date | null }>(
       `SELECT delivery_address, address_confirmed_at FROM orders WHERE id = $1`,
@@ -327,12 +341,13 @@ describe("actualizar_direccion_pedido", () => {
   it("además actualiza el perfil del cliente cuando guardar_permanente es true", async () => {
     const orderId = await nuevoPedidoAbierto();
 
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.pedidoconf-permanente" }] }));
     const result = await actualizarDireccionPedido({
       order_id: orderId,
       direccion_nueva: "Calle nueva permanente # 4-56",
       guardar_permanente: true,
     });
-    expect(result).toEqual({ order_id: orderId, status: "actualizado" });
+    expect(result).toEqual({ order_id: orderId, status: "actualizado", pedido_confirmado_status: "enviado" });
 
     const customer = await adminPool.query<{ address: string | null }>(`SELECT address FROM customers WHERE id = $1`, [
       customerId,
