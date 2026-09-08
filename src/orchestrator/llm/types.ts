@@ -49,5 +49,18 @@ export interface LLMProvider {
     systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
+    /**
+     * Fuerza que esta respuesta puntual use exactamente esta tool (nunca
+     * texto libre ni otra tool) — ver loop.ts, FORZAR_SIGUIENTE_TOOL.
+     * Garantía de código para los tramos del flujo de venta que el prompt
+     * ya pide encadenar "sin escribir nada entre medio" (systemPrompt.ts)
+     * pero que el modelo no respeta de forma consistente (confirmado en
+     * logs reales: DeepSeek terminó preguntando el método de pago por
+     * texto en vez de llamar "preguntar_metodo_pago" en 4 de 4 pedidos de
+     * una prueba real) — mismo criterio que esTurnoSilencioso: no
+     * reemplaza la instrucción del prompt, la vuelve imposible de saltar.
+     * `undefined` es el comportamiento de siempre (el modelo elige).
+     */
+    forceToolName?: string;
   }): Promise<TurnResponse>;
 }

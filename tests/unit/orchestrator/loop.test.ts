@@ -431,17 +431,20 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
           content: JSON.stringify({ quote_id: "q1", subtotal: 300000, total: 300000 }),
         };
       }
-      return {
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: JSON.stringify({
-          quote_id: "q1",
-          promotion_applied: { id: "promo-1", kind: "campaña", description: "Bienvenida (15% de descuento)" },
-          subtotal: 300000,
-          discount: 45000,
-          total: 255000,
-        }),
-      };
+      if (toolUse.name === "aplicar_promocion") {
+        return {
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: JSON.stringify({
+            quote_id: "q1",
+            promotion_applied: { id: "promo-1", kind: "campaña", description: "Bienvenida (15% de descuento)" },
+            subtotal: 300000,
+            discount: 45000,
+            total: 255000,
+          }),
+        };
+      }
+      return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", status: "enviado" }) };
     });
     mockConverse
       .mockResolvedValueOnce({
@@ -452,9 +455,11 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
         ],
         usage: USAGE,
       })
-      .mockResolvedValueOnce(
-        endTurn("Tu casco queda en $300.000, pero tenés un 15% de bienvenida: te queda en $255.000."),
-      );
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_3", name: "preguntar_metodo_pago", input: { quote_id: "q1" } }],
+        usage: USAGE,
+      });
 
     const result = await runTurn("+573000000000", "quiero cotizar un casco", "sid-promo-1");
 
@@ -465,7 +470,12 @@ describe("runTurn — promoción proactiva (Fase 17)", () => {
       expect.any(Number),
       expect.objectContaining({ name: "aplicar_promocion" }),
     );
-    expect(result.responseText).toContain("255.000");
+    // Tras aplicar_promocion, el segundo llamado al LLM fuerza
+    // preguntar_metodo_pago (ver FORZAR_SIGUIENTE_TOOL en loop.ts) — el
+    // descuento ya no se redacta por texto, la plantilla metodo_pago
+    // cubre esa parte, y el turno corta silencioso.
+    expect(mockConverse.mock.calls[1]![0]).toMatchObject({ forceToolName: "preguntar_metodo_pago" });
+    expect(result.responseText).toBe("");
     expect(escalarHumano).not.toHaveBeenCalled();
   });
 });
@@ -642,10 +652,17 @@ describe("runTurn — corte de turno silencioso", () => {
     expect(result.responseText).toBe("");
   });
 
-  it("generar_cotizacion + aplicar_promocion SIN preguntar_metodo_pago sigue necesitando texto del LLM", async () => {
+  it("generar_cotizacion + aplicar_promocion SIN preguntar_metodo_pago: el siguiente llamado fuerza esa tool", async () => {
     // Mismo escenario que "promoción proactiva" más arriba en este archivo:
     // sin una tool terminal en el batch (nada que le muestre el total al
-    // cliente todavía), no alcanza con que las auxiliares hayan salido bien.
+    // cliente todavía), no alcanza con que las auxiliares hayan salido
+    // bien — hace falta un segundo llamado. La diferencia con antes de
+    // FORZAR_SIGUIENTE_TOOL: ese segundo llamado ya no deja elegir
+    // libremente (DeepSeek terminaba prefiriendo texto libre en vez de
+    // "preguntar_metodo_pago", ver logs reales del 2026-09-08) — se lo
+    // fuerza por tool_choice. Este mock devuelve texto de todos modos
+    // (el proveedor real nunca lo haría con tool_choice forzado) solo
+    // para confirmar que el loop no se cae si algún proveedor lo ignorara.
     vi.mocked(executeTool).mockImplementation(async (_c, _cu, _m, _t, toolUse) => {
       if (toolUse.name === "generar_cotizacion") {
         return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", subtotal: 200000, total: 200000 }) };
@@ -665,8 +682,61 @@ describe("runTurn — corte de turno silencioso", () => {
 
     const result = await runTurn("+573000000000", "quiero un casco", "sid-silencioso-3");
 
+    expect(mockConverse.mock.calls[1]![0]).toMatchObject({ forceToolName: "preguntar_metodo_pago" });
+
     expect(mockConverse).toHaveBeenCalledTimes(2);
     expect(result.responseText).toBe("Tu casco queda en $200.000.");
+  });
+
+  it("generar_cotizacion solo (sin aplicar_promocion en el mismo batch): el siguiente llamado la fuerza", async () => {
+    vi.mocked(executeTool).mockResolvedValue({
+      type: "tool_result",
+      tool_use_id: "toolu_1",
+      content: JSON.stringify({ quote_id: "q1", subtotal: 200000, total: 200000 }),
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_1", name: "generar_cotizacion", input: {} }],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Tu casco queda en $200.000."));
+
+    await runTurn("+573000000000", "quiero un casco", "sid-silencioso-5");
+
+    expect(mockConverse.mock.calls[0]![0]).toMatchObject({ forceToolName: undefined });
+    expect(mockConverse.mock.calls[1]![0]).toMatchObject({ forceToolName: "aplicar_promocion" });
+  });
+
+  it("si el propio batch ya incluye la tool que tocaría forzar, no la vuelve a forzar", async () => {
+    vi.mocked(executeTool).mockImplementation(async (_c, _cu, _m, _t, toolUse) => {
+      if (toolUse.name === "generar_cotizacion") {
+        return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", subtotal: 200000, total: 200000 }) };
+      }
+      if (toolUse.name === "aplicar_promocion") {
+        return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", promotion_applied: null, subtotal: 200000, discount: 0, total: 200000 }) };
+      }
+      // preguntar_metodo_pago falla (plantilla no aprobada) — el batch no
+      // queda 100% silencioso, así que sigue habiendo un segundo llamado,
+      // pero como esta tool ya está en el batch actual no hay nada que
+      // forzar en ese segundo llamado (ni reintentarla igual, ver prompt).
+      return { type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify({ quote_id: "q1", status: "plantilla_no_aprobada" }) };
+    });
+    mockConverse
+      .mockResolvedValueOnce({
+        stopReason: "tool_use",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "generar_cotizacion", input: {} },
+          { type: "tool_use", id: "toolu_2", name: "aplicar_promocion", input: { quote_id: "q1" } },
+          { type: "tool_use", id: "toolu_3", name: "preguntar_metodo_pago", input: { quote_id: "q1" } },
+        ],
+        usage: USAGE,
+      })
+      .mockResolvedValueOnce(endTurn("Tu casco queda en $200.000, ¿cómo prefieres pagar?"));
+
+    await runTurn("+573000000000", "quiero un casco", "sid-silencioso-6");
+
+    expect(mockConverse.mock.calls[1]![0]).toMatchObject({ forceToolName: undefined });
   });
 
   it("batch mixto (consultar_estado_pedido + cancelar_pedido) sigue llamando al LLM", async () => {

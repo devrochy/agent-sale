@@ -149,10 +149,12 @@ export class GeminiProvider implements LLMProvider {
     systemPrompt,
     tools,
     messages,
+    forceToolName,
   }: {
     systemPrompt: string[];
     tools: ToolDefinition[];
     messages: LLMMessage[];
+    forceToolName?: string;
   }): Promise<TurnResponse> {
     const apiKey = this.config.apiKey ?? env.geminiApiKey;
     const model = this.config.model ?? "gemini-2.5-flash";
@@ -168,6 +170,12 @@ export class GeminiProvider implements LLMProvider {
           system_instruction: { parts: [{ text: systemPrompt.join("\n\n") }] },
           contents: toGeminiContents(messages),
           tools: toGeminiTools(tools),
+          // "ANY" con allowed_function_names es el equivalente de Gemini a
+          // forzar una tool puntual (ver forceToolName en types.ts) — sin
+          // esto el default es "AUTO", el modelo decide libremente.
+          ...(forceToolName
+            ? { tool_config: { function_calling_config: { mode: "ANY", allowed_function_names: [forceToolName] } } }
+            : {}),
         }),
       },
     );

@@ -209,6 +209,25 @@ function extractPaymentLinkUrl(toolName: string, toolResult: ContentBlock): stri
  * (la primera siempre devuelve "draft", la segunda no tiene campo `status`
  * en absoluto) — alcanza con que no hayan tirado error.
  */
+/**
+ * "tool recién resuelta con éxito" → "tool que hay que forzar en el
+ * próximo llamado al LLM" (ver systemPrompt.ts, "encadená sin escribir
+ * nada entre medio"). Mismo motivo que esTurnoSilencioso de acá abajo,
+ * pero para la mitad del problema que esa función no cubre: no evita que
+ * el modelo, en vez de llamar la tool siguiente de la cadena, escriba
+ * texto libre preguntando lo que la plantilla ya iba a preguntar.
+ * Confirmado en logs reales de producción (conversación de prueba del
+ * 2026-09-08): "preguntar_metodo_pago" terminó en 0 de 4 pedidos —
+ * DeepSeek prefería preguntar método de pago/entrega por texto aunque el
+ * prompt se lo pidiera explícitamente. Forzar el `tool_choice` del
+ * próximo llamado (ver forceToolName, types.ts) elimina el problema de
+ * raíz en vez de depender de que el modelo respete la instrucción.
+ */
+const FORZAR_SIGUIENTE_TOOL: Record<string, string> = {
+  generar_cotizacion: "aplicar_promocion",
+  aplicar_promocion: "preguntar_metodo_pago",
+};
+
 const TOOLS_AUXILIARES_SILENCIOSAS = new Set(["generar_cotizacion", "aplicar_promocion"]);
 const TOOLS_TERMINALES_SILENCIOSAS: Record<string, ReadonlySet<string>> = {
   preguntar_metodo_pago: new Set(["enviado"]),
@@ -431,10 +450,16 @@ export async function processConversation(
   // abajo) — necesario para corregir su `content` con el link de pago
   // ya al final del turno, ver updateMessageContent.
   let lastAssistantMessageId: string | null = null;
+  // Nombre de la tool que hay que forzar en el PRÓXIMO llamado al LLM (ver
+  // FORZAR_SIGUIENTE_TOOL) — se consume en la llamada de más abajo y se
+  // recalcula al final de cada batch de tool_use; `undefined` en cualquier
+  // otro camino (guardrail, "other") para no arrastrar un forzado viejo a
+  // una situación que no lo pidió.
+  let forceToolName: string | undefined;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     turnLogger.info(
-      { event: "orchestrator.llm_iniciado", iteration, model: resolvedModel, dificultad },
+      { event: "orchestrator.llm_iniciado", iteration, model: resolvedModel, dificultad, forceToolName },
       "Llamada al LLM iniciada",
     );
     const llmStartedAt = Date.now();
@@ -442,7 +467,9 @@ export async function processConversation(
       systemPrompt,
       tools: TOOL_DEFINITIONS,
       messages,
+      forceToolName,
     });
+    forceToolName = undefined;
     const llmLatencyMs = Date.now() - llmStartedAt;
     turnLogger.info(
       {
@@ -579,6 +606,27 @@ export async function processConversation(
         );
         await updateState(conversationId, { step: "resuelto", turnos_sin_resolver: 0 });
         return { responseText: "", mediaUrl };
+      }
+
+      // No fue silencioso (falta la tool terminal de la cadena) — si
+      // alguna de las tools que sí salieron bien tiene un siguiente paso
+      // obligatorio (ver FORZAR_SIGUIENTE_TOOL), se lo pasamos a la
+      // próxima llamada para que el modelo no pueda esquivarla con texto
+      // libre. Gana la última del batch si hay más de una (refleja el
+      // estado más avanzado de la cadena); si esa tool ya está en el
+      // mismo batch, no hay nada que forzar (ya se llamó).
+      for (let index = 0; index < toolUseBlocks.length; index++) {
+        const toolUse = toolUseBlocks[index]!;
+        const toolResult = toolResults[index];
+        if (toolResult?.type === "tool_result" && !toolResult.is_error) {
+          const siguiente = FORZAR_SIGUIENTE_TOOL[toolUse.name];
+          if (siguiente) {
+            forceToolName = siguiente;
+          }
+        }
+      }
+      if (forceToolName && toolUseBlocks.some((t) => t.name === forceToolName)) {
+        forceToolName = undefined;
       }
 
       continue;

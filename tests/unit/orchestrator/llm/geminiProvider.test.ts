@@ -129,6 +129,47 @@ describe("GeminiProvider", () => {
     expect(result.refusalCategory).toBe("SAFETY");
   });
 
+  it("forceToolName arma tool_config con mode ANY y allowed_function_names", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          { content: { parts: [{ functionCall: { name: "preguntar_metodo_pago", args: { quote_id: "q1" } } }] }, finishReason: "STOP" },
+        ],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 },
+      }),
+    );
+
+    const provider = new GeminiProvider({ apiKey: "test-key" });
+    await provider.converse({
+      systemPrompt: ["..."],
+      tools: [{ name: "preguntar_metodo_pago", description: "...", inputSchema: { type: "object" } }],
+      messages: [{ role: "user", content: "quiero comprarlo" }],
+      forceToolName: "preguntar_metodo_pago",
+    });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.tool_config).toEqual({
+      function_calling_config: { mode: "ANY", allowed_function_names: ["preguntar_metodo_pago"] },
+    });
+  });
+
+  it("sin forceToolName no manda tool_config", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: "Hola!" }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 },
+      }),
+    );
+
+    const provider = new GeminiProvider({ apiKey: "test-key" });
+    await provider.converse({ systemPrompt: ["..."], tools: [], messages: [{ role: "user", content: "hola" }] });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.tool_config).toBeUndefined();
+  });
+
   it("lanza si la respuesta HTTP no es ok", async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: "bad key" }, false, 401));
 
