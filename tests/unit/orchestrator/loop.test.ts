@@ -518,28 +518,32 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
     vi.mocked(appendMessage).mockResolvedValue("msg-agent-1");
   });
 
-  it("anexa el payment_link_url de crear_pedido al final de la respuesta, de forma determinística", async () => {
+  it("anexa el payment_link_url de confirmar_pago_pedido al final de la respuesta, de forma determinística", async () => {
+    // Ya no es "crear_pedido" (ver decisión del 2026-09-08: confirmar el
+    // pedido y confirmar el pago son dos momentos distintos) — el único
+    // tool_use que puede traer payment_link_url en su content hoy es
+    // "confirmar_pago_pedido" (botón "Confirmar y pagar", o pedido directo
+    // del cliente).
     vi.mocked(executeTool).mockResolvedValue({
       type: "tool_result",
       tool_use_id: "toolu_1",
       content: JSON.stringify({
         order_id: "order-1",
-        status: "confirmed",
-        total: 100000,
+        status: "link_pago_disponible",
         payment_link_url: "https://checkout.wompi.co/l/abc123",
       }),
     });
     mockConverse
       .mockResolvedValueOnce({
         stopReason: "tool_use",
-        content: [{ type: "tool_use", id: "toolu_1", name: "crear_pedido", input: {} }],
+        content: [{ type: "tool_use", id: "toolu_1", name: "confirmar_pago_pedido", input: {} }],
         usage: USAGE,
       })
       .mockResolvedValueOnce(
         endTurn("Perfecto, tu pedido queda pendiente hasta que pagues el link."),
       );
 
-    const result = await runTurn("+573000000000", "pago en línea por favor", "sid-5");
+    const result = await runTurn("+573000000000", "confirmar y pagar", "sid-5");
 
     const expectedText =
       "Perfecto, tu pedido queda pendiente hasta que pagues el link.\n\nhttps://checkout.wompi.co/l/abc123";
@@ -549,11 +553,20 @@ describe("runTurn — link de pago (Fase 12.4, Wompi)", () => {
     expect(updateMessageContent).toHaveBeenCalledWith("msg-agent-1", expectedText);
   });
 
-  it("no agrega nada al texto si crear_pedido no devuelve payment_link_url (métodos de pago existentes)", async () => {
+  it("no agrega nada al texto si crear_pedido devuelve un payment_link_url en su content (ya no aplica a esa tool)", async () => {
+    // Regresión: confirmar el pedido ("crear_pedido") ya no comparte el
+    // link — aunque el content trajera el campo (no debería, se quitó del
+    // contrato), extractPaymentLinkUrl solo lo mira para
+    // "confirmar_pago_pedido" (ver loop.ts).
     vi.mocked(executeTool).mockResolvedValue({
       type: "tool_result",
       tool_use_id: "toolu_1",
-      content: JSON.stringify({ order_id: "order-2", status: "confirmed", total: 50000 }),
+      content: JSON.stringify({
+        order_id: "order-2",
+        status: "confirmed",
+        total: 50000,
+        payment_link_url: "https://checkout.wompi.co/l/no-deberia-salir",
+      }),
     });
     mockConverse
       .mockResolvedValueOnce({

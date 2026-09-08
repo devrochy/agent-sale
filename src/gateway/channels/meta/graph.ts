@@ -27,6 +27,15 @@ interface GraphError {
   };
 }
 
+// Backoff del único reintento ante un fallo de red (ver docblock de
+// graphRequest más abajo) — corto a propósito: es para un blip transitorio
+// de conexión, no para esperar a que Meta se recupere de una caída real.
+const RETRY_DELAY_MS = 400;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * La Graph API señala fallas con un objeto `error` en el body. En la mayoría
  * de los casos viene con un status HTTP de error, pero no siempre — así que se
@@ -38,13 +47,33 @@ interface GraphError {
  * manda el motivo real en `error_user_msg`/`error_user_title` (pensados para
  * mostrar al usuario final de la Graph API) o en `error_data.details` — se
  * anteponen cuando existen para no dejar al admin solo con el código.
+ *
+ * Un solo reintento cuando el propio `fetch()` lanza (no cuando Meta
+ * responde con un error de negocio: eso sigue sin reintentarse, sea
+ * plantilla no aprobada o un parámetro inválido — reintentar eso no cambia
+ * nada). Confirmado en logs reales (2026-09-08, entorno test): un
+ * `preguntar_metodo_pago` falló con "fetch failed" — la excepción genérica
+ * que tira `fetch` de Node ante un problema de conexión/DNS/TLS, sin
+ * response — justo después de un redeploy, un blip de red transitorio. Sin
+ * reintento, ese único fallo tumba toda la cadena de plantillas del flujo de
+ * venta y el LLM cae al fallback de preguntar por texto (el mismo texto
+ * libre que este flujo entero busca evitar). Reintentar acá es seguro
+ * porque `fetch` lanzando significa que la request nunca completó el
+ * round-trip — no hay riesgo real de que Meta ya haya recibido y procesado
+ * la primera, a diferencia de un timeout después de enviar.
  */
 export async function graphRequest<T>(
   url: string,
   init: RequestInit,
   contexto: string,
 ): Promise<T & GraphError> {
-  const response = await fetch(url, init);
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    await sleep(RETRY_DELAY_MS);
+    response = await fetch(url, init);
+  }
   const body = (await response.json().catch(() => ({}))) as T & GraphError;
 
   if (!response.ok || body.error) {

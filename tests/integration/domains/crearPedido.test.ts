@@ -333,7 +333,7 @@ describe("crearPedido", () => {
         );
       });
 
-      it("crea el pedido pendiente de pago y devuelve el link", async () => {
+      it("crea el pedido pendiente de pago y guarda el link (no lo devuelve — eso es exclusivo de 'Confirmar y pagar')", async () => {
         // Sufijo único por corrida — payment_link_id es PK global en
         // wompi_payment_links, un literal fijo colisionaría entre corridas
         // de test (mismo criterio que TENANT_WHATSAPP_NUMBER en webhook.test.ts).
@@ -357,15 +357,23 @@ describe("crearPedido", () => {
         );
 
         expect(result.status).toBe("confirmed");
-        expect(result.payment_link_url).toBe(`https://checkout.wompi.co/l/${paymentLinkId}`);
+        expect(result).not.toHaveProperty("payment_link_url");
 
+        // El link se genera y se guarda igual (confirmar_pago_pedido lo lee
+        // de acá cuando el cliente toque "Confirmar y pagar") — solo deja
+        // de devolverse en el output de crear_pedido.
         const order = await adminPool.query<{
           payment_status: string;
           wompi_payment_link_id: string;
-        }>(`SELECT payment_status, wompi_payment_link_id FROM orders WHERE id = $1`, [
+          wompi_payment_link_url: string;
+        }>(`SELECT payment_status, wompi_payment_link_id, wompi_payment_link_url FROM orders WHERE id = $1`, [
           result.order_id,
         ]);
-        expect(order.rows[0]).toEqual({ payment_status: "pendiente", wompi_payment_link_id: paymentLinkId });
+        expect(order.rows[0]).toEqual({
+          payment_status: "pendiente",
+          wompi_payment_link_id: paymentLinkId,
+          wompi_payment_link_url: `https://checkout.wompi.co/l/${paymentLinkId}`,
+        });
 
         const link = await adminPool.query(
           `SELECT order_id FROM wompi_payment_links WHERE payment_link_id = $1`,

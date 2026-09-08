@@ -1,6 +1,7 @@
-import { createWompiPaymentLink, getWompiConfig, withTransaction } from "../../shared/db/index.js";
+import { createWompiPaymentLink, getWompiConfig, guardarPaymentLinkUrl, withTransaction } from "../../shared/db/index.js";
 import { createPaymentLink } from "../../payments/wompiClient.js";
 import { buildIdempotencyKey } from "./idempotency.js";
+import { enviarPedidoConfirmado, type EnviarPedidoConfirmadoStatus } from "./enviarPedidoConfirmado.js";
 import type { CotizacionItemOutput } from "./generarCotizacion.js";
 
 export interface AgregarItemPedidoInput {
@@ -13,8 +14,16 @@ export interface AgregarItemPedidoOutput {
   status: "actualizado" | "duplicate" | "pedido_no_abierto" | "monto_alto";
   items_agregados: CotizacionItemOutput[];
   total: number;
-  /** Solo presente si el pedido es pago_en_linea y ya tenía un link pendiente (se regenera con el total actualizado). */
-  payment_link_url?: string;
+  /**
+   * Solo presente cuando status es "actualizado": resultado de mandar
+   * automáticamente la plantilla "pedido_confirmado_v3" con el total ya
+   * actualizado (ver enviarPedidoConfirmado.ts, mismo mecanismo que usan
+   * confirmarDomicilioPedido.ts/actualizarDireccionPedido.ts) — el LLM no
+   * necesita llamar ninguna otra tool para esto, solo redactar una
+   * respuesta corta (ver systemPrompt.ts). Si no es "enviado", el LLM debe
+   * resumir el pedido por texto en vez de asumir que el cliente lo recibió.
+   */
+  pedido_confirmado_status?: EnviarPedidoConfirmadoStatus;
 }
 
 interface VariantStockRow {
@@ -207,19 +216,38 @@ export async function agregarItemPedido(
 
   if (paymentLink && created.status === "actualizado") {
     await createWompiPaymentLink(input.order_id, paymentLink.paymentLinkId);
+    // Antes esta URL se devolvía directo al LLM (payment_link_url) y de
+    // ahí salía por WhatsApp en el momento — nunca hacía falta guardarla.
+    // Ahora que compartir el link es exclusivo de "Confirmar y pagar" (ver
+    // confirmarPagoPedido.ts, que lee `orders.wompi_payment_link_url`),
+    // hay que guardarla acá o el próximo "Confirmar y pagar" reenviaría el
+    // link viejo (pre-existente antes de este fix, sin efecto visible
+    // porque el link nuevo nunca llegaba a necesitar leerse de la base).
+    await guardarPaymentLinkUrl(input.order_id, paymentLink.url);
+  }
+
+  if (created.status !== "actualizado") {
     return {
       order_id: input.order_id,
-      status: "actualizado",
-      items_agregados: items,
+      status: created.status,
+      items_agregados: [],
       total: created.total,
-      payment_link_url: paymentLink.url,
     };
   }
 
+  // Envío automático del resumen actualizado (ver AgregarItemPedidoOutput
+  // y enviarPedidoConfirmado.ts) — mismo patrón que crearPedido.ts con
+  // confirmar_domicilio y que confirmarDomicilioPedido.ts/
+  // actualizarDireccionPedido.ts con este mismo pedido_confirmado_v3: el
+  // LLM ya no necesita preguntar por texto ni llamar otra tool, solo
+  // redactar una respuesta corta (ver systemPrompt.ts).
+  const { status: pedidoConfirmadoStatus } = await enviarPedidoConfirmado(input.order_id);
+
   return {
     order_id: input.order_id,
-    status: created.status,
-    items_agregados: created.status === "actualizado" ? items : [],
+    status: "actualizado",
+    items_agregados: items,
     total: created.total,
+    pedido_confirmado_status: pedidoConfirmadoStatus,
   };
 }

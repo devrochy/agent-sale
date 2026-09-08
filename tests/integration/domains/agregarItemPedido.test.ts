@@ -259,13 +259,17 @@ describe("agregarItemPedido", () => {
 
       expect(result.status).toBe("actualizado");
       expect(result.total).toBe(created.total + 100000);
-      expect(result.payment_link_url).toBe(`https://checkout.wompi.co/l/${secondLinkId}`);
+      expect(result).not.toHaveProperty("payment_link_url");
 
-      const order = await adminPool.query<{ wompi_payment_link_id: string }>(
-        `SELECT wompi_payment_link_id FROM orders WHERE id = $1`,
+      // El link regenerado se guarda igual (id Y url — confirmar_pago_pedido
+      // lee wompi_payment_link_url cuando el cliente toque "Confirmar y
+      // pagar" más tarde), solo deja de devolverse en el output.
+      const order = await adminPool.query<{ wompi_payment_link_id: string; wompi_payment_link_url: string }>(
+        `SELECT wompi_payment_link_id, wompi_payment_link_url FROM orders WHERE id = $1`,
         [created.order_id],
       );
       expect(order.rows[0]!.wompi_payment_link_id).toBe(secondLinkId);
+      expect(order.rows[0]!.wompi_payment_link_url).toBe(`https://checkout.wompi.co/l/${secondLinkId}`);
 
       const link = await adminPool.query(`SELECT order_id FROM wompi_payment_links WHERE payment_link_id = $1`, [
         secondLinkId,
