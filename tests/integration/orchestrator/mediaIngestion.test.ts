@@ -15,11 +15,15 @@ vi.mock("../../../src/media/transcribirAudio.js", () => ({
 vi.mock("../../../src/payments/ocrComprobante.js", () => ({
   analizarComprobante: vi.fn(),
 }));
+vi.mock("../../../src/domains/catalog/describirImagenProducto.js", () => ({
+  describirImagenProducto: vi.fn(),
+}));
 
 import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { downloadMedia } from "../../../src/gateway/channels/meta/media.js";
 import { transcribirAudio } from "../../../src/media/transcribirAudio.js";
 import { analizarComprobante } from "../../../src/payments/ocrComprobante.js";
+import { describirImagenProducto } from "../../../src/domains/catalog/describirImagenProducto.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { procesarMediaEntrante } from "../../../src/orchestrator/mediaIngestion.js";
@@ -93,6 +97,7 @@ afterEach(() => {
   vi.mocked(downloadMedia).mockReset();
   vi.mocked(transcribirAudio).mockReset();
   vi.mocked(analizarComprobante).mockReset();
+  vi.mocked(describirImagenProducto).mockReset();
   entryLogger.info.mockReset();
   entryLogger.warn.mockReset();
 });
@@ -195,12 +200,35 @@ describe("procesarMediaEntrante — imagen", () => {
     return created.order_id!;
   }
 
-  it("sin pedido pendiente por transferencia -> no_manejado (posible foto de producto, Fase 3)", async () => {
+  it("sin pedido pendiente por transferencia y la foto muestra un producto -> continuar_como_texto con la descripción", async () => {
+    vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("foto-producto"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce("casco integral negro con visor ahumado");
+
     const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-1", mimeType: "image/jpeg" } });
-    // Este cliente no tiene ningún pedido por transferencia pendiente en este describe.
+    // Este cliente no tiene ningún pedido por transferencia pendiente en este describe todavía.
     const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
-    expect(resultado).toEqual({ kind: "no_manejado" });
-    expect(downloadMedia).not.toHaveBeenCalled();
+
+    expect(resultado).toEqual({
+      kind: "continuar_como_texto",
+      texto: "[Foto de producto] El cliente mandó una foto. Descripción automática: casco integral negro con visor ahumado",
+    });
+    expect(sendToConversation).not.toHaveBeenCalled();
+
+    const media = await adminPool.query(`SELECT kind FROM inbound_media WHERE conversation_id IN (SELECT id FROM conversations WHERE customer_id = $1) ORDER BY created_at DESC LIMIT 1`, [customerId]);
+    expect(media.rows[0]).toMatchObject({ kind: "image" });
+  });
+
+  it("sin pedido pendiente y la foto no muestra ningún producto reconocible -> procesado_completo, pide más detalle", async () => {
+    vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("foto-rara"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce(null);
+
+    const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-1b", mimeType: "image/jpeg" } });
+    const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(resultado).toEqual({ kind: "procesado_completo" });
+    expect(sendToConversation).toHaveBeenCalledTimes(1);
+    const [, texto] = vi.mocked(sendToConversation).mock.calls[0]!;
+    expect(texto).toContain("No pudimos reconocer bien qué buscás en esa foto");
   });
 
   it("con pedido pendiente por transferencia -> procesado_completo, corre todo el flujo de OCR", async () => {
@@ -215,5 +243,9 @@ describe("procesarMediaEntrante — imagen", () => {
     const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
 
     expect(resultado).toEqual({ kind: "procesado_completo" });
+    // El ruteo es determinístico: con un pedido esperando comprobante, la
+    // foto SIEMPRE se trata como comprobante — nunca se le pregunta a la
+    // visión "qué producto es esto".
+    expect(describirImagenProducto).not.toHaveBeenCalled();
   });
 });
