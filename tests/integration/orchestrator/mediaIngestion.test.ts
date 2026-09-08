@@ -59,8 +59,20 @@ let connectionId: string;
 let customerId: string;
 let productId: string;
 let variantId: string;
+let settingsId: string;
 
 beforeAll(async () => {
+  // `settings` es singleton y no nace de ninguna migración — en una base
+  // recién migrada (CI) todavía no existe ninguna fila. Mismo patrón que
+  // el resto de la suite (procesarComprobante.test.ts, crearPedido.test.ts,
+  // etc.): esta fila es de este archivo, se crea acá y se borra en
+  // afterAll — sin esto, saveTransferAccounts de acá abajo es un UPDATE
+  // que no toca ninguna fila.
+  const settings = await adminPool.query<{ id: string }>(
+    `INSERT INTO settings (name) VALUES ('Media Ingestion Test') RETURNING id`,
+  );
+  settingsId = settings.rows[0]!.id;
+
   connectionId = await saveConnection({
     channel: "whatsapp",
     provider: "meta",
@@ -115,7 +127,7 @@ afterAll(async () => {
   await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
   await adminPool.query(`DELETE FROM channel_connections WHERE id = $1`, [connectionId]);
   invalidateConnectionsCache();
-  await saveTransferAccounts([]);
+  await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
   await adminPool.end();
   await appPool.end();
 });
