@@ -195,7 +195,8 @@ export const metaInboundAdapter: InboundAdapter = {
    * resultado normal, no un error (ver `parseDeliveryStatuses`).
    *
    * Se normalizan los mensajes de texto y los taps de botón QUICK_REPLY de
-   * una plantilla (`type: "button"`, `button.text` — ver cerrarPedido.ts).
+   * una plantilla (`type: "button"`, `button.text` — ver
+   * confirmarDomicilioPedido.ts/enviarPedidoConfirmado.ts).
    * Confirmado contra un payload real de Meta: el tap de un botón de
    * plantilla llega como `type: "button"` con `button.text`, **no** como
    * `type: "interactive"` con `interactive.button_reply` (esa forma es

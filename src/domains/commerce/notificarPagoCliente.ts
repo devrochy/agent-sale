@@ -14,7 +14,7 @@ import { sendTemplateMessage } from "../../gateway/channels/meta/templates.js";
  * avisándole al negocio), estas dos funciones son las que le llegan al
  * comprador. Corren siempre disparadas desde el webhook de Wompi, nunca
  * desde dentro de una tool del LLM — por eso, a diferencia de
- * cerrarPedido.ts, SÍ pueden usar appendMessage: no hay ningún tool_use en
+ * enviarPedidoConfirmado.ts, SÍ pueden usar appendMessage: no hay ningún tool_use en
  * curso cuya secuencia con su tool_result se pueda romper.
  */
 

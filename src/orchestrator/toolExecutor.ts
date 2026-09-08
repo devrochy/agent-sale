@@ -11,7 +11,6 @@ import {
   agregarItemPedido,
   type AgregarItemPedidoInput,
 } from "../domains/commerce/agregarItemPedido.js";
-import { cerrarPedido, type CerrarPedidoInput } from "../domains/commerce/cerrarPedido.js";
 import { cancelarPedido, type CancelarPedidoInput } from "../domains/commerce/cancelarPedido.js";
 import {
   preguntarMetodoPago,
@@ -19,7 +18,9 @@ import {
 } from "../domains/commerce/preguntarMetodoPago.js";
 import {
   confirmarDomicilioPedido,
+  pedirConfirmacionDomicilio,
   type ConfirmarDomicilioPedidoInput,
+  type PedirConfirmacionDomicilioInput,
 } from "../domains/commerce/confirmarDomicilioPedido.js";
 import {
   actualizarDireccionPedido,
@@ -110,8 +111,8 @@ export async function executeTool(
       case "actualizar_direccion_pedido":
         output = await actualizarDireccionPedido(toolUse.input as ActualizarDireccionPedidoInput);
         break;
-      case "cerrar_pedido":
-        output = await cerrarPedido(toolUse.input as CerrarPedidoInput);
+      case "pedir_confirmacion_domicilio":
+        output = await pedirConfirmacionDomicilio(toolUse.input as PedirConfirmacionDomicilioInput);
         break;
       case "confirmar_pago_pedido":
         output = await confirmarPagoPedido(toolUse.input as ConfirmarPagoPedidoInput);

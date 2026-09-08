@@ -27,7 +27,7 @@ function textoEnCamino(publicOrderNumber: string, trackingNumber: string, carrie
  * usuario: "paso obligatorio antes de despachar" — ver
  * confirmarDomicilioPedido.ts, que es quien lo pone en `now()` cuando el
  * cliente toca el botón de la plantilla "confirmar_domicilio" que manda
- * cerrarPedido.ts). El admin tiene una válvula de escape en el panel para
+ * pedirConfirmacionDomicilio). El admin tiene una válvula de escape en el panel para
  * marcarlo a mano si ya lo verificó por otro medio (ver adminPanel.ts).
  */
 export async function registrarGuia(orderId: string, input: RegistrarGuiaInput): Promise<RegistrarGuiaOutput> {

@@ -15,9 +15,9 @@ export interface CancelarPedidoOutput {
 }
 
 /**
- * Tool cancelar_pedido — uno de los 3 caminos que abre "cerrar_pedido" (ver
- * cerrarPedido.ts) cuando el cliente responde "Cancelar pedido" a la
- * plantilla de confirmación. Reutiliza cambiarEstadoPedido, la misma
+ * Tool cancelar_pedido — uno de los 3 caminos que abre la plantilla
+ * "pedido_confirmado_v3" (ver enviarPedidoConfirmado.ts) cuando el cliente
+ * responde "Cancelar pedido" a la plantilla de confirmación. Reutiliza cambiarEstadoPedido, la misma
  * función que usa el panel (ver adminPanel.ts, cancelarPedido) — mismo
  * criterio ahí documentado: cancelar es un cambio de estado, no una
  * devolución, no libera stock ni revierte pagos.

@@ -1,4 +1,5 @@
 import { withTransaction } from "../../shared/db/index.js";
+import { enviarPedidoConfirmado, type EnviarPedidoConfirmadoStatus } from "./enviarPedidoConfirmado.js";
 
 export interface ActualizarDireccionPedidoInput {
   order_id: string;
@@ -11,6 +12,8 @@ export type ActualizarDireccionPedidoStatus = "actualizado" | "pedido_no_abierto
 export interface ActualizarDireccionPedidoOutput {
   order_id: string;
   status: ActualizarDireccionPedidoStatus;
+  /** Ausente si `status` no es "actualizado". */
+  pedido_confirmado_status?: EnviarPedidoConfirmadoStatus;
 }
 
 /**
@@ -27,6 +30,11 @@ export interface ActualizarDireccionPedidoOutput {
  * "Confirmar dirección": el cliente la está dando en el momento), así que
  * también marca `address_confirmed_at`. El guard por `status = 'abierto'`
  * evita pisar algo en un pedido que ya avanzó de estado por otro lado.
+ *
+ * Manda "pedido_confirmado_v3" (ver enviarPedidoConfirmado.ts) apenas
+ * queda actualizada la dirección — mismo criterio que
+ * `confirmarDomicilioPedido`: best-effort, no revierte el cambio de
+ * dirección si esa plantilla todavía no está aprobada.
  */
 export async function actualizarDireccionPedido(
   input: ActualizarDireccionPedidoInput,
@@ -51,8 +59,14 @@ export async function actualizarDireccionPedido(
     return row.customer_id;
   });
 
+  if (!customerId) {
+    return { order_id: input.order_id, status: "pedido_no_abierto" };
+  }
+
+  const { status: pedidoConfirmadoStatus } = await enviarPedidoConfirmado(input.order_id);
   return {
     order_id: input.order_id,
-    status: customerId ? "actualizado" : "pedido_no_abierto",
+    status: "actualizado",
+    pedido_confirmado_status: pedidoConfirmadoStatus,
   };
 }

@@ -20,8 +20,8 @@ interface OrderRow {
  *
  * A propósito NO llama appendMessage: puede correr en medio de la
  * ejecución de la tool cancelar_pedido, mismo riesgo documentado en
- * cerrarPedido.ts (rompe la secuencia tool_use→tool_result de la API del
- * LLM). El caller del panel, que sí corre fuera de ese loop, puede
+ * enviarPedidoConfirmado.ts (rompe la secuencia tool_use→tool_result de la
+ * API del LLM). El caller del panel, que sí corre fuera de ese loop, puede
  * loguearlo aparte si hace falta.
  */
 export async function notificarPedidoCancelado(orderId: string): Promise<void> {
