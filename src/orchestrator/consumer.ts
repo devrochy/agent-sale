@@ -114,31 +114,35 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
     }
 
     // Medios entrantes (imagen/audio) — ruteo determinístico, nunca pasa
-    // por el LLM (ver mediaIngestion.ts). `false` significa "no hay nada
-    // implementado todavía para este caso" (audio, o imagen que no es un
-    // comprobante) — mismo descarte silencioso que existía antes de esta
-    // feature, solo que ahora vive acá y no en el parseo del webhook.
+    // por el LLM (ver mediaIngestion.ts). "no_manejado" es el mismo
+    // descarte silencioso que existía antes de esta feature (ahora vive
+    // acá y no en el parseo del webhook); "procesado_completo" ya mandó su
+    // propia respuesta (comprobante, o "no te entendí" de un audio) y no
+    // debe pasar por el LLM; "continuar_como_texto" reemplaza el body por
+    // la transcripción y sigue el camino normal de abajo, como si el
+    // cliente lo hubiera tipeado.
+    let body = message.body;
     if (message.media) {
-      const manejado = await procesarMediaEntrante(message, origin, entryLogger);
-      if (!manejado) {
+      const resultado = await procesarMediaEntrante(message, origin, entryLogger);
+      if (resultado.kind === "no_manejado") {
         entryLogger.info(
           { event: "gateway.mensaje_meta_ignorado", tipo: message.media.type },
           "Media entrante sin manejo automático todavía — se descarta",
         );
+        await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
+        return;
       }
-      await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
-      return;
+      if (resultado.kind === "procesado_completo") {
+        await redis.xack(INBOUND_STREAM, CONSUMER_GROUP, id);
+        return;
+      }
+      body = resultado.texto;
     }
 
     // Ingesta inmediata (ver ADR-022): guarda el mensaje y corre las
     // reglas que no pueden esperar (escalado ya, keyword) sin importar la
     // velocidad de respuesta configurada.
-    const { conversationId, escalatedNow } = await appendInbound(
-      customerExternalId,
-      message.body,
-      customerName,
-      origin,
-    );
+    const { conversationId, escalatedNow } = await appendInbound(customerExternalId, body, customerName, origin);
 
     if (escalatedNow) {
       await sendTurnBubbles(conversationId, escalatedNow, entryLogger, receivedAt);
