@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { splitForBubbles } from "../gateway/messageSplitter.js";
 import { sendToConversation } from "../gateway/sendMessage.js";
+import { sanitizeForWhatsApp } from "../gateway/whatsappFormatting.js";
 import { getBehaviorConfig } from "../shared/db/settingsDirectory.js";
 import { resolveBehaviorConfig } from "./behaviorConfig.js";
 import type { TurnResult } from "./loop.js";
@@ -48,7 +49,7 @@ export async function sendTurnBubbles(
     "Respuesta lista, enviando por el canal de la conversación",
   );
   const behaviorConfig = resolveBehaviorConfig(await getBehaviorConfig());
-  const bubbles = splitForBubbles(result.responseText, behaviorConfig.estiloMensajes);
+  const bubbles = splitForBubbles(sanitizeForWhatsApp(result.responseText), behaviorConfig.estiloMensajes);
 
   let lostCount = 0;
   for (let index = 0; index < bubbles.length; index++) {
