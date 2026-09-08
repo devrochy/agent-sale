@@ -163,6 +163,21 @@ describe("procesarMediaEntrante — audio", () => {
     expect(resultado).toEqual({ kind: "no_manejado" });
     expect(downloadMedia).not.toHaveBeenCalled();
   });
+
+  it("un reintento con el MISMO messageSid reusa la transcripción ya pagada, no vuelve a llamar a Whisper", async () => {
+    vi.mocked(downloadMedia).mockResolvedValue({ buffer: Buffer.from("audio"), mimeType: "audio/ogg" });
+    vi.mocked(transcribirAudio).mockResolvedValueOnce("Quiero unos guantes talla L");
+    const messageSid = `sid-media-cache-${Date.now()}`;
+
+    const mensaje = nuevoMensaje({ messageSid, media: { type: "audio", mediaId: "media-audio-4", mimeType: "audio/ogg" } });
+    const primero = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+    // Mismo mensaje otra vez (simula un reintento de la cola).
+    const segundo = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(primero).toEqual({ kind: "continuar_como_texto", texto: "Quiero unos guantes talla L" });
+    expect(segundo).toEqual({ kind: "continuar_como_texto", texto: "Quiero unos guantes talla L" });
+    expect(transcribirAudio).toHaveBeenCalledTimes(1); // no 2 — el segundo intento reusó la cache
+  });
 });
 
 describe("procesarMediaEntrante — imagen", () => {

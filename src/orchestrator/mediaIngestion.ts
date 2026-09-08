@@ -3,6 +3,7 @@ import type { InboundMessage } from "../gateway/queue.js";
 import { sendToConversation } from "../gateway/sendMessage.js";
 import { buscarPedidoPendienteTransferencia, procesarComprobante } from "../domains/commerce/procesarComprobante.js";
 import { transcribirAudio } from "../media/transcribirAudio.js";
+import { getCachedMediaResult, setCachedMediaResult } from "../shared/mediaResultCache.js";
 import { getConnection } from "../shared/db/connectionsDirectory.js";
 import { guardarMediaEntrante } from "../shared/db/inboundMediaDirectory.js";
 import { appendMessage, resolveConversation, type InboundOrigin } from "./memory.js";
@@ -11,12 +12,12 @@ type EntryLogger = { info: (obj: object, msg: string) => void; warn: (obj: objec
 
 /**
  * Resultado del ruteo de un media entrante:
- * - `no_manejado`: nada implementado para este caso todavía (imagen que no
- *   es un comprobante — Fase 3 — o un audio que Whisper no pudo entender).
- *   `consumer.ts` descarta el mensaje, igual que antes de esta feature.
+ * - `no_manejado`: nada implementado para este caso todavía (hoy solo la
+ *   imagen que no es un comprobante — Fase 3). `consumer.ts` descarta el
+ *   mensaje, igual que antes de esta feature.
  * - `procesado_completo`: ya se resolvió acá (comprobante aprobado/
- *   rechazado/escalado, o aviso de "no te entendí" en un audio) — no debe
- *   pasar por el LLM.
+ *   rechazado/escalado, o aviso de "no te entendí" cuando Whisper no pudo
+ *   transcribir un audio) — no debe pasar por el LLM.
  * - `continuar_como_texto`: el media se convirtió en texto (transcripción
  *   de un audio) y el turno debe seguir el camino normal del orquestador
  *   como si el cliente lo hubiera tipeado.
@@ -54,10 +55,14 @@ async function resolverConexion(
   entryLogger: EntryLogger,
   eventoSinConexion: string,
   eventoConexionNoEncontrada: string,
+  // Contexto extra para el log (ej. `order_id` en el caso del comprobante)
+  // — sin esto se perdía qué pedido quedaba afectado cuando no había
+  // conexión para descargar su comprobante.
+  contextoExtra: Record<string, unknown> = {},
 ) {
   if (!origin.connectionId) {
     entryLogger.warn(
-      { event: eventoSinConexion },
+      { event: eventoSinConexion, ...contextoExtra },
       "Llegó un media sin connectionId en el origin — no se puede descargar",
     );
     return null;
@@ -65,7 +70,7 @@ async function resolverConexion(
   const connection = await getConnection(origin.connectionId);
   if (!connection) {
     entryLogger.warn(
-      { event: eventoConexionNoEncontrada, connection_id: origin.connectionId },
+      { event: eventoConexionNoEncontrada, connection_id: origin.connectionId, ...contextoExtra },
       "La conexión del mensaje ya no existe — no se puede descargar el media",
     );
     return null;
@@ -97,6 +102,7 @@ async function procesarImagenEntrante(
     entryLogger,
     "comprobante.sin_conexion",
     "comprobante.conexion_no_encontrada",
+    { order_id: pedido.orderId },
   );
   if (!connection) {
     return { kind: "no_manejado" };
@@ -142,12 +148,16 @@ async function procesarAudioEntrante(
   origin: InboundOrigin,
   entryLogger: EntryLogger,
 ): Promise<MediaResultado> {
+  // Mismo orden que procesarImagenEntrante (conversación primero, conexión
+  // después) — antes era al revés acá, y un audio sin connectionId no
+  // dejaba ningún rastro en customers/conversations, a diferencia del
+  // mismo caso para una imagen.
+  const { conversationId } = await resolveConversation(message.customerExternalId, message.customerName, origin);
+
   const connection = await resolverConexion(origin, entryLogger, "audio.sin_conexion", "audio.conexion_no_encontrada");
   if (!connection) {
     return { kind: "no_manejado" };
   }
-
-  const { conversationId } = await resolveConversation(message.customerExternalId, message.customerName, origin);
 
   const media = await downloadMedia(connection.credentials, message.media!.mediaId);
   await guardarMediaEntrante({
@@ -159,7 +169,17 @@ async function procesarAudioEntrante(
 
   let texto: string | null;
   try {
-    texto = await transcribirAudio(media.buffer, media.mimeType);
+    // Cache de idempotencia por messageSid: si un reintento de la cola
+    // repite este mismo mensaje porque algo DESPUÉS de transcribir falló,
+    // reusa el resultado en vez de volver a pagar Whisper.
+    const cacheado = await getCachedMediaResult<string | null>(message.messageSid);
+    if (cacheado) {
+      texto = cacheado.value;
+      entryLogger.info({ event: "audio.transcripcion_cacheada" }, "Reusando transcripción ya hecha (reintento)");
+    } else {
+      texto = await transcribirAudio(media.buffer, media.mimeType);
+      await setCachedMediaResult(message.messageSid, texto);
+    }
   } catch (error) {
     entryLogger.warn(
       { error, event: "audio.error_transcribiendo" },
