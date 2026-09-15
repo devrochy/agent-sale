@@ -9,6 +9,30 @@ import { logger } from "./shared/observability/logger.js";
 import { redis } from "./shared/redis/client.js";
 
 /**
+ * Red de seguridad final (Fase 6 del plan de remediación del incidente
+ * 2026-09-13): antes no había ningún handler global, así que una promesa
+ * rechazada sin `.catch()` en algún punto no revisado del código quedaba
+ * completamente silenciosa (Node ni siquiera la loguea por default en
+ * producción) — o, peor, una excepción realmente no capturada podía
+ * dejar al proceso vivo pero en un estado interno inconsistente sin que
+ * nadie se enterara. `unhandledRejection` se loguea pero no mata el
+ * proceso (no hay motivo para ser más frágil que antes ante un bug
+ * puntual); `uncaughtException` si lo hace — el estado ya no es
+ * confiable — y con el `/healthz` real de la Fase 3, el contenedor se
+ * reinicia solo.
+ */
+process.on("unhandledRejection", (reason) => {
+  logger.error({ event: "process.unhandled_rejection", reason }, "Promise rechazada sin catch");
+});
+process.on("uncaughtException", (error) => {
+  logger.error(
+    { event: "process.uncaught_exception", error },
+    "Excepción no capturada — el proceso puede quedar en estado inconsistente, saliendo",
+  );
+  process.exit(1);
+});
+
+/**
  * Entrypoint único del monolito modular: arranca el servidor HTTP del
  * gateway y el consumer del orchestrator en el mismo proceso Node (ver
  * ADR de Fase 2 — monolito, no microservicios). El debounce scheduler

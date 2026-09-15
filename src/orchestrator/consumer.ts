@@ -14,6 +14,14 @@ const CONSUMER_GROUP = "orchestrator-group";
 const CONSUMER_NAME = `orchestrator-${process.pid}`;
 const DEAD_LETTER_STREAM = `${INBOUND_STREAM}:dead-letter`;
 const MAX_DELIVERIES = 3;
+// Backoff entre reintentos de un mensaje que falló (ver el catch de
+// processEntry más abajo): sin esto, la siguiente iteración del loop lo
+// reintenta en caliente de inmediato — bien si el fallo fue un error de
+// negocio puntual, pero contraproducente si fue un rate limit o un
+// proveedor momentáneamente caído (reintentar más rápido no ayuda).
+// Crece con el intento porque como mucho hay 2 reintentos antes del
+// dead-letter (MAX_DELIVERIES=3) — no hace falta un techo.
+const RETRY_BACKOFF_BASE_MS = 2_000;
 
 // Recuperación de entradas huérfanas al arrancar (Fase 5 del plan de
 // remediación del incidente 2026-09-13, ver claimOrphanedEntries más
@@ -78,7 +86,7 @@ async function moveToDeadLetter(id: string, fields: string[]): Promise<void> {
  * automático del consumer group hasta MAX_DELIVERIES; después de eso pasa
  * a whatsapp:inbound:dead-letter.
  */
-async function processEntry(id: string, fields: string[]): Promise<void> {
+export async function processEntry(id: string, fields: string[]): Promise<void> {
   // El parseo vive en queue.ts, junto al productor: es donde están los
   // defaults tolerantes para las entradas escritas por un release anterior,
   // que no traen los campos de conexión (Fase 19).
@@ -213,6 +221,7 @@ async function processEntry(id: string, fields: string[]): Promise<void> {
       entryLogger.error({ error, delivery_count: deliveryCount }, "Mensaje movido a dead-letter");
     } else {
       entryLogger.error({ error, delivery_count: deliveryCount }, "Error procesando mensaje, se reintentará");
+      await new Promise((resolve) => setTimeout(resolve, deliveryCount * RETRY_BACKOFF_BASE_MS));
     }
   }
 }
