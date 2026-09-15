@@ -6,11 +6,16 @@ import { describe, expect, it, vi } from "vitest";
 // poll que ya estaba en curso a mitad de camino.
 const xgroup = vi.fn();
 const xreadgroup = vi.fn();
+// claimOrphanedEntries() (Fase 5) corre antes del loop principal — sin
+// entradas huérfanas (cursor terminal desde la primera llamada), no
+// interfiere con lo que prueba este test.
+const xautoclaim = vi.fn();
 
 vi.mock("../../../src/shared/redis/client.js", () => ({
   redis: {
     xgroup,
     xreadgroup,
+    xautoclaim,
     xack: vi.fn(),
     xadd: vi.fn(),
     xpending: vi.fn(),
@@ -22,6 +27,7 @@ const { startConsumer, requestConsumerShutdown } = await import("../../../src/or
 describe("startConsumer — graceful shutdown", () => {
   it("deja de invocar pollOnce tras requestConsumerShutdown(), sin cortar el poll en curso", async () => {
     xgroup.mockResolvedValue("OK");
+    xautoclaim.mockResolvedValue(["0-0", [], []]);
     let xreadgroupCalls = 0;
     xreadgroup.mockImplementation(async () => {
       xreadgroupCalls++;
