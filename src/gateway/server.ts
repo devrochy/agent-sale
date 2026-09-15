@@ -94,9 +94,12 @@ import {
   aprobarComprobanteManual,
   rechazarComprobanteManual,
 } from "../domains/commerce/procesarComprobante.js";
+import { getConsumerLastPollAt } from "../orchestrator/consumer.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { listConnectionsWithCredentials, type Channel } from "../shared/db/connectionsDirectory.js";
+import { pool } from "../shared/db/pool.js";
 import { logger } from "../shared/observability/logger.js";
+import { redis } from "../shared/redis/client.js";
 import { handleInboundWebhook } from "./webhookHandler.js";
 import { handleWompiWebhook } from "./wompiWebhookHandler.js";
 
@@ -110,6 +113,25 @@ declare module "fastify" {
     // sin parsear los necesitan; el resto de la app no los ve.
     rawBody?: Buffer;
   }
+}
+
+// /healthz (ver más abajo, incidente 2026-09-13): un chequeo individual
+// (Postgres o Redis) no debe tardar más que esto — sea porque está
+// realmente caído, o porque está tan sobrecargado que da lo mismo.
+const HEALTH_CHECK_TIMEOUT_MS = 2500;
+// Umbral de "consumer trabado" (ver orchestrator/consumer.ts,
+// getConsumerLastPollAt): mayor al peor caso razonable de un turno lento
+// (varias tools encadenadas + la llamada al LLM) más margen — no debe
+// dispararse por una lentitud normal, solo por un cuelgue real.
+const CONSUMER_STALL_THRESHOLD_MS = 90_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(`Timeout de ${ms}ms excedido`)), ms);
+    }),
+  ]);
 }
 
 /**
@@ -136,7 +158,31 @@ export async function buildServer() {
   // queda activo a tiempo para las rutas que se declaran a continuación.
   await app.register(rateLimit, { max: 200, timeWindow: "1 minute" });
 
-  app.get("/healthz", async () => ({ status: "ok" }));
+  app.get("/healthz", async (_request, reply) => {
+    // Verificación real (ver incidente 2026-09-13): antes este endpoint
+    // devolvía {status:"ok"} sin chequear nada, así que Coolify nunca
+    // detectaba un pipeline colgado como "unhealthy" y no reiniciaba el
+    // contenedor solo. `withTimeout` propio (no depende de fetchWithTimeout,
+    // que es para llamadas HTTP salientes) porque un Postgres/Redis
+    // colgado no debe colgar también el healthcheck — mejor devolver 503
+    // rápido que dejar que Coolify adivine por su propio timeout.
+    const [postgresCheck, redisCheck] = await Promise.allSettled([
+      withTimeout(pool.query("SELECT 1"), HEALTH_CHECK_TIMEOUT_MS),
+      withTimeout(redis.ping(), HEALTH_CHECK_TIMEOUT_MS),
+    ]);
+    const consumerAlive = Date.now() - getConsumerLastPollAt() < CONSUMER_STALL_THRESHOLD_MS;
+    const healthy = postgresCheck.status === "fulfilled" && redisCheck.status === "fulfilled" && consumerAlive;
+
+    // Coolify (y cualquier orquestador de contenedores) solo mira el
+    // status code HTTP, no el body — el body queda como diagnóstico para
+    // un humano mirando /healthz directo.
+    return reply.status(healthy ? 200 : 503).send({
+      status: healthy ? "ok" : "degraded",
+      postgres: postgresCheck.status === "fulfilled" ? "ok" : "error",
+      redis: redisCheck.status === "fulfilled" ? "ok" : "error",
+      consumer: consumerAlive ? "ok" : "stalled",
+    });
+  });
 
   // Cookies sin firmar (ver src/admin/auth/currentAdmin.ts) — el token de
   // sesión ya es el secreto, validado contra `admin_sessions` en Postgres.

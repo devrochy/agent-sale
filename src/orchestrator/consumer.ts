@@ -15,6 +15,18 @@ const CONSUMER_NAME = `orchestrator-${process.pid}`;
 const DEAD_LETTER_STREAM = `${INBOUND_STREAM}:dead-letter`;
 const MAX_DELIVERIES = 3;
 
+// Liveness del consumer (ver /healthz en gateway/server.ts, incidente
+// 2026-09-13): timestamp en memoria del proceso, actualizado al terminar
+// cada pollOnce() completo. Deliberadamente NO se actualiza al empezar el
+// poll — si processEntry() queda colgado dentro del `for` de
+// handleReadResult, lastPollAt deja de avanzar y /healthz puede detectarlo,
+// en vez de seguir pareciendo "vivo" mientras el pipeline está bloqueado.
+let lastPollAt = Date.now();
+
+export function getConsumerLastPollAt(): number {
+  return lastPollAt;
+}
+
 type StreamEntries = Array<[string, string[]]>;
 type ReadGroupResult = Array<[string, StreamEntries]> | null;
 
@@ -226,6 +238,7 @@ async function pollOnce(): Promise<void> {
     ">",
   )) as ReadGroupResult;
   await handleReadResult(fresh);
+  lastPollAt = Date.now();
 }
 
 export async function startConsumer(): Promise<void> {
