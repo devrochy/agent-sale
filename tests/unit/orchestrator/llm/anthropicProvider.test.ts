@@ -4,9 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // devuelva un objeto con `messages.create` espiable — el resto del
 // comportamiento real de la API no es responsabilidad de este provider.
 const mockCreate = vi.fn();
+const mockConstructor = vi.fn();
 vi.mock("@anthropic-ai/sdk", () => ({
   default: class {
     messages = { create: mockCreate };
+    constructor(opts: unknown) {
+      mockConstructor(opts);
+    }
   },
 }));
 
@@ -23,6 +27,15 @@ describe("AnthropicProvider", () => {
   beforeEach(() => {
     mockCreate.mockReset();
     mockCreate.mockResolvedValue(BASE_RESPONSE);
+    mockConstructor.mockReset();
+  });
+
+  it("construye el cliente con timeout explícito (ver env.llmTimeoutMs, incidente 2026-09-13)", () => {
+    new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-5" });
+
+    expect(mockConstructor).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "k", timeout: expect.any(Number) }),
+    );
   });
 
   it("sin forceToolName manda thinking adaptativo y no manda tool_choice (Sonnet)", async () => {

@@ -35,6 +35,15 @@ describe("createPaymentLink", () => {
     });
   });
 
+  it("manda un AbortSignal con timeout (ver env.externalApiTimeoutMs, incidente 2026-09-13)", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ data: { id: "abc123" } }));
+
+    await createPaymentLink("prv_test_xxx", "Pedido de prueba", 1000);
+
+    const [, options] = vi.mocked(fetch).mock.calls[0]!;
+    expect((options as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("usa el host de producción para una llave prv_prod_", async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ data: { id: "xyz" } }));
 

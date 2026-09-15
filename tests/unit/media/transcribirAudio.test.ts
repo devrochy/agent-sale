@@ -29,6 +29,16 @@ describe("transcribirAudio", () => {
     );
   });
 
+  it("manda un AbortSignal con timeout (ver env.transcriptionTimeoutMs, incidente 2026-09-13)", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ text: "Hola" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await transcribirAudio(Buffer.from("audio-falso"), "audio/ogg", "sk-test-key");
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("devuelve null (no lanza) cuando Whisper no transcribe nada en claro", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ text: "" }));
     vi.stubGlobal("fetch", fetchMock);

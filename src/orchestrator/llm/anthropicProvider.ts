@@ -44,7 +44,11 @@ export class AnthropicProvider implements LLMProvider {
   private readonly model: string;
 
   constructor(config: AnthropicProviderConfig = {}) {
-    this.client = new Anthropic({ apiKey: config.apiKey ?? env.anthropicApiKey });
+    // El SDK trae un timeout default generoso (~10 min) — se fija acá
+    // explícito (ver env.llmTimeoutMs y el incidente 2026-09-13) para que
+    // un cuelgue de red no bloquee el consumer secuencial de mensajes
+    // mucho más allá de lo que un cliente humano esperaría una respuesta.
+    this.client = new Anthropic({ apiKey: config.apiKey ?? env.anthropicApiKey, timeout: env.llmTimeoutMs });
     this.model = config.model ?? "claude-sonnet-5";
   }
 

@@ -1,3 +1,5 @@
+import { env } from "../config/env.js";
+import { fetchWithTimeout } from "./http/fetchWithTimeout.js";
 import { logger } from "./observability/logger.js";
 
 export const SUPPORTED_CURRENCIES = ["USD", "COP", "MXN", "ARS", "CLP", "PEN", "BRL"] as const;
@@ -44,7 +46,9 @@ export async function getUsdExchangeRates(): Promise<Record<string, number> | nu
     return cache.rates;
   }
   try {
-    const response = await fetch("https://open.er-api.com/v6/latest/USD");
+    const response = await fetchWithTimeout("https://open.er-api.com/v6/latest/USD", {
+      timeoutMs: env.backgroundTimeoutMs,
+    });
     if (!response.ok) {
       throw new Error(`Respuesta ${response.status}`);
     }

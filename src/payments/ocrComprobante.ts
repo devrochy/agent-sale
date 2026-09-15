@@ -61,7 +61,10 @@ export async function analizarComprobante(buffer: Buffer, mimeType: string): Pro
   }
   const mediaType: MediaType = MIME_TYPES_SOPORTADOS.has(mimeType) ? (mimeType as MediaType) : "image/jpeg";
 
-  const client = new Anthropic({ apiKey: env.anthropicApiKey });
+  // Timeout explícito (ver env.llmTimeoutMs y el incidente 2026-09-13): sin
+  // esto el SDK usa su default de ~10 min, y esta llamada corre dentro del
+  // mismo consumer secuencial de mensajes que el resto del pipeline.
+  const client = new Anthropic({ apiKey: env.anthropicApiKey, timeout: env.llmTimeoutMs });
   const response = await client.messages.create({
     model: "claude-sonnet-5",
     max_tokens: 300,

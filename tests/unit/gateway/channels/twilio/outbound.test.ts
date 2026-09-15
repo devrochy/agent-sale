@@ -10,9 +10,12 @@ const fetchAccount = vi.fn();
 const listIncoming = vi.fn();
 const twilioFactory = vi.fn();
 
+const twilioFactoryOpts = vi.fn();
+
 vi.mock("twilio", () => {
-  const factory = (accountSid: string, authToken: string) => {
+  const factory = (accountSid: string, authToken: string, opts?: { timeout?: number }) => {
     twilioFactory(accountSid, authToken);
+    twilioFactoryOpts(opts);
     if (!accountSid.startsWith("AC")) {
       throw new Error("accountSid must start with AC");
     }
@@ -57,6 +60,7 @@ beforeEach(() => {
   fetchAccount.mockReset().mockResolvedValue({ sid: "ACtest" });
   listIncoming.mockReset().mockResolvedValue([{ phoneNumber: "+14155238886" }]);
   twilioFactory.mockReset();
+  twilioFactoryOpts.mockReset();
 });
 
 describe("twilioOutboundAdapter.sendText", () => {
@@ -94,6 +98,14 @@ describe("twilioOutboundAdapter.sendText", () => {
         "Hola",
       ),
     ).rejects.toThrow(/accountSid\/authToken/);
+  });
+});
+
+describe("timeout del cliente de Twilio", () => {
+  it("construye el cliente con timeout explícito (ver env.externalApiTimeoutMs, incidente 2026-09-13)", async () => {
+    await twilioOutboundAdapter.sendText(conexion(), "whatsapp:+57300", "Hola");
+
+    expect(twilioFactoryOpts).toHaveBeenCalledWith(expect.objectContaining({ timeout: expect.any(Number) }));
   });
 });
 

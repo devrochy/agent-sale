@@ -1,4 +1,5 @@
 import { env } from "../../config/env.js";
+import { fetchWithTimeout } from "../../shared/http/fetchWithTimeout.js";
 import type { ContentBlock, LLMMessage, LLMProvider, ToolDefinition, TurnResponse } from "./types.js";
 
 interface OpenAIToolCall {
@@ -133,7 +134,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // Este formato no tiene un equivalente a cache_control explícito (su
     // caching de contexto es automático, ver ADR-010) — los bloques del
     // system prompt simplemente se concatenan en un único mensaje "system".
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+      timeoutMs: env.llmTimeoutMs,
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -1,3 +1,6 @@
+import { env } from "../config/env.js";
+import { fetchWithTimeout } from "../shared/http/fetchWithTimeout.js";
+
 /**
  * Transcripción de audio entrante (notas de voz de WhatsApp) — Whisper de
  * OpenAI, llamada directa sin SDK (mismo criterio que Wompi/Meta, ADR-033:
@@ -54,7 +57,8 @@ export async function transcribirAudio(buffer: Buffer, mimeType: string, apiKey:
   // el idioma en audios cortos o con ruido de fondo.
   formData.append("language", "es");
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
+    timeoutMs: env.transcriptionTimeoutMs,
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,

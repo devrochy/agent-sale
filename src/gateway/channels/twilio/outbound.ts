@@ -1,4 +1,5 @@
 import twilio from "twilio";
+import { env } from "../../../config/env.js";
 import type { ConnectionCredentials, ResolvedConnection } from "../../../shared/db/connectionsDirectory.js";
 import type {
   MessageDeliveryStatus,
@@ -38,8 +39,10 @@ function buildClient(credentials: ConnectionCredentials): twilio.Twilio {
     throw new Error("La conexión de Twilio no tiene accountSid/authToken configurados");
   }
   // El constructor valida que el SID empiece con "AC" y lanza si no — por eso
-  // nunca se construye al importar el módulo.
-  return twilio(accountSid, authToken);
+  // nunca se construye al importar el módulo. `timeout` explícito (ver
+  // env.externalApiTimeoutMs y el incidente 2026-09-13): sin esto el SDK no
+  // acota la espera de una llamada colgada.
+  return twilio(accountSid, authToken, { timeout: env.externalApiTimeoutMs });
 }
 
 export const twilioOutboundAdapter: PollingOutboundAdapter = {
