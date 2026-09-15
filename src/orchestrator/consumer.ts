@@ -15,6 +15,14 @@ const CONSUMER_NAME = `orchestrator-${process.pid}`;
 const DEAD_LETTER_STREAM = `${INBOUND_STREAM}:dead-letter`;
 const MAX_DELIVERIES = 3;
 
+// Recuperación de entradas huérfanas al arrancar (Fase 5 del plan de
+// remediación del incidente 2026-09-13, ver claimOrphanedEntries más
+// abajo). 60s de margen generoso sobre TIMEOUT_LLM_MS (45s, ver
+// env.llmTimeoutMs) — no debe reclamar trabajo de un consumer que todavía
+// está legítimamente esperando una respuesta lenta del LLM.
+const CLAIM_MIN_IDLE_MS = 60_000;
+const CLAIM_BATCH = 20;
+
 // Liveness del consumer (ver /healthz en gateway/server.ts, incidente
 // 2026-09-13): timestamp en memoria del proceso, actualizado al terminar
 // cada pollOnce() completo. Deliberadamente NO se actualiza al empezar el
@@ -228,6 +236,58 @@ async function handleReadResult(result: ReadGroupResult): Promise<void> {
   }
 }
 
+/**
+ * Reclama entradas "pending" de un consumer que ya no existe — sin esto
+ * quedan huérfanas para siempre. `CONSUMER_NAME` depende del PID (ver
+ * arriba): cada arranque del proceso es un consumer distinto dentro del
+ * mismo `CONSUMER_GROUP`, y `pollOnce` (con ID "0") solo relee las
+ * pendientes de su PROPIO nombre — nunca las de un consumer viejo que
+ * murió a mitad de un `processEntry` (crash real, `kill -9`, o un SIGKILL
+ * que llegó antes de que el graceful shutdown terminara). `XAUTOCLAIM`
+ * (Redis ≥6.2) es la herramienta hecha para esto: transfiere de a lotes
+ * las entradas con más de `CLAIM_MIN_IDLE_MS` sin actividad de su
+ * consumer original al `CONSUMER_NAME` actual.
+ *
+ * Corre una sola vez al arrancar (mismo criterio que
+ * `recoverOrphanedConversations()` en debounceScheduler.ts, para el caso
+ * equivalente del debounce) — no periódico: con los timeouts de la Fase 1
+ * y el graceful shutdown de la Fase 4, el escenario real que esto cubre
+ * es específicamente "el proceso murió sin completar un shutdown
+ * ordenado", que solo puede haber pasado antes de este arranque.
+ */
+export async function claimOrphanedEntries(): Promise<void> {
+  let cursor = "0";
+  let totalClaimed = 0;
+  do {
+    const [nextCursor, entries] = (await redis.xautoclaim(
+      INBOUND_STREAM,
+      CONSUMER_GROUP,
+      CONSUMER_NAME,
+      CLAIM_MIN_IDLE_MS,
+      cursor,
+      "COUNT",
+      CLAIM_BATCH,
+    )) as [string, StreamEntries, string[]];
+    cursor = nextCursor;
+    if (entries.length > 0) {
+      totalClaimed += entries.length;
+      await handleReadResult([[INBOUND_STREAM, entries]]);
+    }
+    // Ojo: el cursor "sin más páginas" que devuelve Redis es "0-0" (el ID
+    // completo, ms-seq), no el "0" corto que se manda como punto de
+    // partida — verificado contra un Redis real, no solo con mocks (con
+    // un mock ingenuo este chequeo pasa igual comparando contra "0" y
+    // queda un loop que nunca termina en producción).
+  } while (cursor !== "0" && cursor !== "0-0");
+
+  if (totalClaimed > 0) {
+    logger.warn(
+      { event: "orchestrator.entradas_huerfanas_reclamadas", count: totalClaimed },
+      "Entradas huérfanas reclamadas de un consumer muerto y procesadas",
+    );
+  }
+}
+
 async function pollOnce(): Promise<void> {
   // Primero reintenta las entradas pendientes propias de este consumer
   // (ID "0"), luego lee entradas nuevas (">").
@@ -261,6 +321,7 @@ async function pollOnce(): Promise<void> {
 
 export async function startConsumer(): Promise<void> {
   await ensureConsumerGroup();
+  await claimOrphanedEntries();
   while (!shuttingDown) {
     try {
       await pollOnce();
