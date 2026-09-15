@@ -3,6 +3,7 @@ import { withTransaction } from "../shared/db/withTransaction.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
 import { getSettings } from "../shared/db/settingsDirectory.js";
+import { recordDebounceFailure } from "./debounceFailures.js";
 import { processConversation } from "./loop.js";
 import { sendTurnBubbles } from "./sendTurnResult.js";
 
@@ -14,7 +15,14 @@ const PENDING_KEY = "debounce:pending";
 const PAYLOAD_KEY_PREFIX = "debounce:payload:";
 const POLL_INTERVAL_MS = 1500;
 
-interface DebouncePayload {
+// Reintento del disparo del turno (Fase 2 del plan de remediación del
+// incidente 2026-09-13, ver docblock de fireConversation más abajo). Mismo
+// criterio de "un reintento corto basta" que BUBBLE_SEND_ATTEMPTS en
+// sendTurnResult.ts.
+const FIRE_ATTEMPTS = 2;
+const FIRE_RETRY_DELAY_MS = 2_000;
+
+export interface DebouncePayload {
   customerExternalId: string;
   messageSid: string;
   customerName?: string;
@@ -52,28 +60,63 @@ export async function cancelDebounce(conversationId: string): Promise<void> {
   await redis.del(`${PAYLOAD_KEY_PREFIX}${conversationId}`);
 }
 
-async function fireConversation(conversationId: string, payload: DebouncePayload): Promise<void> {
+/**
+ * Sin backing de Redis Streams acá (el mensaje ya se hizo ACK al
+ * ingerirse, ver consumer.ts) — por eso el reintento vive acá, no en el
+ * consumer. Reintenta el turno completo (`processConversation` +
+ * `sendTurnBubbles`), no solo el envío: es seguro porque las tools de
+ * escritura con efecto real (crear_pedido, agregar_item_pedido) tienen su
+ * propio idempotency_key atado al `messageSid` del payload — que no
+ * cambia entre intentos — y crear_pedido además chequea `quote_id`
+ * duplicado *antes* de llamar a Wompi o insertar, así que un segundo
+ * intento nunca duplica un pedido ni un cobro (ver
+ * domains/commerce/crearPedido.ts, domains/commerce/idempotency.ts).
+ *
+ * Si el segundo intento también falla, se agotan los reintentos (Fase 2
+ * del plan de remediación del incidente 2026-09-13 — cierra el límite que
+ * ADR-022 dejaba conocido y sin resolver) y el fallo se registra en
+ * `debounce_failures` para que quede consultable por un humano, no solo
+ * en el log. El mensaje del cliente ya está guardado en Postgres, no se
+ * pierde; sí queda sin respuesta hasta que llegue un mensaje nuevo (que
+ * dispara un turno fresco) o se detecte en el barrido de recuperación del
+ * próximo arranque.
+ */
+export async function fireConversation(conversationId: string, payload: DebouncePayload): Promise<void> {
   const turnLogger = logger.child({ conversation_id: conversationId });
-  try {
-    const result = await processConversation(
-      payload.customerExternalId,
-      payload.messageSid,
-      payload.customerName,
-      { connectionId: payload.connectionId, channel: payload.channel },
-    );
-    await sendTurnBubbles(conversationId, result, turnLogger);
-  } catch (error) {
-    // Sin backing de Redis Streams acá (el mensaje ya se hizo ACK al
-    // ingerirse, ver consumer.ts) — un fallo en este punto no se
-    // reintenta automáticamente, se documenta como límite conocido en
-    // ADR-022. El mensaje del cliente ya está guardado en Postgres, no
-    // se pierde; sí queda sin respuesta hasta que llegue un mensaje
-    // nuevo (que dispara un turno fresco) o se detecte en el barrido de
-    // recuperación del próximo arranque.
-    turnLogger.error(
-      { error, event: "orchestrator.debounce_disparo_fallido" },
-      "Error disparando turno diferido",
-    );
+
+  for (let attempt = 1; attempt <= FIRE_ATTEMPTS; attempt++) {
+    try {
+      const result = await processConversation(
+        payload.customerExternalId,
+        payload.messageSid,
+        payload.customerName,
+        { connectionId: payload.connectionId, channel: payload.channel },
+      );
+      await sendTurnBubbles(conversationId, result, turnLogger);
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt === FIRE_ATTEMPTS;
+      turnLogger.error(
+        {
+          error,
+          attempt,
+          event: isLastAttempt ? "orchestrator.debounce_disparo_fallido" : "orchestrator.debounce_disparo_reintentando",
+        },
+        isLastAttempt ? "Error disparando turno diferido, sin más reintentos" : "Error disparando turno diferido, reintentando",
+      );
+
+      if (!isLastAttempt) {
+        await new Promise((resolve) => setTimeout(resolve, FIRE_RETRY_DELAY_MS));
+        continue;
+      }
+
+      await recordDebounceFailure(conversationId, error, FIRE_ATTEMPTS).catch((persistError) => {
+        turnLogger.error(
+          { error: persistError },
+          "No se pudo registrar el fallo de debounce en debounce_failures — sigue quedando solo en el log",
+        );
+      });
+    }
   }
 }
 
