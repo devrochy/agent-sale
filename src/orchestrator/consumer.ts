@@ -35,6 +35,16 @@ export function getConsumerLastPollAt(): number {
   return lastPollAt;
 }
 
+// Graceful shutdown (Fase 4 del plan de remediación del incidente
+// 2026-09-13, ver src/index.ts): al recibir SIGTERM, el proceso deja de
+// tomar entradas NUEVAS del stream, pero termina la que ya está en curso
+// — un redeploy no debe cortar un turno a mitad de camino.
+let shuttingDown = false;
+
+export function requestConsumerShutdown(): void {
+  shuttingDown = true;
+}
+
 type StreamEntries = Array<[string, string[]]>;
 type ReadGroupResult = Array<[string, StreamEntries]> | null;
 
@@ -213,6 +223,14 @@ async function handleReadResult(result: ReadGroupResult): Promise<void> {
   }
   for (const [, entries] of result) {
     for (const [id, fields] of entries) {
+      if (shuttingDown) {
+        // No arranca una entrada nueva del batch — queda sin XACK, se
+        // reprocesa al reiniciar (Fase 5, XAUTOCLAIM, la recupera aunque
+        // el próximo proceso tenga un CONSUMER_NAME distinto). La entrada
+        // que ya estaba en curso (el `await processEntry` anterior en este
+        // mismo `for`) sí terminó de correr antes de llegar acá.
+        return;
+      }
       await processEntry(id, fields);
     }
   }
@@ -304,7 +322,7 @@ async function pollOnce(): Promise<void> {
 export async function startConsumer(): Promise<void> {
   await ensureConsumerGroup();
   await claimOrphanedEntries();
-  while (true) {
+  while (!shuttingDown) {
     try {
       await pollOnce();
     } catch (error) {

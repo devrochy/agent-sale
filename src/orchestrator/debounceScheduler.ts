@@ -22,6 +22,15 @@ const POLL_INTERVAL_MS = 1500;
 const FIRE_ATTEMPTS = 2;
 const FIRE_RETRY_DELAY_MS = 2_000;
 
+// Graceful shutdown (Fase 4 del plan de remediación del incidente
+// 2026-09-13, ver src/index.ts): al recibir SIGTERM, deja de disparar
+// turnos NUEVOS, pero termina el que ya está en curso.
+let shuttingDown = false;
+
+export function requestDebounceSchedulerShutdown(): void {
+  shuttingDown = true;
+}
+
 export interface DebouncePayload {
   customerExternalId: string;
   messageSid: string;
@@ -124,6 +133,12 @@ async function pollDebounceOnce(): Promise<void> {
   const now = Date.now();
   const candidates = await redis.zrangebyscore(PENDING_KEY, "-inf", now);
   for (const conversationId of candidates) {
+    if (shuttingDown) {
+      // Deja los candidatos restantes sin reclamar — siguen en el sorted
+      // set, el próximo arranque los recoge (o el barrido de
+      // recoverOrphanedConversations, que no depende de este timer).
+      return;
+    }
     // Claim atómico por candidato individual (no leer-en-batch y remover-
     // en-batch): si en algún momento corre más de una réplica del
     // proceso sobre el mismo Redis, solo la que gane el ZREM (devuelve 1)
@@ -218,7 +233,7 @@ async function recoverOrphanedConversations(): Promise<void> {
 
 export async function startDebounceScheduler(): Promise<void> {
   await recoverOrphanedConversations();
-  while (true) {
+  while (!shuttingDown) {
     try {
       await pollDebounceOnce();
     } catch (error) {
