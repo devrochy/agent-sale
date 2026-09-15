@@ -92,4 +92,10 @@ export const env = {
   // (default max=10 de `pg`) y dejar a todo el proceso sin Postgres.
   pgStatementTimeoutMs: Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 15_000),
   pgConnectionTimeoutMs: Number(process.env.PG_CONNECTION_TIMEOUT_MS ?? 5_000),
+  // Graceful shutdown (Fase 4 del plan de remediación, ver src/index.ts):
+  // tiempo máximo que se espera a que el consumer/debounce scheduler
+  // terminen el turno en curso antes de cerrar igual. Tiene que ser menor
+  // al "stop signal grace period" configurado en Coolify/Docker — si no,
+  // el proceso recibe SIGKILL antes de completar el shutdown ordenado.
+  shutdownGraceMs: Number(process.env.SHUTDOWN_GRACE_MS ?? 20_000),
 };

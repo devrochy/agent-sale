@@ -24,6 +24,8 @@ Nótese que el mensaje en la cola es deliberadamente mínimo — no incluye el h
 
 Un consumer group `orchestrator-group`, con una o más instancias del `orchestrator` como consumidores — así, si se corre más de una instancia del monolito (para manejar más carga), ningún mensaje se procesa dos veces por consumidores distintos, y si una instancia cae a mitad de proceso, Redis Streams permite que otro consumidor reclame el mensaje pendiente (`XCLAIM`/`XAUTOCLAIM`).
 
+Cada nombre de consumidor está atado al PID del proceso (`orchestrator-${process.pid}`, ver `src/orchestrator/consumer.ts`) — un reinicio (deploy, crash) es, desde la perspectiva del consumer group, un consumidor nuevo. Sin recuperación explícita, las entradas que quedaron "pending" del consumidor viejo (murió a mitad de un `processEntry`, antes de hacer `XACK`) quedarían huérfanas para siempre: el consumidor nuevo solo relee sus propias pendientes. `claimOrphanedEntries()` corre una sola vez al arrancar (Fase 5 del plan de remediación del incidente 2026-09-13) y usa `XAUTOCLAIM` para transferirse las entradas de cualquier consumidor con más de 60s sin actividad — el mismo escenario cubre tanto un solo proceso reiniciándose como una segunda instancia real corriendo en paralelo.
+
 ## Reintentos y dead-letter
 
 - Si el `orchestrator` falla al procesar un mensaje (ej. error llamando a Claude), el mensaje permanece "pending" en el stream y se reintenta automáticamente por el mecanismo de consumer group tras un timeout configurable.
