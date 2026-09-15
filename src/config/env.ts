@@ -74,4 +74,16 @@ export const env = {
   // se valida recién al usarla, igual que `anthropicApiKey` para el OCR
   // del comprobante.
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  // Timeouts de llamadas HTTP salientes (ver incidente 2026-09-13: ningún
+  // fetch externo tenía límite de tiempo, y el consumer de mensajes es
+  // secuencial — src/orchestrator/consumer.ts — así que un solo fetch
+  // colgado bloqueaba el pipeline entero indefinidamente). Un valor por
+  // categoría porque no todas las llamadas tienen el mismo margen
+  // razonable: el LLM conversacional puede tardar legítimamente
+  // encadenando tools, un webhook de Meta/Wompi no debería.
+  llmTimeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 45_000),
+  transcriptionTimeoutMs: Number(process.env.TRANSCRIPTION_TIMEOUT_MS ?? 30_000),
+  externalApiTimeoutMs: Number(process.env.EXTERNAL_API_TIMEOUT_MS ?? 8_000),
+  mediaDownloadTimeoutMs: Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS ?? 20_000),
+  backgroundTimeoutMs: Number(process.env.BACKGROUND_TIMEOUT_MS ?? 5_000),
 };

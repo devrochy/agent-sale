@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { env } from "../../config/env.js";
+import { fetchWithTimeout } from "../../shared/http/fetchWithTimeout.js";
 import type { ContentBlock, LLMMessage, LLMProvider, ToolDefinition, TurnResponse } from "./types.js";
 
 // Traduce el contrato neutro al formato de la API de Gemini
@@ -161,9 +162,10 @@ export class GeminiProvider implements LLMProvider {
 
     // Gemini tampoco tiene un equivalente a cache_control explícito — los
     // bloques del system prompt se concatenan en una sola instrucción.
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
+        timeoutMs: env.llmTimeoutMs,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,3 +1,5 @@
+import { env } from "../../../config/env.js";
+import { fetchWithTimeout } from "../../../shared/http/fetchWithTimeout.js";
 import type { ConnectionCredentials } from "../../../shared/db/connectionsDirectory.js";
 import { GRAPH_API_BASE, appSecretProof, graphRequest, requireToken } from "./graph.js";
 
@@ -48,7 +50,13 @@ export async function downloadMedia(
     throw new Error("Meta no devolvió la URL temporal del media");
   }
 
-  const response = await fetch(metadata.url, { headers: { Authorization: `Bearer ${token}` } });
+  // Timeout algo mayor al de un fetch genérico a la Graph API (ver
+  // env.mediaDownloadTimeoutMs): esto descarga hasta MAX_MEDIA_BYTES de
+  // bytes reales, no solo un JSON corto.
+  const response = await fetchWithTimeout(metadata.url, {
+    timeoutMs: env.mediaDownloadTimeoutMs,
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!response.ok) {
     throw new Error(`No se pudo descargar el media de Meta: HTTP ${response.status}`);
   }

@@ -67,6 +67,17 @@ describe("downloadMedia", () => {
     await expect(downloadMedia({ accessToken: "token-test" }, "media-id-789")).rejects.toThrow(/HTTP 404/);
   });
 
+  it("manda un AbortSignal con timeout en la descarga de bytes (ver env.mediaDownloadTimeoutMs, incidente 2026-09-13)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ url: "https://lookaside.fbsbx.com/temp/z", mime_type: "image/png" }))
+      .mockResolvedValueOnce(bytesResponse("bytes"));
+
+    await downloadMedia({ accessToken: "token-test" }, "media-id-signal");
+
+    const [, init] = fetchMock.mock.calls[1]!;
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("lanza si no hay accessToken en las credenciales", async () => {
     await expect(downloadMedia({}, "media-id-000")).rejects.toThrow(/accessToken/);
     expect(fetchMock).not.toHaveBeenCalled();

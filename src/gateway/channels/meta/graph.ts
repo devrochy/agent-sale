@@ -1,4 +1,6 @@
 import { createHmac } from "node:crypto";
+import { env } from "../../../config/env.js";
+import { fetchWithTimeout } from "../../../shared/http/fetchWithTimeout.js";
 import type { ConnectionCredentials } from "../../../shared/db/connectionsDirectory.js";
 
 /**
@@ -61,6 +63,11 @@ function sleep(ms: number): Promise<void> {
  * porque `fetch` lanzando significa que la request nunca completó el
  * round-trip — no hay riesgo real de que Meta ya haya recibido y procesado
  * la primera, a diferencia de un timeout después de enviar.
+ *
+ * `fetchWithTimeout` (ver env.externalApiTimeoutMs, incidente 2026-09-13):
+ * un timeout hace que `fetch` lance, así que cae en el mismo camino de
+ * reintento de arriba — consume el único reintento disponible en vez de
+ * sumar un segundo timeout largo.
  */
 export async function graphRequest<T>(
   url: string,
@@ -69,10 +76,10 @@ export async function graphRequest<T>(
 ): Promise<T & GraphError> {
   let response: Response;
   try {
-    response = await fetch(url, init);
+    response = await fetchWithTimeout(url, { ...init, timeoutMs: env.externalApiTimeoutMs });
   } catch {
     await sleep(RETRY_DELAY_MS);
-    response = await fetch(url, init);
+    response = await fetchWithTimeout(url, { ...init, timeoutMs: env.externalApiTimeoutMs });
   }
   const body = (await response.json().catch(() => ({}))) as T & GraphError;
 

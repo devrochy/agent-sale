@@ -1,3 +1,6 @@
+import { env } from "../config/env.js";
+import { fetchWithTimeout } from "../shared/http/fetchWithTimeout.js";
+
 const SANDBOX_API_BASE = "https://sandbox.wompi.co/v1";
 const PRODUCTION_API_BASE = "https://production.wompi.co/v1";
 const CHECKOUT_BASE = "https://checkout.wompi.co/l";
@@ -62,7 +65,8 @@ export async function createPaymentLink(
   const apiBase = resolveApiBase(privateKey);
   const expiresAt = new Date(Date.now() + LINK_EXPIRATION_MS).toISOString();
 
-  const response = await fetch(`${apiBase}/payment_links`, {
+  const response = await fetchWithTimeout(`${apiBase}/payment_links`, {
+    timeoutMs: env.externalApiTimeoutMs,
     method: "POST",
     headers: {
       "Content-Type": "application/json",

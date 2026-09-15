@@ -71,6 +71,16 @@ describe("getUsdExchangeRates", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("manda un AbortSignal con timeout (ver env.backgroundTimeoutMs, incidente 2026-09-13)", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse({ result: "success", rates: { COP: 4000 } }));
+    const { getUsdExchangeRates: getRates } = await import("../../../src/shared/exchangeRates.js");
+
+    await getRates();
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("cachea en memoria — una segunda llamada no vuelve a golpear la red", async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ result: "success", rates: { COP: 4000 } }));
     const { getUsdExchangeRates: getRates } = await import("../../../src/shared/exchangeRates.js");

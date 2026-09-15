@@ -77,4 +77,13 @@ describe("graphRequest", () => {
     expect(result).toEqual({ messages: [{ id: "wamid.directo" }] });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("manda un AbortSignal con timeout (ver env.externalApiTimeoutMs, incidente 2026-09-13)", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ messages: [{ id: "wamid.ok" }] }));
+
+    await graphRequest("https://graph.facebook.com/v25.0/123/messages", { method: "POST" }, "contexto de prueba");
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
 });

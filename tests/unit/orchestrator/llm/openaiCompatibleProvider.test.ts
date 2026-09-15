@@ -97,6 +97,21 @@ describe("OpenAICompatibleProvider", () => {
     expect(body.tool_choice).toEqual({ type: "function", function: { name: "preguntar_metodo_pago" } });
   });
 
+  it("manda un AbortSignal con timeout (ver env.llmTimeoutMs, incidente 2026-09-13)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse({
+        choices: [{ message: { role: "assistant", content: "Hola!" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }),
+    );
+
+    const provider = new OpenAICompatibleProvider({ apiKey: "k" });
+    await provider.converse({ systemPrompt: ["..."], tools: [], messages: [{ role: "user", content: "hola" }] });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("lanza si la respuesta HTTP no es ok", async () => {
     vi.mocked(fetch).mockResolvedValue(jsonResponse({ error: "bad key" }, false, 401));
 
