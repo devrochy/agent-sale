@@ -86,4 +86,10 @@ export const env = {
   externalApiTimeoutMs: Number(process.env.EXTERNAL_API_TIMEOUT_MS ?? 8_000),
   mediaDownloadTimeoutMs: Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS ?? 20_000),
   backgroundTimeoutMs: Number(process.env.BACKGROUND_TIMEOUT_MS ?? 5_000),
+  // Graceful shutdown (Fase 4 del plan de remediación, ver src/index.ts):
+  // tiempo máximo que se espera a que el consumer/debounce scheduler
+  // terminen el turno en curso antes de cerrar igual. Tiene que ser menor
+  // al "stop signal grace period" configurado en Coolify/Docker — si no,
+  // el proceso recibe SIGKILL antes de completar el shutdown ordenado.
+  shutdownGraceMs: Number(process.env.SHUTDOWN_GRACE_MS ?? 20_000),
 };
