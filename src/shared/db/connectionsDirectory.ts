@@ -71,6 +71,18 @@ const COLUMNS =
  */
 const CACHE_TTL_MS = 30_000;
 let cache: { rows: ResolvedConnection[]; expiresAt: number } | null = null;
+// Single-flight (Fase 6 del plan de remediación del incidente 2026-09-13):
+// sin esto, dos webhooks casi simultáneos que llegan justo cuando el
+// caché expiró disparan dos queries a Postgres en paralelo — no es
+// incorrecto (las dos devuelven lo mismo), pero sí genera una asimetría
+// de latencia real entre ambos requests, uno de los mecanismos con más
+// evidencia en el código para explicar el desorden del incidente (el que
+// pega el round-trip a Postgres llega más tarde al `XADD` que el que
+// hubiera pegado un cache-hit). Compartir la misma promesa entre llamadas
+// concurrentes no elimina la posibilidad de desorden (nada puede
+// garantizar el orden entre dos requests HTTP concurrentes e
+// independientes), pero sí cierra esta fuente específica de asimetría.
+let inFlight: Promise<ResolvedConnection[]> | null = null;
 
 export function invalidateConnectionsCache(): void {
   cache = null;
@@ -132,14 +144,29 @@ async function loadAll(): Promise<ResolvedConnection[]> {
   if (cache && cache.expiresAt > Date.now()) {
     return cache.rows;
   }
-  const result = await pool.query<ConnectionRow>(
-    `SELECT ${COLUMNS} FROM channel_connections ORDER BY created_at`,
-  );
-  const rows = result.rows
-    .map(mapRow)
-    .filter((row): row is ResolvedConnection => row !== null);
-  cache = { rows, expiresAt: Date.now() + CACHE_TTL_MS };
-  return rows;
+  // Ya hay una carga en curso (ver comentario de `inFlight` arriba) — se
+  // engancha a esa misma promesa en vez de disparar una query propia.
+  if (inFlight) {
+    return inFlight;
+  }
+  inFlight = (async () => {
+    try {
+      const result = await pool.query<ConnectionRow>(
+        `SELECT ${COLUMNS} FROM channel_connections ORDER BY created_at`,
+      );
+      const rows = result.rows
+        .map(mapRow)
+        .filter((row): row is ResolvedConnection => row !== null);
+      cache = { rows, expiresAt: Date.now() + CACHE_TTL_MS };
+      return rows;
+    } finally {
+      // Se limpia siempre, éxito o error — un error en la query no debe
+      // dejar a todas las llamadas siguientes colgadas de una promesa
+      // rechazada para siempre.
+      inFlight = null;
+    }
+  })();
+  return inFlight;
 }
 
 function withoutCredentials({ credentials: _credentials, ...summary }: ResolvedConnection): ConnectionSummary {

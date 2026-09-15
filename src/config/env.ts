@@ -86,4 +86,10 @@ export const env = {
   externalApiTimeoutMs: Number(process.env.EXTERNAL_API_TIMEOUT_MS ?? 8_000),
   mediaDownloadTimeoutMs: Number(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS ?? 20_000),
   backgroundTimeoutMs: Number(process.env.BACKGROUND_TIMEOUT_MS ?? 5_000),
+  // Timeouts del pool de Postgres (ver src/shared/db/pool.ts) — mismo
+  // espíritu que los de arriba: sin límite, una query colgada retiene su
+  // conexión indefinidamente y con pocas basta para agotar el pool
+  // (default max=10 de `pg`) y dejar a todo el proceso sin Postgres.
+  pgStatementTimeoutMs: Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 15_000),
+  pgConnectionTimeoutMs: Number(process.env.PG_CONNECTION_TIMEOUT_MS ?? 5_000),
 };
