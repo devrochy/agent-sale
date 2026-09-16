@@ -2,25 +2,30 @@ import { env } from "../config/env.js";
 import { fetchWithTimeout } from "../shared/http/fetchWithTimeout.js";
 
 /**
- * Transcripción de audio entrante (notas de voz de WhatsApp) — Whisper de
- * OpenAI, llamada directa sin SDK (mismo criterio que Wompi/Meta, ADR-033:
- * una dependencia no se paga por un solo endpoint). Aislado del LLM
- * conversacional (DeepSeek hoy) igual que `ocrComprobante.ts` — ninguno de
- * los proveedores ya conectados transcribe audio.
+ * Transcripción de audio entrante (notas de voz de WhatsApp) — llamada
+ * directa sin SDK (mismo criterio que Wompi/Meta, ADR-033: una
+ * dependencia no se paga por un solo endpoint) al endpoint de
+ * transcripciones estilo Whisper de OpenAI. Sirve por igual a cualquier
+ * proveedor que hable ese mismo formato multipart — hoy OpenAI y Groq
+ * (ver `transcriptionCatalog.ts`): Groq expone el endpoint byte a byte
+ * igual, solo cambia `baseUrl`/modelo/key, así que no hace falta un
+ * despachador por proveedor como el de `vision/callVisionModel.ts`.
  *
- * Devuelve `null` (no lanza) cuando Whisper no pudo sacar nada en limpio
- * (silencio, ruido, audio corrupto) — es un resultado válido, no un error;
- * el caller (`mediaIngestion.ts`) le pide al cliente que lo reenvíe o lo
- * escriba. Si la llamada a la API falla de verdad (red, auth, 5xx), sí
- * lanza — ese caso lo reintenta el consumer de la cola.
+ * Devuelve `null` (no lanza) cuando el proveedor no pudo sacar nada en
+ * limpio (silencio, ruido, audio corrupto) — es un resultado válido, no
+ * un error; el caller (`mediaIngestion.ts`) le pide al cliente que lo
+ * reenvíe o lo escriba. Si la llamada a la API falla de verdad (red,
+ * auth, 5xx), sí lanza — ese caso lo reintenta el consumer de la cola.
  *
- * No resuelve la API key acá adentro (a diferencia de `ocrComprobante.ts`,
- * que sí lee `env.anthropicApiKey` directo): la key de OpenAI es BYOK
- * configurable desde el panel (`settingsDirectory.ts` →
- * `getOpenAiConfig`), con `env.openaiApiKey` como fallback — esa resolución
- * vive en el caller (`mediaIngestion.ts`) para no acoplar esta función,
- * fácil de testear en aislado, a la base de datos.
+ * El proveedor/modelo/key ya viene resuelto por el caller (ver
+ * `media/resolveTranscriptionProvider.ts`, configurable por panel) — esta
+ * función no sabe ni le importa qué proveedor es.
  */
+export interface TranscriptionProviderConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
 
 const MIME_A_EXTENSION: Record<string, string> = {
   "audio/ogg": "ogg",
@@ -43,31 +48,35 @@ interface WhisperResponse {
   error?: { message?: string };
 }
 
-export async function transcribirAudio(buffer: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
-  if (!apiKey) {
-    throw new Error("No hay OPENAI_API_KEY configurada — no se puede transcribir audio");
+export async function transcribirAudio(
+  buffer: Buffer,
+  mimeType: string,
+  config: TranscriptionProviderConfig,
+): Promise<string | null> {
+  if (!config.apiKey) {
+    throw new Error("No hay una API key configurada para el proveedor de transcripción");
   }
 
   const formData = new FormData();
   const extension = extensionParaMime(mimeType);
   formData.append("file", new Blob([buffer], { type: mimeType }), `audio.${extension}`);
-  formData.append("model", "whisper-1");
+  formData.append("model", config.model);
   // Se fija español — la tienda es colombiana y el prompt del sistema ya
   // asume clientes hispanohablantes; sin esto Whisper a veces detecta mal
   // el idioma en audios cortos o con ruido de fondo.
   formData.append("language", "es");
 
-  const response = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
+  const response = await fetchWithTimeout(`${config.baseUrl}/audio/transcriptions`, {
     timeoutMs: env.transcriptionTimeoutMs,
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: { Authorization: `Bearer ${config.apiKey}` },
     body: formData,
   });
 
   const body = (await response.json().catch(() => ({}))) as WhisperResponse;
   if (!response.ok) {
     const detalle = body.error?.message ?? `HTTP ${response.status}`;
-    throw new Error(`OpenAI rechazó la transcripción del audio: ${detalle}`);
+    throw new Error(`El proveedor de transcripción rechazó el audio: ${detalle}`);
   }
 
   const texto = body.text?.trim();

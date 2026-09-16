@@ -278,6 +278,63 @@ export async function clearOpenAiConfig(): Promise<void> {
 }
 
 /**
+ * Config de proveedor de transcripción de audio (Groq como alternativa a
+ * OpenAI Whisper, ver `media/transcriptionCatalog.ts`) — columnas nuevas,
+ * independientes de `openai_api_key_encrypted` (arriba). El puente entre
+ * las dos vive en `media/resolveTranscriptionProvider.ts`, no acá: esta
+ * función devuelve exactamente lo que hay en las columnas nuevas, `null`
+ * si nunca se guardó nada explícito desde esta feature (aunque
+ * `openai_api_key_encrypted` sí tenga un valor del flujo legado).
+ */
+export interface TranscriptionConfig {
+  provider: string | null;
+  model: string | null;
+  apiKey: string | null;
+}
+
+export async function getTranscriptionConfig(): Promise<TranscriptionConfig> {
+  const result = await pool.query<{
+    transcription_provider: string | null;
+    transcription_model: string | null;
+    transcription_api_key_encrypted: string | null;
+  }>("SELECT transcription_provider, transcription_model, transcription_api_key_encrypted FROM settings");
+  const row = result.rows[0];
+  return {
+    provider: row?.transcription_provider ?? null,
+    model: row?.transcription_model ?? null,
+    apiKey: row?.transcription_api_key_encrypted ? decryptSecret(row.transcription_api_key_encrypted) : null,
+  };
+}
+
+/**
+ * Guarda la elección de proveedor/modelo/API key de transcripción —
+ * llamar solo después de validar la combinación con una llamada de
+ * prueba real (ver "Probar y guardar" en adminPanel.ts), nunca antes.
+ */
+export async function saveTranscriptionConfig(config: {
+  provider: string;
+  model: string;
+  apiKey?: string | null;
+}): Promise<void> {
+  await pool.query(
+    "UPDATE settings SET transcription_provider = $1, transcription_model = $2, transcription_api_key_encrypted = $3",
+    [config.provider, config.model, config.apiKey ? encryptSecret(config.apiKey) : null],
+  );
+}
+
+/**
+ * Vuelve al "Automático" del panel — ojo, esto NO borra
+ * `openai_api_key_encrypted`: si esa key legada sigue teniendo un valor,
+ * `resolveTranscriptionProvider` la sigue usando (ver el puente ahí).
+ * Limpiar de verdad la key de Whisper sigue siendo `clearOpenAiConfig`.
+ */
+export async function clearTranscriptionConfig(): Promise<void> {
+  await pool.query(
+    "UPDATE settings SET transcription_provider = NULL, transcription_model = NULL, transcription_api_key_encrypted = NULL",
+  );
+}
+
+/**
  * Overrides de escalamiento (ver
  * migrations/0014_tenants_escalation_config.cjs, columna conservada tal
  * cual en el rename a `settings`) — `null` si no se configuró nada, en
