@@ -98,6 +98,7 @@ import {
 import { getConsumerLastPollAt } from "../orchestrator/consumer.js";
 import { renderReviewForm, shareReviewPublicly, submitReview } from "../reviews/reviewView.js";
 import { listConnectionsWithCredentials, type Channel } from "../shared/db/connectionsDirectory.js";
+import { getInboundMedia } from "../shared/db/inboundMediaDirectory.js";
 import { pool } from "../shared/db/pool.js";
 import { logger } from "../shared/observability/logger.js";
 import { redis } from "../shared/redis/client.js";
@@ -613,6 +614,20 @@ export async function buildServer() {
     const { orderId } = request.params as { orderId: string };
     await cancelarPedido(orderId, request.admin!);
     return reply.status(303).redirect("/admin/pedidos?guardado=1");
+  });
+
+  // Sirve la imagen de un media entrante (comprobante de transferencia, o
+  // foto de producto) por id — antes solo se embebía como data URI en el
+  // HTML de la sección de comprobantes escalados; la tabla de Pedidos
+  // completa puede tener muchas filas y no conviene inflar el HTML inicial
+  // con cada imagen, así que cada fila la carga on-demand desde acá.
+  app.get("/admin/media/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const media = await getInboundMedia(id);
+    if (!media) {
+      return reply.status(404).send();
+    }
+    return reply.type(media.mimeType).send(media.buffer);
   });
 
   app.post("/admin/comprobantes/:orderId/aprobar", async (request, reply) => {

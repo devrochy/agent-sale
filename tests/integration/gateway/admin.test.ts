@@ -2597,6 +2597,137 @@ describe("panel admin", () => {
     });
   });
 
+  describe("pedidos — ver comprobante desde la fila", () => {
+    let customerId: string;
+    let conversationId: string;
+    let orderPendienteId: string;
+    let orderAprobadoId: string;
+    let inboundMediaId: string;
+    let receiptPendienteId: string;
+
+    beforeAll(async () => {
+      const customer = await adminPool.query<{ id: string }>(
+        `INSERT INTO customers (external_id, name) VALUES ($1, 'Cliente Con Comprobante') RETURNING id`,
+        [`whatsapp:+5730000${Date.now().toString().slice(-6)}`],
+      );
+      customerId = customer.rows[0]!.id;
+      const conversation = await adminPool.query<{ id: string }>(
+        `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+        [customerId],
+      );
+      conversationId = conversation.rows[0]!.id;
+      const quote = await adminPool.query<{ id: string }>(
+        `INSERT INTO quotes (conversation_id, customer_id, subtotal, total) VALUES ($1, $2, 200000, 200000) RETURNING id`,
+        [conversationId, customerId],
+      );
+
+      const orderPendiente = await adminPool.query<{ id: string }>(
+        `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, payment_status, delivery_method, idempotency_key, total)
+         VALUES ($1, $2, $3, 'transferencia', 'pendiente', 'recoger_en_tienda', 'admin-test-comprobante-pendiente', 200000) RETURNING id`,
+        [quote.rows[0]!.id, conversationId, customerId],
+      );
+      orderPendienteId = orderPendiente.rows[0]!.id;
+
+      const media = await adminPool.query<{ id: string }>(
+        `INSERT INTO inbound_media (conversation_id, kind, mime_type, data_base64) VALUES ($1, 'image', 'image/jpeg', $2) RETURNING id`,
+        [conversationId, Buffer.from("comprobante-fake").toString("base64")],
+      );
+      inboundMediaId = media.rows[0]!.id;
+
+      const receiptPendiente = await adminPool.query<{ id: string }>(
+        `INSERT INTO payment_receipts (order_id, inbound_media_id, ocr_monto, ocr_cuenta, resultado)
+         VALUES ($1, $2, 200000, '111-222333-44', 'rechazado_auto') RETURNING id`,
+        [orderPendienteId, inboundMediaId],
+      );
+      receiptPendienteId = receiptPendiente.rows[0]!.id;
+
+      // Segundo pedido, ya resuelto (aprobado) — el comprobante debe seguir
+      // viéndose (historial), pero sin los botones de Aprobar/Rechazar.
+      const quoteAprobado = await adminPool.query<{ id: string }>(
+        `INSERT INTO quotes (conversation_id, customer_id, subtotal, total) VALUES ($1, $2, 150000, 150000) RETURNING id`,
+        [conversationId, customerId],
+      );
+      const orderAprobado = await adminPool.query<{ id: string }>(
+        `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, payment_status, delivery_method, idempotency_key, total)
+         VALUES ($1, $2, $3, 'transferencia', 'pagado', 'recoger_en_tienda', 'admin-test-comprobante-aprobado', 150000) RETURNING id`,
+        [quoteAprobado.rows[0]!.id, conversationId, customerId],
+      );
+      orderAprobadoId = orderAprobado.rows[0]!.id;
+      const mediaAprobado = await adminPool.query<{ id: string }>(
+        `INSERT INTO inbound_media (conversation_id, kind, mime_type, data_base64) VALUES ($1, 'image', 'image/jpeg', $2) RETURNING id`,
+        [conversationId, Buffer.from("comprobante-aprobado-fake").toString("base64")],
+      );
+      await adminPool.query(
+        `INSERT INTO payment_receipts (order_id, inbound_media_id, ocr_monto, ocr_cuenta, resultado)
+         VALUES ($1, $2, 150000, '111-222333-44', 'aprobado_auto')`,
+        [orderAprobadoId, mediaAprobado.rows[0]!.id],
+      );
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM payment_receipts WHERE order_id IN ($1, $2)`, [orderPendienteId, orderAprobadoId]);
+      await adminPool.query(`DELETE FROM inbound_media WHERE conversation_id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM orders WHERE id IN ($1, $2)`, [orderPendienteId, orderAprobadoId]);
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
+    });
+
+    it("la fila de un pedido con comprobante muestra el botón 'Ver comprobante' con la imagen y, si sigue pendiente, Aprobar/Rechazar", async () => {
+      const response = await app.inject({ method: "GET", url: "/admin/pedidos", headers: { cookie: sessionCookie } });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(`data-open-dialog="comprobante-${orderPendienteId}"`);
+      expect(response.body).toContain(`<img src="/admin/media/${inboundMediaId}"`);
+      expect(response.body).toContain(`action="/admin/comprobantes/${orderPendienteId}/aprobar"`);
+      expect(response.body).toContain(`action="/admin/comprobantes/${orderPendienteId}/rechazar"`);
+      expect(response.body).toContain(`value="${receiptPendienteId}"`);
+    });
+
+    it("un pedido ya aprobado sigue mostrando el comprobante (historial), sin Aprobar/Rechazar", async () => {
+      const response = await app.inject({ method: "GET", url: "/admin/pedidos", headers: { cookie: sessionCookie } });
+      expect(response.body).toContain(`data-open-dialog="comprobante-${orderAprobadoId}"`);
+      expect(response.body).not.toContain(`action="/admin/comprobantes/${orderAprobadoId}/aprobar"`);
+      expect(response.body).not.toContain(`action="/admin/comprobantes/${orderAprobadoId}/rechazar"`);
+    });
+  });
+
+  describe("GET /admin/media/:id", () => {
+    it("sirve el contenido con el content-type real", async () => {
+      const media = await adminPool.query<{ id: string }>(
+        `INSERT INTO inbound_media (conversation_id, kind, mime_type, data_base64)
+         VALUES ((SELECT id FROM conversations LIMIT 1), 'image', 'image/png', $1) RETURNING id`,
+        [Buffer.from("imagen-fake").toString("base64")],
+      );
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: `/admin/media/${media.rows[0]!.id}`,
+          headers: { cookie: sessionCookie },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["content-type"]).toBe("image/png");
+        expect(response.rawPayload.toString()).toBe("imagen-fake");
+      } finally {
+        await adminPool.query(`DELETE FROM inbound_media WHERE id = $1`, [media.rows[0]!.id]);
+      }
+    });
+
+    it("id inexistente -> 404", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/media/00000000-0000-0000-0000-000000000000",
+        headers: { cookie: sessionCookie },
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it("sin sesión -> redirige a /login, igual que cualquier otra ruta /admin/*", async () => {
+      const response = await app.inject({ method: "GET", url: "/admin/media/00000000-0000-0000-0000-000000000000" });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/login");
+    });
+  });
+
   describe("cuentas para transferencia", () => {
     it("guarda las cuentas y descarta las filas vacías", async () => {
       const response = await app.inject({
