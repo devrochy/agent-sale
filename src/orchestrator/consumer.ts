@@ -10,6 +10,20 @@ import { appendMessage, resolveConversation } from "./memory.js";
 import { tryCaptureSurveyReply } from "./satisfactionSurvey.js";
 import { sendTurnBubbles } from "./sendTurnResult.js";
 
+// Conexión dedicada para el XREADGROUP con BLOCK (ver pollOnce más abajo):
+// ioredis no puede intercalar otros comandos (ej. el PING de /healthz, ver
+// gateway/server.ts) en la misma conexión mientras un comando bloqueante
+// está esperando — sin esto, el ping quedaba encolado detrás del BLOCK de
+// hasta 5s y /healthz reportaba "redis: error" de forma intermitente
+// aunque Redis estuviera sano. El resto de los comandos de este archivo
+// (xack/xadd/xpending/xautoclaim, y el primer xreadgroup sin BLOCK) son
+// cortos y se quedan en la conexión compartida `redis`.
+const blockingRedis = redis.duplicate();
+
+export async function closeConsumerRedis(): Promise<void> {
+  await blockingRedis.quit();
+}
+
 const CONSUMER_GROUP = "orchestrator-group";
 const CONSUMER_NAME = `orchestrator-${process.pid}`;
 const DEAD_LETTER_STREAM = `${INBOUND_STREAM}:dead-letter`;
@@ -312,7 +326,7 @@ async function pollOnce(): Promise<void> {
   )) as ReadGroupResult;
   await handleReadResult(pending);
 
-  const fresh = (await redis.xreadgroup(
+  const fresh = (await blockingRedis.xreadgroup(
     "GROUP",
     CONSUMER_GROUP,
     CONSUMER_NAME,

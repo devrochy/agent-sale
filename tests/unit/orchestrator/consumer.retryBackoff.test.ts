@@ -10,7 +10,11 @@ const xack = vi.fn();
 const xadd = vi.fn();
 
 vi.mock("../../../src/shared/redis/client.js", () => ({
-  redis: { xpending, xack, xadd, xgroup: vi.fn(), xreadgroup: vi.fn(), xautoclaim: vi.fn() },
+  // duplicate() nunca se llama en este test (no corre pollOnce), pero
+  // consumer.ts la invoca a nivel de módulo (blockingRedis) — sin este
+  // stub, el import de consumer.ts falla con "redis.duplicate is not a
+  // function".
+  redis: { xpending, xack, xadd, xgroup: vi.fn(), xreadgroup: vi.fn(), xautoclaim: vi.fn(), duplicate: () => ({ xreadgroup: vi.fn(), quit: vi.fn().mockResolvedValue("OK") }) },
 }));
 // Primera línea del try de processEntry — rechazarla es el camino más
 // corto para llegar al catch sin tener que simular todo el resto del
