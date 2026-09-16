@@ -3,6 +3,7 @@ import type { InboundMessage } from "../gateway/queue.js";
 import { sendToConversation } from "../gateway/sendMessage.js";
 import { buscarPedidoPendienteTransferencia, procesarComprobante } from "../domains/commerce/procesarComprobante.js";
 import { describirImagenProducto } from "../domains/catalog/describirImagenProducto.js";
+import { clasificarImagenEntrante } from "../vision/clasificarImagenEntrante.js";
 import { transcribirAudio } from "../media/transcribirAudio.js";
 import { resolveTranscriptionProvider } from "../media/resolveTranscriptionProvider.js";
 import { getCachedMediaResult, setCachedMediaResult } from "../shared/mediaResultCache.js";
@@ -35,11 +36,15 @@ export type MediaResultado =
   | { kind: "continuar_como_texto"; texto: string };
 
 /**
- * Ruteo determinístico de medios entrantes (ver docs del plan "medios
- * entrantes"). Vive separado de `orchestrator/consumer.ts` porque las
- * decisiones de acá (comprobante de pago, transcripción) son
- * financieras/de auditoría o mecánicas, no conversacionales, y varias no
- * deben pasar por el LLM en absoluto.
+ * Ruteo de medios entrantes (ver docs del plan "medios entrantes"). Vive
+ * separado de `orchestrator/consumer.ts` porque las decisiones de acá
+ * (comprobante de pago, transcripción) son financieras/de auditoría o
+ * mecánicas, no conversacionales, y varias no deben pasar por el LLM en
+ * absoluto. La bifurcación comprobante-vs-producto es principalmente por
+ * estado de negocio (`buscarPedidoPendienteTransferencia`), pero con un
+ * pedido genuinamente pendiente se confirma con una clasificación de
+ * visión antes de tratar la foto como comprobante — ver
+ * `clasificarImagenConCache` más abajo.
  */
 export async function procesarMediaEntrante(
   message: InboundMessage,
@@ -96,10 +101,12 @@ async function procesarImagenEntrante(
     origin,
   );
 
-  // Determinístico: si hay un pedido esperando comprobante, la foto ES un
-  // comprobante — no hace falta (ni conviene) preguntarle al cliente qué
-  // es. Ver docblock del archivo: es un control financiero, no una
-  // decisión del LLM.
+  // Si hay un pedido esperando comprobante (ya excluye los escalados a
+  // revisión manual — ver docblock de `buscarPedidoPendienteTransferencia`),
+  // la foto es PROBABLEMENTE un comprobante, pero no se asume a ciegas: más
+  // abajo se clasifica el contenido antes de confirmar la rama, para no
+  // tratar como comprobante la foto de un producto que el cliente manda
+  // mientras tiene un pago real pendiente.
   const pedido = await buscarPedidoPendienteTransferencia(customerId);
 
   const connection = await resolverConexion(
@@ -126,17 +133,49 @@ async function procesarImagenEntrante(
   const visionConfig = await resolveVisionProvider();
 
   if (pedido) {
-    return procesarComoComprobante(
-      pedido.orderId,
-      inboundMediaId,
-      media,
-      conversationId,
-      message.messageSid,
-      visionConfig,
-      entryLogger,
+    const tipo = await clasificarImagenConCache(message.messageSid, media, visionConfig, entryLogger);
+    if (tipo === "comprobante") {
+      return procesarComoComprobante(
+        pedido.orderId,
+        inboundMediaId,
+        media,
+        conversationId,
+        message.messageSid,
+        visionConfig,
+        entryLogger,
+      );
+    }
+    entryLogger.info(
+      { event: "imagen_entrante.reclasificada_como_producto", order_id: pedido.orderId },
+      "Había un pedido esperando comprobante, pero la foto se clasificó como producto — sigue como búsqueda",
     );
   }
   return procesarComoBusquedaDeProducto(inboundMediaId, media, conversationId, message.messageSid, visionConfig, entryLogger);
+}
+
+/**
+ * Cache de idempotencia igual que el resto del pipeline (ver
+ * `shared/mediaResultCache.ts`), pero con una clave derivada distinta a la
+ * que usan `analizarComprobanteConCache`/`describirImagenProducto` para el
+ * mismo `messageSid` — ambas usan la clave "pelada", y si esta también la
+ * usara, un reintento leería (o pisaría) el resultado de la rama que ya se
+ * ejecutó después, no el de esta clasificación.
+ */
+async function clasificarImagenConCache(
+  messageSid: string,
+  media: { buffer: Buffer; mimeType: string },
+  visionConfig: VisionProviderConfig,
+  entryLogger: EntryLogger,
+): Promise<"comprobante" | "producto"> {
+  const claveCache = `${messageSid}:clasificacion`;
+  const cacheado = await getCachedMediaResult<"comprobante" | "producto">(claveCache);
+  if (cacheado) {
+    entryLogger.info({ event: "imagen_entrante.clasificacion_cacheada" }, "Reusando clasificación ya hecha (reintento)");
+    return cacheado.value;
+  }
+  const tipo = await clasificarImagenEntrante(media.buffer, media.mimeType, visionConfig);
+  await setCachedMediaResult(claveCache, tipo);
+  return tipo;
 }
 
 async function procesarComoComprobante(

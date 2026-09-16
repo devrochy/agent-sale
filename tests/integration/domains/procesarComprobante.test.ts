@@ -299,6 +299,15 @@ describe("procesarComprobante", () => {
 
     const pendientes = await listReceiptsPendientesDeRevision();
     expect(pendientes.some((r) => r.orderId === orderId)).toBe(true);
+
+    // El pedido sigue `payment_status='pendiente'` (escalar() no lo cambia),
+    // pero ya no debe contar como "esperando comprobante": el ruteo de
+    // medios entrantes no debe volver a tratar la próxima foto de este
+    // cliente como el comprobante de ESTE pedido — ver mediaIngestion.ts.
+    // (Puede devolver otro pedido pendiente distinto, de otro test del
+    // mismo customerId — lo que no debe pasar es que devuelva este.)
+    const encontrado = await buscarPedidoPendienteTransferencia(customerId);
+    expect(encontrado?.orderId).not.toBe(orderId);
   });
 
   it("un segundo comprobante válido sobre un pedido ya aprobado no duplica el registro (marcarPagoAprobado ya no está pendiente)", async () => {
