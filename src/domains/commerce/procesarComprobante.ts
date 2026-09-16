@@ -36,7 +36,16 @@ export interface PedidoPendienteTransferencia {
   publicOrderNumber: string;
 }
 
-/** Usado por el ruteo de medios entrantes para decidir si una imagen es (probablemente) un comprobante. */
+/**
+ * Usado por el ruteo de medios entrantes para decidir si una imagen es
+ * (probablemente) un comprobante. Excluye pedidos ya escalados a revisión
+ * manual (último `payment_receipt.resultado = 'pendiente_revision'`, mismo
+ * criterio que `listReceiptsPendientesDeRevision`): sin esto, un pedido que
+ * agotó los reintentos automáticos se queda `payment_status='pendiente'`
+ * para siempre (`escalar()` no actualiza `orders`), y cualquier foto futura
+ * del mismo cliente —sin importar de qué se trate— seguía cayendo acá y
+ * re-escalando en vez de buscarse como producto.
+ */
 export async function buscarPedidoPendienteTransferencia(
   customerId: string,
 ): Promise<PedidoPendienteTransferencia | null> {
@@ -47,9 +56,14 @@ export async function buscarPedidoPendienteTransferencia(
       public_order_number: string;
     }>(
       `SELECT id, conversation_id, public_order_number
-         FROM orders
+         FROM orders o
         WHERE customer_id = $1 AND payment_method = 'transferencia'
           AND payment_status = 'pendiente' AND status = 'abierto'
+          AND (
+            SELECT pr.resultado FROM payment_receipts pr
+             WHERE pr.order_id = o.id
+             ORDER BY pr.created_at DESC LIMIT 1
+          ) IS DISTINCT FROM 'pendiente_revision'
         ORDER BY created_at DESC
         LIMIT 1`,
       [customerId],

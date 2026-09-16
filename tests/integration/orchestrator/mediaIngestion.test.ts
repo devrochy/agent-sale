@@ -18,12 +18,16 @@ vi.mock("../../../src/payments/ocrComprobante.js", () => ({
 vi.mock("../../../src/domains/catalog/describirImagenProducto.js", () => ({
   describirImagenProducto: vi.fn(),
 }));
+vi.mock("../../../src/vision/clasificarImagenEntrante.js", () => ({
+  clasificarImagenEntrante: vi.fn().mockResolvedValue("comprobante"),
+}));
 
 import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { downloadMedia } from "../../../src/gateway/channels/meta/media.js";
 import { transcribirAudio } from "../../../src/media/transcribirAudio.js";
 import { analizarComprobante } from "../../../src/payments/ocrComprobante.js";
 import { describirImagenProducto } from "../../../src/domains/catalog/describirImagenProducto.js";
+import { clasificarImagenEntrante } from "../../../src/vision/clasificarImagenEntrante.js";
 import { crearPedido } from "../../../src/domains/commerce/crearPedido.js";
 import { generarCotizacion } from "../../../src/domains/commerce/generarCotizacion.js";
 import { procesarMediaEntrante } from "../../../src/orchestrator/mediaIngestion.js";
@@ -110,6 +114,8 @@ afterEach(() => {
   vi.mocked(transcribirAudio).mockReset();
   vi.mocked(analizarComprobante).mockReset();
   vi.mocked(describirImagenProducto).mockReset();
+  vi.mocked(clasificarImagenEntrante).mockReset();
+  vi.mocked(clasificarImagenEntrante).mockResolvedValue("comprobante");
   entryLogger.info.mockReset();
   entryLogger.warn.mockReset();
 });
@@ -243,22 +249,76 @@ describe("procesarMediaEntrante — imagen", () => {
     expect(texto).toContain("No pudimos reconocer bien qué buscás en esa foto");
   });
 
-  it("con pedido pendiente por transferencia -> procesado_completo, corre todo el flujo de OCR", async () => {
+  it("con pedido pendiente por transferencia y la clasificación confirma comprobante -> procesado_completo, corre todo el flujo de OCR", async () => {
     await saveTransferAccounts([CUENTA_TIENDA]);
     await nuevoPedidoPorTransferencia();
     vi.mocked(sendToConversation).mockClear(); // limpia el auto-envío de datos de transferencia de crear_pedido
 
     vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("comprobante"), mimeType: "image/jpeg" });
+    vi.mocked(clasificarImagenEntrante).mockResolvedValueOnce("comprobante");
     vi.mocked(analizarComprobante).mockResolvedValueOnce({ monto: 150000, cuentaDestino: "555-666777-88" });
 
     const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-2", mimeType: "image/jpeg" } });
     const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
 
     expect(resultado).toEqual({ kind: "procesado_completo" });
-    // El ruteo es determinístico: con un pedido esperando comprobante, la
-    // foto SIEMPRE se trata como comprobante — nunca se le pregunta a la
-    // visión "qué producto es esto".
     expect(describirImagenProducto).not.toHaveBeenCalled();
+  });
+
+  it("con pedido pendiente por transferencia pero la clasificación dice que es un producto -> sigue como búsqueda de producto", async () => {
+    await saveTransferAccounts([CUENTA_TIENDA]);
+    const orderId = await nuevoPedidoPorTransferencia();
+    vi.mocked(sendToConversation).mockClear();
+
+    vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("foto-producto"), mimeType: "image/jpeg" });
+    vi.mocked(clasificarImagenEntrante).mockResolvedValueOnce("producto");
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce("casco integral rojo");
+
+    const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-2b", mimeType: "image/jpeg" } });
+    const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(resultado).toEqual({
+      kind: "continuar_como_texto",
+      texto: "[Foto de producto] El cliente mandó una foto. Descripción automática: casco integral rojo",
+    });
+    expect(analizarComprobante).not.toHaveBeenCalled();
+
+    // Este pedido quedó `pendiente` (nunca pasó por el flujo de comprobante)
+    // — se resuelve a mano para no contaminar los tests siguientes de este
+    // mismo customerId, que asumen "sin pedido pendiente".
+    await adminPool.query(`UPDATE orders SET payment_status = 'pagado' WHERE id = $1`, [orderId]);
+  });
+
+  it("un pedido pendiente ya escalado (último receipt pendiente_revision) no bloquea una foto nueva de producto", async () => {
+    await saveTransferAccounts([CUENTA_TIENDA]);
+    const orderId = await nuevoPedidoPorTransferencia();
+    const inboundMedia = await adminPool.query<{ id: string }>(
+      `INSERT INTO inbound_media (conversation_id, kind, mime_type, data_base64)
+       VALUES ((SELECT conversation_id FROM orders WHERE id = $1), 'image', 'image/jpeg', '')
+       RETURNING id`,
+      [orderId],
+    );
+    await adminPool.query(
+      `INSERT INTO payment_receipts (order_id, inbound_media_id, ocr_monto, ocr_cuenta, resultado)
+       VALUES ($1, $2, NULL, NULL, 'pendiente_revision')`,
+      [orderId, inboundMedia.rows[0]!.id],
+    );
+    vi.mocked(sendToConversation).mockClear();
+
+    vi.mocked(downloadMedia).mockResolvedValueOnce({ buffer: Buffer.from("foto-producto"), mimeType: "image/jpeg" });
+    vi.mocked(describirImagenProducto).mockResolvedValueOnce("guantes negros talla M");
+
+    const mensaje = nuevoMensaje({ media: { type: "image", mediaId: "media-img-2c", mimeType: "image/jpeg" } });
+    const resultado = await procesarMediaEntrante(mensaje, { connectionId, channel: "whatsapp" }, entryLogger);
+
+    expect(resultado).toEqual({
+      kind: "continuar_como_texto",
+      texto: "[Foto de producto] El cliente mandó una foto. Descripción automática: guantes negros talla M",
+    });
+    // No se llegó a clasificar ni a analizar como comprobante: el pedido
+    // escalado ya no cuenta como "esperando comprobante".
+    expect(clasificarImagenEntrante).not.toHaveBeenCalled();
+    expect(analizarComprobante).not.toHaveBeenCalled();
   });
 
   it("un reintento con el MISMO messageSid reusa la descripción ya pagada, no vuelve a llamar a la visión", async () => {
