@@ -2404,6 +2404,94 @@ describe("panel admin", () => {
     });
   });
 
+  describe("configuración — OCR de comprobantes y fotos", () => {
+    const fetchMock = vi.fn();
+
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(async () => {
+      vi.unstubAllGlobals();
+      await adminPool.query(`UPDATE settings SET ocr_provider = NULL, ocr_model = NULL, ocr_api_key_encrypted = NULL`);
+    });
+
+    it("proveedor Gemini con key nueva se prueba, se guarda cifrada y el panel muestra el hint enmascarado", async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }),
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/ocr",
+        payload: new URLSearchParams({
+          provider: "gemini",
+          model: "gemini-2.5-flash-lite",
+          apiKey: "AIza-test-abcd1234",
+        }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/configuracion?guardado=1");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain("generateContent?key=AIza-test-abcd1234");
+
+      const row = await adminPool.query<{ ocr_provider: string | null; ocr_api_key_encrypted: string | null }>(
+        `SELECT ocr_provider, ocr_api_key_encrypted FROM settings`,
+      );
+      expect(row.rows[0]!.ocr_provider).toBe("gemini");
+      expect(row.rows[0]!.ocr_api_key_encrypted).toBeTruthy();
+      expect(row.rows[0]!.ocr_api_key_encrypted).not.toContain("AIza-test-abcd1234"); // cifrada, no en claro
+
+      const configPage = await app.inject({ method: "GET", url: "/admin/configuracion", headers: { cookie: sessionCookie } });
+      expect(configPage.body).toContain("••••1234");
+    });
+
+    it("el proveedor elegido rechaza la key (HTTP no-ok) — no se guarda, vuelve con error", async () => {
+      fetchMock.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: "bad key" }), text: async () => "bad key" });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/ocr",
+        payload: new URLSearchParams({ provider: "gemini", model: "gemini-2.5-flash-lite", apiKey: "AIza-invalida" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+
+      const row = await adminPool.query<{ ocr_provider: string | null }>(`SELECT ocr_provider FROM settings`);
+      expect(row.rows[0]!.ocr_provider).toBeNull();
+    });
+
+    it("proveedor sin key propia ni key de sistema (DeepSeek) devuelve error sin llamar a la red", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/ocr",
+        payload: new URLSearchParams({ provider: "deepseek", model: "deepseek-flash", apiKey: "" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("error=");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("'Automático' (provider vacío) vuelve al default de plataforma sin llamar a la red", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/ocr",
+        payload: new URLSearchParams({ provider: "", model: "", apiKey: "" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/configuracion?guardado=1");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe("pedidos — estados, filtros y entrega", () => {
     it("la tabla trae filtros por estado, pago y entrega", async () => {
       const response = await app.inject({

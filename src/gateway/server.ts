@@ -41,6 +41,7 @@ import {
   guardarCredencialesConexion,
   guardarInfoLead,
   guardarModeloIa,
+  guardarOcrConfig,
   guardarOpenAiConfig,
   guardarPerfil,
   guardarPermisosColaborador,
@@ -836,6 +837,23 @@ export async function buildServer() {
       model: model ?? "",
       apiKey: apiKey ?? "",
       routingMode: routingMode ?? "",
+    });
+    const redirectUrl = result.ok
+      ? "/admin/configuracion?guardado=1"
+      : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
+    return reply.status(303).redirect(redirectUrl);
+  });
+
+  app.post("/admin/configuracion/ocr", async (request, reply) => {
+    const { provider, model, apiKey } = request.body as {
+      provider?: string;
+      model?: string;
+      apiKey?: string;
+    };
+    const result = await guardarOcrConfig({
+      provider: provider ?? "",
+      model: model ?? "",
+      apiKey: apiKey ?? "",
     });
     const redirectUrl = result.ok
       ? "/admin/configuracion?guardado=1"
