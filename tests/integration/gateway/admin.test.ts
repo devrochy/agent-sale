@@ -2692,6 +2692,111 @@ describe("panel admin", () => {
     });
   });
 
+  describe("pedidos — cancelación de un pedido pagado", () => {
+    let customerId: string;
+    let conversationId: string;
+    let orderId: string;
+
+    beforeAll(async () => {
+      const customer = await adminPool.query<{ id: string }>(
+        `INSERT INTO customers (external_id, name) VALUES ($1, 'Cliente Cancelacion Panel') RETURNING id`,
+        [`whatsapp:+5731000${Date.now().toString().slice(-6)}`],
+      );
+      customerId = customer.rows[0]!.id;
+      const conversation = await adminPool.query<{ id: string }>(
+        `INSERT INTO conversations (customer_id) VALUES ($1) RETURNING id`,
+        [customerId],
+      );
+      conversationId = conversation.rows[0]!.id;
+      const quote = await adminPool.query<{ id: string }>(
+        `INSERT INTO quotes (conversation_id, customer_id, subtotal, total) VALUES ($1, $2, 300000, 300000) RETURNING id`,
+        [conversationId, customerId],
+      );
+      const order = await adminPool.query<{ id: string }>(
+        `INSERT INTO orders (quote_id, conversation_id, customer_id, payment_method, payment_status, delivery_method, idempotency_key, total)
+         VALUES ($1, $2, $3, 'transferencia', 'pagado', 'recoger_en_tienda', 'admin-test-cancelacion-panel', 300000) RETURNING id`,
+        [quote.rows[0]!.id, conversationId, customerId],
+      );
+      orderId = order.rows[0]!.id;
+    });
+
+    afterEach(() => {
+      vi.mocked(sendToConversation).mockReset();
+    });
+
+    afterAll(async () => {
+      await adminPool.query(`DELETE FROM orders WHERE id = $1`, [orderId]);
+      await adminPool.query(`DELETE FROM quotes WHERE conversation_id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM messages WHERE conversation_id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+      await adminPool.query(`DELETE FROM customers WHERE id = $1`, [customerId]);
+    });
+
+    it("cancelar un pedido pagado desde el panel no lo cancela de inmediato, queda pendiente de aprobación en la fila", async () => {
+      const cancelar = await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/cancelar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(cancelar.statusCode).toBe(303);
+
+      const order = await adminPool.query<{ status: string; cancellation_requested_at: Date | null }>(
+        `SELECT status, cancellation_requested_at FROM orders WHERE id = $1`,
+        [orderId],
+      );
+      expect(order.rows[0]!.status).toBe("abierto");
+      expect(order.rows[0]!.cancellation_requested_at).not.toBeNull();
+
+      const pedidos = await app.inject({ method: "GET", url: "/admin/pedidos", headers: { cookie: sessionCookie } });
+      expect(pedidos.body).toContain(`data-open-dialog="cancelacion-${orderId}"`);
+      expect(pedidos.body).toContain(`action="/admin/pedidos/${orderId}/cancelacion/aprobar"`);
+      expect(pedidos.body).toContain(`action="/admin/pedidos/${orderId}/cancelacion/rechazar"`);
+
+      // No se escala a un ticket cuando la inicia el propio admin.
+      const handoff = await adminPool.query(`SELECT id FROM handoff_queue WHERE conversation_id = $1`, [
+        conversationId,
+      ]);
+      expect(handoff.rowCount).toBe(0);
+    });
+
+    it("rechazar la cancelación deja el pedido abierto normalmente y avisa al cliente", async () => {
+      vi.mocked(sendToConversation).mockResolvedValueOnce("SM_TEST_SID");
+
+      const rechazar = await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/cancelacion/rechazar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(rechazar.statusCode).toBe(303);
+
+      const order = await adminPool.query<{ status: string; cancellation_requested_at: Date | null }>(
+        `SELECT status, cancellation_requested_at FROM orders WHERE id = $1`,
+        [orderId],
+      );
+      expect(order.rows[0]!.status).toBe("abierto");
+      expect(order.rows[0]!.cancellation_requested_at).toBeNull();
+      expect(sendToConversation).toHaveBeenCalledWith(conversationId, expect.stringContaining("sigue en pie"));
+    });
+
+    it("aprobar la cancelación (tras volver a solicitarla) sí cancela el pedido de verdad", async () => {
+      await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/cancelar`,
+        headers: { cookie: sessionCookie },
+      });
+
+      const aprobar = await app.inject({
+        method: "POST",
+        url: `/admin/pedidos/${orderId}/cancelacion/aprobar`,
+        headers: { cookie: sessionCookie },
+      });
+      expect(aprobar.statusCode).toBe(303);
+
+      const order = await adminPool.query<{ status: string }>(`SELECT status FROM orders WHERE id = $1`, [orderId]);
+      expect(order.rows[0]!.status).toBe("cancelado");
+    });
+  });
+
   describe("GET /admin/media/:id", () => {
     it("sirve el contenido con el content-type real", async () => {
       const media = await adminPool.query<{ id: string }>(
