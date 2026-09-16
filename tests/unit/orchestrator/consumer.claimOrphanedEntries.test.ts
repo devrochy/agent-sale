@@ -14,7 +14,12 @@ const xpending = vi.fn();
 const xadd = vi.fn();
 
 vi.mock("../../../src/shared/redis/client.js", () => ({
-  redis: { xgroup, xreadgroup, xautoclaim, xack, xpending, xadd },
+  // duplicate() reusa el mismo spy `xreadgroup` — consumer.ts usa esa
+  // conexión "dedicada" solo para el xreadgroup con BLOCK (ver
+  // blockingRedis en consumer.ts), y las aserciones de este archivo
+  // cuentan las llamadas sobre el spy compartido, sin importar por cuál
+  // conexión hayan pasado.
+  redis: { xgroup, xreadgroup, xautoclaim, xack, xpending, xadd, duplicate: () => ({ xreadgroup, quit: vi.fn().mockResolvedValue("OK") }) },
 }));
 
 const { claimOrphanedEntries } = await import("../../../src/orchestrator/consumer.js");

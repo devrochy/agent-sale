@@ -1,7 +1,7 @@
 import { env } from "./config/env.js";
 import { buildServer } from "./gateway/server.js";
 import { startJobScheduler } from "./jobs/scheduler.js";
-import { requestConsumerShutdown, startConsumer } from "./orchestrator/consumer.js";
+import { closeConsumerRedis, requestConsumerShutdown, startConsumer } from "./orchestrator/consumer.js";
 import { requestDebounceSchedulerShutdown, startDebounceScheduler } from "./orchestrator/debounceScheduler.js";
 import { ensureConnectionsFromEnv, ensureSettingsRow } from "./shared/db/index.js";
 import { pool } from "./shared/db/pool.js";
@@ -119,6 +119,11 @@ async function handleShutdownSignal(signal: NodeJS.Signals): Promise<void> {
     await redis.quit();
   } catch (error) {
     logger.error({ error }, "Error cerrando la conexión de Redis durante el shutdown");
+  }
+  try {
+    await closeConsumerRedis();
+  } catch (error) {
+    logger.error({ error }, "Error cerrando la conexión de Redis dedicada del consumer durante el shutdown");
   }
   try {
     await pool.end();

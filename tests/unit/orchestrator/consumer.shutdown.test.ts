@@ -12,6 +12,9 @@ const xreadgroup = vi.fn();
 const xautoclaim = vi.fn();
 
 vi.mock("../../../src/shared/redis/client.js", () => ({
+  // duplicate() reusa el mismo spy `xreadgroup` (ver blockingRedis en
+  // consumer.ts) — las aserciones de este test cuentan llamadas sobre el
+  // spy compartido, sin importar por cuál conexión pasaron.
   redis: {
     xgroup,
     xreadgroup,
@@ -19,6 +22,7 @@ vi.mock("../../../src/shared/redis/client.js", () => ({
     xack: vi.fn(),
     xadd: vi.fn(),
     xpending: vi.fn(),
+    duplicate: () => ({ xreadgroup, quit: vi.fn().mockResolvedValue("OK") }),
   },
 }));
 
