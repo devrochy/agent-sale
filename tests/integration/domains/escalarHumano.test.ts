@@ -29,8 +29,18 @@ beforeAll(async () => {
   conversationA = conversationARes.rows[0]!.id;
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.mocked(sendWhatsAppMessage).mockReset();
+  // Con la guardia de ticket duplicado (escalarHumano no crea uno nuevo
+  // si ya hay uno 'queued'/'en_atencion' para la conversación), cada test
+  // necesita empezar sin tickets abiertos de un test anterior — sin esto,
+  // el segundo test en adelante encontraría el ticket del primero y no
+  // crearía uno propio.
+  await adminPool.query(
+    `DELETE FROM handoff_tokens WHERE handoff_id IN (SELECT id FROM handoff_queue WHERE conversation_id = $1)`,
+    [conversationA],
+  );
+  await adminPool.query(`DELETE FROM handoff_queue WHERE conversation_id = $1`, [conversationA]);
 });
 
 afterAll(async () => {
@@ -163,5 +173,27 @@ describe("escalarHumano", () => {
     expect(result.status).toBe("queued");
 
     await deleteAdmin(adminId);
+  });
+
+  it("una segunda escalada sobre la misma conversación con un ticket todavía abierto no duplica la fila ni reenvía la notificación", async () => {
+    // No se afirma un número absoluto de llamadas del primer escalamiento
+    // (depende de qué otros admins con recibeTickets ya existan en esta
+    // base) — lo que importa es que el SEGUNDO no agrega ninguna más.
+    const primero = await escalarHumano(conversationA, {
+      reason: "queja",
+      summary: "primer motivo de escalada",
+    });
+    vi.mocked(sendWhatsAppMessage).mockClear();
+
+    const segundo = await escalarHumano(conversationA, {
+      reason: "intentos_fallidos",
+      summary: "el cliente volvió a matchear otra regla antes de que tomaran el primer ticket",
+    });
+
+    expect(segundo.handoff_id).toBe(primero.handoff_id);
+    expect(sendWhatsAppMessage).not.toHaveBeenCalled();
+
+    const rows = await adminPool.query(`SELECT id FROM handoff_queue WHERE conversation_id = $1`, [conversationA]);
+    expect(rows.rowCount).toBe(1);
   });
 });

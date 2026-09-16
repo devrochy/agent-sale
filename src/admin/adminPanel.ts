@@ -4493,14 +4493,15 @@ export async function reasignarTicketABot(handoffId: string, admin: AdminRecord)
     if (!row) {
       return null;
     }
-    // Dos cosas, y las dos son imprescindibles para que el bot retome:
-    // `bot_paused`, por si el admin lo había pausado desde el toggle del
-    // detalle (Fase 18); y `state.step`, que quedó en "escalado" al abrirse
-    // el ticket — `loop.ts` corta antes de responder mientras siga ahí, así
-    // que sin quitarlo la conversación queda muda para siempre y reasignar
-    // no sirve de nada. El contador vuelve a cero en la misma sentencia: con
-    // los turnos acumulados que dispararon el escalamiento, el primer turno
-    // del bot lo re-escalaría de inmediato.
+    // `bot_paused` es lo único que de verdad silencia al bot (ver
+    // orchestrator/loop.ts/consumer.ts) — se apaga acá por si el admin lo
+    // había pausado desde el toggle del detalle (Fase 18) o al tomar el
+    // ticket. `state.step` (que quedó en "escalado" al abrirse el ticket)
+    // ya no es un gate, solo se limpia como higiene de estado. El contador
+    // sí importa: vuelve a cero en la misma sentencia porque, con los
+    // turnos acumulados que dispararon el escalamiento todavía en
+    // `turnos_sin_resolver`, el primer turno del bot lo re-escalaría de
+    // inmediato.
     await client.query(
       `UPDATE conversations
          SET bot_paused = false,
