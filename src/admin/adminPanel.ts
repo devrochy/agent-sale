@@ -128,11 +128,14 @@ import {
 } from "../orchestrator/llm/index.js";
 import { isTono } from "../orchestrator/toneBlocks.js";
 import { createPaymentLink, MIN_AMOUNT_COP } from "../payments/wompiClient.js";
+import { isVisionProviderKey, testVisionConfig, VISION_PROVIDER_CATALOG, type VisionProviderKey } from "../vision/index.js";
 import {
   clearLlmConfig,
+  clearOcrConfig,
   getBehaviorConfig,
   getBrandVoiceConfig,
   getLlmConfig,
+  getOcrConfig,
   getOpenAiConfig,
   getReportFrequencyDays,
   getReportRecipient,
@@ -142,6 +145,7 @@ import {
   saveBehaviorConfig,
   saveBrandVoiceConfig,
   saveLlmConfig,
+  saveOcrConfig,
   saveOpenAiConfig,
   saveReportFrequencyDays,
   saveReportRecipient,
@@ -2348,16 +2352,21 @@ const CLIENT_SCRIPT = `
   }
 
   /* ---------- Configuración: filtra el selector de Modelo según el Proveedor elegido ---------- */
-  var providerSelect = document.querySelector("[data-provider-select]");
-  if (providerSelect) {
+  // Reusable — invocada una vez por sección de proveedor configurable
+  // (Modelo de IA, OCR, más adelante Transcripción). El parámetro "key"
+  // distingue las instancias porque puede haber más de un selector de
+  // este tipo en la misma página (data-provider-select="llm" vs. ="ocr").
+  function wireProviderModelSelect(key, catalogElId) {
+    var providerSelect = document.querySelector("[data-provider-select='" + key + "']");
+    if (!providerSelect) return;
     var catalog = null;
-    var catalogEl = document.getElementById("llm-catalog-data");
+    var catalogEl = document.getElementById(catalogElId);
     if (catalogEl) {
       try { catalog = JSON.parse(catalogEl.textContent); } catch (e) { catalog = null; }
     }
-    var modelSelect = document.querySelector("[data-model-select]");
-    var apiKeyInput = document.querySelector("[data-apikey-input]");
-    var routingModeSelect = document.querySelector("[data-routing-mode-select]");
+    var modelSelect = document.querySelector("[data-model-select='" + key + "']");
+    var apiKeyInput = document.querySelector("[data-apikey-input='" + key + "']");
+    var routingModeSelect = document.querySelector("[data-routing-mode-select='" + key + "']");
     var initialModel = modelSelect.getAttribute("data-initial-model") || "";
 
     function placeholderOption(text) {
@@ -2379,7 +2388,8 @@ const CLIENT_SCRIPT = `
       if (apiKeyInput) apiKeyInput.placeholder = entry.keyPlaceholder || "";
       // "Cerebro del bot" (ver ADR-023): en automático, el modelo lo
       // elige el resolver por turno según la dificultad del mensaje — el
-      // select de Modelo no aplica, se deshabilita.
+      // select de Modelo no aplica, se deshabilita. Solo aplica a la
+      // sección de LLM (las demás no tienen routingModeSelect).
       if (routingModeSelect && routingModeSelect.value === "auto_dificultad") {
         placeholderOption("— se elige automáticamente según la dificultad del mensaje —");
         return;
@@ -2398,6 +2408,8 @@ const CLIENT_SCRIPT = `
     if (routingModeSelect) routingModeSelect.addEventListener("change", renderModelOptions);
     renderModelOptions();
   }
+  wireProviderModelSelect("llm", "llm-catalog-data");
+  wireProviderModelSelect("ocr", "ocr-catalog-data");
 
   /* ---------- copiar al portapapeles (ej. URL de webhook en Conexiones) ---------- */
   document.querySelectorAll("[data-copy]").forEach(function (btn) {
@@ -9199,7 +9211,7 @@ export async function guardarPermisosColaborador(
   await updateAdminPermissions(adminId, permissions);
 }
 
-/** Serializado para <script type="application/json"> — ver CLIENT_SCRIPT, filtro de Modelo según Proveedor. */
+/** Serializado para <script type="application/json"> — ver CLIENT_SCRIPT, wireProviderModelSelect. */
 function llmCatalogForClient(): Record<ProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }> {
   return Object.fromEntries(
     (Object.keys(PROVIDER_CATALOG) as ProviderKey[]).map((key) => [
@@ -9207,6 +9219,16 @@ function llmCatalogForClient(): Record<ProviderKey, { models: { id: string; labe
       { models: PROVIDER_CATALOG[key].models, keyPlaceholder: PROVIDER_CATALOG[key].keyPlaceholder },
     ]),
   ) as Record<ProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }>;
+}
+
+/** Mismo criterio que llmCatalogForClient, para el selector de proveedor de OCR/visión. */
+function ocrCatalogForClient(): Record<VisionProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }> {
+  return Object.fromEntries(
+    (Object.keys(VISION_PROVIDER_CATALOG) as VisionProviderKey[]).map((key) => [
+      key,
+      { models: VISION_PROVIDER_CATALOG[key].models, keyPlaceholder: VISION_PROVIDER_CATALOG[key].keyPlaceholder },
+    ]),
+  ) as Record<VisionProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }>;
 }
 
 /**
@@ -9265,6 +9287,24 @@ export async function renderConfiguracionPage(
   const keyHint = maskedKey
     ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedKey)}</span>. Dejar el campo vacío para conservarla.`
     : "Sin key propia — se prueba con la key del sistema del proveedor, si hay una disponible.";
+
+  const ocrConfig = await getOcrConfig();
+  const currentOcrProviderKey = ocrConfig.provider && isVisionProviderKey(ocrConfig.provider) ? ocrConfig.provider : null;
+  const currentOcrEntry = currentOcrProviderKey ? VISION_PROVIDER_CATALOG[currentOcrProviderKey] : null;
+  const currentOcrModel = ocrConfig.model ?? currentOcrEntry?.defaultModel ?? "";
+  const maskedOcrKey = ocrConfig.apiKey ? `••••${ocrConfig.apiKey.slice(-4)}` : null;
+
+  const ocrProviderOptions = (Object.keys(VISION_PROVIDER_CATALOG) as VisionProviderKey[])
+    .map((key) => {
+      const entry = VISION_PROVIDER_CATALOG[key];
+      const selected = key === currentOcrProviderKey ? " selected" : "";
+      return `<option value="${key}"${selected}>${escapeHtml(entry.label)}</option>`;
+    })
+    .join("\n");
+
+  const ocrKeyHint = maskedOcrKey
+    ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedOcrKey)}</span>. Dejar el campo vacío para conservarla.`
+    : "Sin key propia — se prueba con la key del sistema del proveedor, si hay una disponible (hoy, solo Claude).";
 
   const banner = queryToastsHtml(query, "Guardado. La configuración ya está activa para las próximas conversaciones.");
 
@@ -9411,7 +9451,7 @@ export async function renderConfiguracionPage(
         <form method="POST" action="/admin/configuracion/modelo-ia">
           <div class="field">
             <label for="llm-provider">Proveedor</label>
-            <select id="llm-provider" name="provider" data-provider-select>
+            <select id="llm-provider" name="provider" data-provider-select="llm">
               <option value=""${currentProviderKey ? "" : " selected"}>Automático (recomendado)</option>
               ${providerOptions}
             </select>
@@ -9419,7 +9459,7 @@ export async function renderConfiguracionPage(
           </div>
           <div class="field">
             <label for="llm-routing-mode">Selección de modelo</label>
-            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select>
+            <select id="llm-routing-mode" name="routingMode" data-routing-mode-select="llm">
               <option value="manual"${llmConfig.routingMode === "manual" ? " selected" : ""}>Manual — elijo el modelo yo mismo</option>
               <option value="auto_dificultad"${llmConfig.routingMode === "auto_dificultad" ? " selected" : ""}>Automático según dificultad (Cerebro del bot)</option>
             </select>
@@ -9427,17 +9467,44 @@ export async function renderConfiguracionPage(
           </div>
           <div class="field">
             <label for="llm-model">Modelo</label>
-            <select id="llm-model" name="model" data-model-select data-initial-model="${escapeHtml(currentModel)}"></select>
+            <select id="llm-model" name="model" data-model-select="llm" data-initial-model="${escapeHtml(currentModel)}"></select>
           </div>
           <div class="field">
             <label for="llm-apikey">API key propia (opcional)</label>
-            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input autocomplete="off">
+            <input type="password" id="llm-apikey" name="apiKey" data-apikey-input="llm" autocomplete="off">
             <p class="hint">${keyHint}</p>
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
         <script type="application/json" id="llm-catalog-data">${JSON.stringify(llmCatalogForClient())}</script>
       </div>
+    </section>
+    <section class="block" aria-label="OCR de comprobantes y fotos">
+      <div class="blockhead"><h2>OCR de comprobantes y fotos</h2><span class="hint">BYOK</span></div>
+      <div class="panel connection">
+        <form method="POST" action="/admin/configuracion/ocr">
+          <div class="field">
+            <label for="ocr-provider">Proveedor</label>
+            <select id="ocr-provider" name="provider" data-provider-select="ocr">
+              <option value=""${currentOcrProviderKey ? "" : " selected"}>Automático (recomendado)</option>
+              ${ocrProviderOptions}
+            </select>
+            <p class="hint">Sin seleccionar, usa Claude vision con la key de sistema.</p>
+          </div>
+          <div class="field">
+            <label for="ocr-model">Modelo</label>
+            <select id="ocr-model" name="model" data-model-select="ocr" data-initial-model="${escapeHtml(currentOcrModel)}"></select>
+          </div>
+          <div class="field">
+            <label for="ocr-apikey">API key propia (opcional)</label>
+            <input type="password" id="ocr-apikey" name="apiKey" data-apikey-input="ocr" autocomplete="off">
+            <p class="hint">${ocrKeyHint}</p>
+          </div>
+          <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
+        </form>
+        <script type="application/json" id="ocr-catalog-data">${JSON.stringify(ocrCatalogForClient())}</script>
+      </div>
+      <p class="hint">Se usa para leer comprobantes de transferencia y describir fotos de producto que llegan por WhatsApp.</p>
     </section>
     <section class="block" aria-label="Transcripción de audio">
       <div class="blockhead"><h2>Transcripción de audio</h2><span class="hint">BYOK</span></div>
@@ -9924,6 +9991,43 @@ export async function guardarModeloIa(
   }
 
   await saveLlmConfig({ provider: input.provider, model, apiKey, routingMode });
+  return { ok: true };
+}
+
+/**
+ * "Probar y guardar" del proveedor de OCR/visión — mismo criterio exacto
+ * que guardarModeloIa, pero sin `routingMode` (OCR es una llamada puntual
+ * por imagen, no una conversación con dificultad variable turno a turno).
+ */
+export async function guardarOcrConfig(
+  input: { provider: string; model: string; apiKey: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (input.provider === "") {
+    await clearOcrConfig();
+    return { ok: true };
+  }
+
+  if (!isVisionProviderKey(input.provider)) {
+    return { ok: false, error: "Proveedor no válido." };
+  }
+  const entry = VISION_PROVIDER_CATALOG[input.provider];
+  const model = entry.models.some((m) => m.id === input.model) ? input.model : entry.defaultModel;
+
+  const existing = await getOcrConfig();
+  const trimmedKey = input.apiKey.trim();
+  // Mismo criterio que guardarModeloIa: campo vacío conserva la key ya
+  // guardada solo si el proveedor no cambió (la key vieja no sirve para
+  // un proveedor distinto).
+  const apiKey = trimmedKey ? trimmedKey : existing.provider === input.provider ? existing.apiKey : null;
+
+  try {
+    await testVisionConfig({ provider: input.provider, model, apiKey });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error desconocido probando la conexión.";
+    return { ok: false, error: message };
+  }
+
+  await saveOcrConfig({ provider: input.provider, model, apiKey });
   return { ok: true };
 }
 
