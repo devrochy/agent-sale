@@ -4,11 +4,10 @@ import { sendToConversation } from "../gateway/sendMessage.js";
 import { buscarPedidoPendienteTransferencia, procesarComprobante } from "../domains/commerce/procesarComprobante.js";
 import { describirImagenProducto } from "../domains/catalog/describirImagenProducto.js";
 import { transcribirAudio } from "../media/transcribirAudio.js";
+import { resolveTranscriptionProvider } from "../media/resolveTranscriptionProvider.js";
 import { getCachedMediaResult, setCachedMediaResult } from "../shared/mediaResultCache.js";
 import { getConnection } from "../shared/db/connectionsDirectory.js";
 import { guardarMediaEntrante } from "../shared/db/inboundMediaDirectory.js";
-import { getOpenAiConfig } from "../shared/db/settingsDirectory.js";
-import { env } from "../config/env.js";
 import { resolveVisionProvider } from "../vision/index.js";
 import type { VisionProviderConfig } from "../vision/callVisionModel.js";
 import { appendMessage, resolveConversation, type InboundOrigin } from "./memory.js";
@@ -272,10 +271,8 @@ async function procesarAudioEntrante(
       texto = cacheado.value;
       entryLogger.info({ event: "audio.transcripcion_cacheada" }, "Reusando transcripción ya hecha (reintento)");
     } else {
-      // BYOK (panel) con fallback a env.openaiApiKey — ver comentario en
-      // settingsDirectory.ts → getOpenAiConfig.
-      const { apiKey } = await getOpenAiConfig();
-      texto = await transcribirAudio(media.buffer, media.mimeType, apiKey || env.openaiApiKey);
+      const transcriptionConfig = await resolveTranscriptionProvider();
+      texto = await transcribirAudio(media.buffer, media.mimeType, transcriptionConfig);
       await setCachedMediaResult(message.messageSid, texto);
     }
   } catch (error) {
