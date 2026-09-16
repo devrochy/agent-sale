@@ -295,7 +295,15 @@ async function escalateAndReply(
     .child({ conversation_id: conversationId })
     .info({ event: "orchestrator.escalado", reason }, "Conversación escalada a un asesor humano");
   await appendMessage(conversationId, "outbound", "agent", FALLBACK_ESCALATION_MESSAGE);
-  await updateState(conversationId, { step: "escalado" });
+  // `step: "escalado"` ya no es un gate (ver appendInbound/processConversation
+  // más abajo) — queda solo como etiqueta para la vista del asesor
+  // (FLOW_STEP_LABEL en advisor/handoffView.ts) y como rastro de auditoría.
+  // `turnos_sin_resolver` sí hay que resetearlo: el bot sigue corriendo
+  // turnos normalmente después de escalar, y si la escalada fue por
+  // intentos_fallidos (contador ya en el umbral), el siguiente turno sin
+  // tool volvería a dispararla de inmediato — mismo criterio que ya usa
+  // reasignarTicketABot en adminPanel.ts al devolver el ticket al bot.
+  await updateState(conversationId, { step: "escalado", turnos_sin_resolver: 0 });
   return { responseText: FALLBACK_ESCALATION_MESSAGE, mediaUrl: null };
 }
 
@@ -319,16 +327,14 @@ export async function appendInbound(
   customerName?: string,
   origin?: InboundOrigin,
 ): Promise<{ conversationId: string; escalatedNow: TurnResult | null }> {
-  const { conversationId, state } = await resolveConversation(customerExternalId, customerName, origin);
+  const { conversationId } = await resolveConversation(customerExternalId, customerName, origin);
   await appendMessage(conversationId, "inbound", "customer", incomingBody);
 
-  if (state.step === "escalado") {
-    // El mensaje ya quedó guardado para que el asesor lo vea (vista del
-    // asesor, incremento separado) — el agente no responde automáticamente
-    // hasta que un humano cierre el caso.
-    return { conversationId, escalatedNow: { responseText: null, mediaUrl: null } };
-  }
-
+  // El silencio real del bot depende únicamente de `bot_paused` (ver
+  // orchestrator/consumer.ts, chequeado antes de llegar acá) — un
+  // escalamiento en curso pero todavía sin tomar (`handoff_queue.status
+  // ='queued'`) NO debe dejar al cliente sin respuesta; eso solo pasa
+  // cuando un admin toma el ticket de verdad (adminPanel.ts → tomarTicket).
   const escalationConfig = resolveEscalationConfig(await getEscalationConfig());
   const keywordMatch = matchKeywordEscalation(incomingBody, escalationConfig);
   if (keywordMatch) {
@@ -370,10 +376,9 @@ export async function processConversation(
   );
   const turnLogger = logger.child({ conversation_id: conversationId });
 
-  if (state.step === "escalado") {
-    return { responseText: null, mediaUrl: null };
-  }
-
+  // Mismo criterio que en appendInbound: un escalamiento sin tomar no
+  // silencia al bot, solo `bot_paused` lo hace (ya chequeado antes de
+  // llegar a este código, ver orchestrator/consumer.ts).
   const escalationConfig = resolveEscalationConfig(await getEscalationConfig());
   // Tono de voz del negocio (Fase 11.4 extendida, ver ADR-021) — segundo
   // bloque de `system`, con su propio cache_control en AnthropicProvider.

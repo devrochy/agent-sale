@@ -1386,10 +1386,11 @@ describe("panel admin", () => {
     });
 
     it("reasignar al bot saca la conversación del estado escalado y pone el contador a cero", async () => {
-      // Sin esto la reasignación no sirve de nada: loop.ts corta antes de
-      // responder mientras `state.step` siga en "escalado", y la
-      // conversación queda muda para siempre. El contador tiene que volver
-      // a cero o el primer turno del bot la re-escala.
+      // `state.step` ya no es un gate de respuesta (ver orchestrator/loop.ts)
+      // — se limpia acá como higiene de estado. El contador sí importa:
+      // tiene que volver a cero o el primer turno del bot la re-escala de
+      // inmediato (los turnos que dispararon el escalamiento original
+      // seguirían contando).
       const handoff = await adminPool.query<{ id: string }>(
         `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
          VALUES ($1, 'intentos_fallidos', 'en_atencion', 'El agente no resolvió')

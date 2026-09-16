@@ -24,9 +24,9 @@ El número de intentos fallidos, la lista de palabras clave, y el umbral de mont
 ## Qué pasa después de escalar
 
 Una vez que se dispara cualquiera de estas reglas, el orquestador:
-1. Llama a la tool `escalar_a_humano` con el `reason` correspondiente y un resumen generado por Claude de la conversación hasta ese punto (ver contrato en Fase 1).
-2. Marca `conversations.state.step = "escalado"` (ver [memoria-conversacional.md](../fase-4-motor-agente/memoria-conversacional.md), Fase 4).
-3. El agente **deja de responder automáticamente** en esa conversación — cualquier mensaje nuevo del cliente se encola para el asesor, no se reprocesa con Claude, hasta que un humano cierre el caso (ver [handoff-queue.md](./handoff-queue.md)).
+1. Llama a la tool `escalar_a_humano` con el `reason` correspondiente y un resumen generado por Claude de la conversación hasta ese punto (ver contrato en Fase 1). Si la conversación ya tiene un ticket abierto (`queued` o `en_atencion`) sin resolver, no crea uno nuevo ni reenvía la notificación — evita duplicar tickets si una condición de escalamiento se vuelve a cumplir antes de que alguien tome el primero.
+2. Marca `conversations.state.step = "escalado"` (ver [memoria-conversacional.md](../fase-4-motor-agente/memoria-conversacional.md), Fase 4) — queda como etiqueta para la vista del asesor y como rastro de auditoría, no como gate de respuesta.
+3. El agente **sigue respondiendo normalmente** en esa conversación — un ticket recién escalado (`handoff_queue.status='queued'`) no debe dejar al cliente sin ningún tipo de respuesta mientras nadie lo tomó. Recién cuando un admin toma el ticket desde el panel (`tomarTicket`, ver [handoff-queue.md](./handoff-queue.md)) se marca `conversations.bot_paused = true` y el agente deja de responder de verdad, hasta que un humano cierre o reasigne el caso.
 
 ## Qué no cubre este documento
 - Implementación real de la detección de palabras clave / conteo de intentos (código) — fuera del alcance de este plan de arquitectura.

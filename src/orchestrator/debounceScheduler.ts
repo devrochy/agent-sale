@@ -177,11 +177,13 @@ interface OrphanRow {
  * de ventana"): si el proceso murió con un timer de debounce en el aire,
  * el mensaje del cliente no se pierde (ya está en Postgres desde
  * `appendInbound`), pero el disparo sí — sin este barrido la conversación
- * queda colgada indefinidamente. Detecta conversaciones abiertas, no
- * escaladas, cuyo último mensaje es inbound (el cliente — o una
- * tool_result intermedia — está esperando una respuesta que nunca llegó)
- * y no tienen ya un timer vivo, y las reprograma con score=now (no hace
- * esperar de nuevo la ventana completa).
+ * queda colgada indefinidamente. Detecta conversaciones abiertas, con el
+ * bot activo (los 3 niveles de kill-switch: tenant/cliente/conversación —
+ * un escalamiento en curso pero sin tomar NO cuenta como bot pausado, ver
+ * orchestrator/loop.ts), cuyo último mensaje es inbound (el cliente — o
+ * una tool_result intermedia — está esperando una respuesta que nunca
+ * llegó) y no tienen ya un timer vivo, y las reprograma con score=now (no
+ * hace esperar de nuevo la ventana completa).
  */
 async function recoverOrphanedConversations(): Promise<void> {
   const settings = await getSettings();
@@ -201,7 +203,6 @@ async function recoverOrphanedConversations(): Promise<void> {
         ORDER BY created_at DESC LIMIT 1
       ) last_msg ON true
       WHERE conv.status = 'open'
-        AND (conv.state ->> 'step') IS DISTINCT FROM 'escalado'
         AND last_msg.direction = 'inbound'
         AND c.bot_paused = false -- kill-switch por cliente (Fase 23/ADR-036)
         AND conv.bot_paused = false -- kill-switch por conversación puntual (Fase 18)

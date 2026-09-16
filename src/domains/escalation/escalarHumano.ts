@@ -67,15 +67,34 @@ export async function escalarHumano(
   conversationId: string,
   input: EscalarHumanoInput,
 ): Promise<EscalarHumanoOutput> {
-  const handoffId = await withTransaction(async (client) => {
+  const { handoffId, esNuevo } = await withTransaction(async (client) => {
+    // El bot ya no queda mudo apenas escala (ver orchestrator/loop.ts) —
+    // sigue corriendo turnos normalmente hasta que un admin toma el
+    // ticket, así que una condición de escalamiento se puede volver a
+    // cumplir en un turno posterior mientras el ticket anterior sigue sin
+    // tomar. Sin esta guardia, cada disparo crearía OTRA fila acá y
+    // reenviaría la notificación de WhatsApp a todos los admins con
+    // recibeTickets — spam por cada mensaje del cliente que vuelva a
+    // matchear la misma (u otra) regla de escalamiento.
+    const abierto = await client.query<{ id: string }>(
+      `SELECT id FROM handoff_queue WHERE conversation_id = $1 AND status IN ('queued', 'en_atencion') LIMIT 1`,
+      [conversationId],
+    );
+    if (abierto.rows[0]) {
+      return { handoffId: abierto.rows[0].id, esNuevo: false };
+    }
     const result = await client.query<{ id: string }>(
       `INSERT INTO handoff_queue (conversation_id, reason, status, summary)
        VALUES ($1, $2, 'queued', $3)
        RETURNING id`,
       [conversationId, input.reason, input.summary],
     );
-    return result.rows[0]!.id;
+    return { handoffId: result.rows[0]!.id, esNuevo: true };
   });
+
+  if (!esNuevo) {
+    return { handoff_id: handoffId, status: "queued" };
+  }
 
   const token = await createHandoffToken(handoffId);
 
