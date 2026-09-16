@@ -7,6 +7,8 @@ vi.mock("../../../src/gateway/sendMessage.js", () => ({
   getWhatsAppMessageStatus: vi.fn(),
 }));
 
+import { createAdmin } from "../../../src/admin/auth/adminsDirectory.js";
+import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { sendToConversation } from "../../../src/gateway/sendMessage.js";
 import { runRecordarComprobantePendiente } from "../../../src/jobs/recordarComprobantePendiente.js";
 import {
@@ -161,7 +163,14 @@ beforeAll(async () => {
     },
   });
 
-  adminId = (await adminPool.query<{ id: string }>(`SELECT id FROM admins LIMIT 1`)).rows[0]!.id;
+  const passwordHash = await hashPassword("clave-de-prueba-recordatorio-comprobante");
+  adminId = await createAdmin(
+    "admin-recordatorio-comprobante",
+    "recordatorio-comprobante@formotos.test",
+    passwordHash,
+    "master",
+    null,
+  );
 
   setups.reciente = await seedOrder("reciente", { ageHours: 5, lastInboundHoursAgo: 2 });
   setups.friaConPlantilla = await seedOrder("friaConPlantilla", { ageHours: 30, lastInboundHoursAgo: null });
@@ -239,6 +248,8 @@ afterAll(async () => {
   ]);
   invalidateConnectionsCache();
   await adminPool.query(`DELETE FROM settings WHERE id = $1`, [settingsId]);
+  await adminPool.query(`DELETE FROM admin_permissions WHERE admin_id = $1`, [adminId]);
+  await adminPool.query(`DELETE FROM admins WHERE id = $1`, [adminId]);
   await adminPool.end();
   await appPool.end();
 });
