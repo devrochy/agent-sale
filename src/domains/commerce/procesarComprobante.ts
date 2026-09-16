@@ -2,6 +2,7 @@ import { resolveNotificationRecipients } from "../../admin/auth/adminsDirectory.
 import { sendWhatsAppMessage, sendToConversation } from "../../gateway/sendMessage.js";
 import { analizarComprobante, type ComprobanteAnalizado } from "../../payments/ocrComprobante.js";
 import { getCachedMediaResult, setCachedMediaResult } from "../../shared/mediaResultCache.js";
+import type { VisionProviderConfig } from "../../vision/callVisionModel.js";
 import { withTransaction } from "../../shared/db/withTransaction.js";
 import { getReportRecipient, getTransferAccounts } from "../../shared/db/settingsDirectory.js";
 import {
@@ -138,6 +139,8 @@ export interface ProcesarComprobanteInput {
   messageSid: string;
   buffer: Buffer;
   mimeType: string;
+  /** Proveedor/modelo/key ya resuelto por el caller — ver `vision/index.ts` → `resolveVisionProvider`. */
+  visionConfig: VisionProviderConfig;
 }
 
 /**
@@ -152,7 +155,7 @@ async function analizarComprobanteConCache(input: ProcesarComprobanteInput): Pro
     logger.info({ event: "comprobante.ocr_cacheado", order_id: input.orderId }, "Reusando lectura de OCR ya hecha (reintento)");
     return cacheado.value;
   }
-  const analisis = await analizarComprobante(input.buffer, input.mimeType);
+  const analisis = await analizarComprobante(input.buffer, input.mimeType, input.visionConfig);
   await setCachedMediaResult(input.messageSid, analisis);
   return analisis;
 }

@@ -9,6 +9,8 @@ import { getConnection } from "../shared/db/connectionsDirectory.js";
 import { guardarMediaEntrante } from "../shared/db/inboundMediaDirectory.js";
 import { getOpenAiConfig } from "../shared/db/settingsDirectory.js";
 import { env } from "../config/env.js";
+import { resolveVisionProvider } from "../vision/index.js";
+import type { VisionProviderConfig } from "../vision/callVisionModel.js";
 import { appendMessage, resolveConversation, type InboundOrigin } from "./memory.js";
 
 type EntryLogger = { info: (obj: object, msg: string) => void; warn: (obj: object, msg: string) => void };
@@ -119,10 +121,23 @@ async function procesarImagenEntrante(
     buffer: media.buffer,
   });
 
+  // Resuelto una sola vez por mensaje — la elección de proveedor aplica
+  // por igual a comprobante y foto de producto, son la misma capacidad de
+  // visión (ver vision/index.ts → resolveVisionProvider).
+  const visionConfig = await resolveVisionProvider();
+
   if (pedido) {
-    return procesarComoComprobante(pedido.orderId, inboundMediaId, media, conversationId, message.messageSid, entryLogger);
+    return procesarComoComprobante(
+      pedido.orderId,
+      inboundMediaId,
+      media,
+      conversationId,
+      message.messageSid,
+      visionConfig,
+      entryLogger,
+    );
   }
-  return procesarComoBusquedaDeProducto(inboundMediaId, media, conversationId, message.messageSid, entryLogger);
+  return procesarComoBusquedaDeProducto(inboundMediaId, media, conversationId, message.messageSid, visionConfig, entryLogger);
 }
 
 async function procesarComoComprobante(
@@ -131,6 +146,7 @@ async function procesarComoComprobante(
   media: { buffer: Buffer; mimeType: string },
   conversationId: string,
   messageSid: string,
+  visionConfig: VisionProviderConfig,
   entryLogger: EntryLogger,
 ): Promise<MediaResultado> {
   // Deja registro en la conversación aunque el LLM nunca la vea — para que
@@ -144,6 +160,7 @@ async function procesarComoComprobante(
       messageSid,
       buffer: media.buffer,
       mimeType: media.mimeType,
+      visionConfig,
     });
     entryLogger.info(
       { event: "comprobante.procesado", order_id: orderId, resultado },
@@ -176,6 +193,7 @@ async function procesarComoBusquedaDeProducto(
   media: { buffer: Buffer; mimeType: string },
   conversationId: string,
   messageSid: string,
+  visionConfig: VisionProviderConfig,
   entryLogger: EntryLogger,
 ): Promise<MediaResultado> {
   let descripcion: string | null;
@@ -189,7 +207,7 @@ async function procesarComoBusquedaDeProducto(
       descripcion = cacheado.value;
       entryLogger.info({ event: "foto_producto.descripcion_cacheada" }, "Reusando descripción ya generada (reintento)");
     } else {
-      descripcion = await describirImagenProducto(media.buffer, media.mimeType);
+      descripcion = await describirImagenProducto(media.buffer, media.mimeType, visionConfig);
       await setCachedMediaResult(messageSid, descripcion);
     }
   } catch (error) {

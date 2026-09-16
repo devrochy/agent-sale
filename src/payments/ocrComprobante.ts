@@ -1,17 +1,18 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { env } from "../config/env.js";
+import { callVisionModel, type VisionProviderConfig } from "../vision/callVisionModel.js";
 
 /**
- * OCR del comprobante de transferencia — llamada puntual a Claude visión,
- * fuera del LLM conversacional (DeepSeek hoy, sin visión — ver
+ * OCR del comprobante de transferencia — llamada puntual a un modelo de
+ * visión, fuera del LLM conversacional (DeepSeek hoy, sin visión — ver
  * `orchestrator/llm/`). Deliberadamente aislado: no toca `ContentBlock` ni
  * `LLMMessage`, mismo criterio que "el texto de la cuenta nunca pasa por
  * el LLM" de `datosTransferencia.ts` — acá lo que no pasa por el LLM
  * conversacional es la imagen entera, no solo el texto de salida.
  *
- * Usa `env.anthropicApiKey` con el mismo modelo por defecto que
- * `anthropicProvider.ts` (ADR-008) — no hay BYOK acá, es infraestructura
- * interna, no una feature configurable por tenant.
+ * El proveedor/modelo/key ya viene resuelto por el caller (ver
+ * `vision/index.ts` → `resolveVisionProvider`, configurable por panel
+ * desde esta feature, BYOK con Claude vision como default de plataforma) —
+ * este archivo no sabe ni le importa qué proveedor es, solo parsea la
+ * respuesta.
  */
 
 export interface ComprobanteAnalizado {
@@ -55,40 +56,20 @@ function parsearMonto(valor: unknown): number | null {
   return null;
 }
 
-export async function analizarComprobante(buffer: Buffer, mimeType: string): Promise<ComprobanteAnalizado> {
-  if (!env.anthropicApiKey) {
-    throw new Error("No hay ANTHROPIC_API_KEY configurada — no se puede leer el comprobante con OCR");
-  }
+export async function analizarComprobante(
+  buffer: Buffer,
+  mimeType: string,
+  visionConfig: VisionProviderConfig,
+): Promise<ComprobanteAnalizado> {
   const mediaType: MediaType = MIME_TYPES_SOPORTADOS.has(mimeType) ? (mimeType as MediaType) : "image/jpeg";
 
-  // Timeout explícito (ver env.llmTimeoutMs y el incidente 2026-09-13): sin
-  // esto el SDK usa su default de ~10 min, y esta llamada corre dentro del
-  // mismo consumer secuencial de mensajes que el resto del pipeline.
-  const client = new Anthropic({ apiKey: env.anthropicApiKey, timeout: env.llmTimeoutMs });
-  const response = await client.messages.create({
-    model: "claude-sonnet-5",
-    max_tokens: 300,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: mediaType, data: buffer.toString("base64") },
-          },
-          { type: "text", text: PROMPT_EXTRACCION },
-        ],
-      },
-    ],
-  });
-
-  const textBlock = response.content.find((block) => block.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
+  const texto = await callVisionModel(visionConfig, buffer, mediaType, PROMPT_EXTRACCION, 300);
+  if (!texto) {
     return { monto: null, cuentaDestino: null };
   }
 
   try {
-    const parsed = JSON.parse(extraerJson(textBlock.text)) as {
+    const parsed = JSON.parse(extraerJson(texto)) as {
       monto?: unknown;
       cuenta_destino?: unknown;
     };
