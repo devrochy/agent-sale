@@ -25,6 +25,7 @@ import { createAdminSession } from "../../../src/admin/auth/adminSessionDirector
 import { hashPassword } from "../../../src/admin/auth/passwordHash.js";
 import { buildServer } from "../../../src/gateway/server.js";
 import { sendToConversation, sendWhatsAppMessage } from "../../../src/gateway/sendMessage.js";
+import { encryptSecret } from "../../../src/shared/crypto/secretBox.js";
 import {
   invalidateConnectionsCache,
   saveConnection,
@@ -2321,7 +2322,7 @@ describe("panel admin", () => {
     });
   });
 
-  describe("configuración — OpenAI (transcripción de audio)", () => {
+  describe("configuración — Transcripción de audio", () => {
     const fetchMock = vi.fn();
 
     beforeEach(() => {
@@ -2329,78 +2330,124 @@ describe("panel admin", () => {
       vi.stubGlobal("fetch", fetchMock);
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       vi.unstubAllGlobals();
+      await adminPool.query(
+        `UPDATE settings SET transcription_provider = NULL, transcription_model = NULL, transcription_api_key_encrypted = NULL, openai_api_key_encrypted = NULL`,
+      );
     });
 
-    it("key válida (OpenAI la acepta) se guarda cifrada y el panel muestra el hint enmascarado", async () => {
-      fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [] }) });
+    it("proveedor Groq con key nueva se prueba (transcribe un audio real de prueba), se guarda cifrada y el panel muestra el hint enmascarado", async () => {
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ text: "" }) });
 
       const response = await app.inject({
         method: "POST",
-        url: "/admin/configuracion/openai",
-        payload: new URLSearchParams({ apiKey: "sk-test-abcd1234" }).toString(),
+        url: "/admin/configuracion/transcripcion",
+        payload: new URLSearchParams({
+          provider: "groq",
+          model: "whisper-large-v3-turbo",
+          apiKey: "gsk-test-abcd1234",
+        }).toString(),
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
       });
       expect(response.statusCode).toBe(303);
       expect(response.headers.location).toBe("/admin/configuracion?guardado=1");
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, init] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.openai.com/v1/models");
+      expect(url).toBe("https://api.groq.com/openai/v1/audio/transcriptions");
       expect((init as RequestInit & { headers: Record<string, string> }).headers.Authorization).toBe(
-        "Bearer sk-test-abcd1234",
+        "Bearer gsk-test-abcd1234",
       );
 
-      try {
-        const row = await adminPool.query<{ openai_api_key_encrypted: string | null }>(
-          `SELECT openai_api_key_encrypted FROM settings`,
-        );
-        expect(row.rows[0]!.openai_api_key_encrypted).toBeTruthy();
-        expect(row.rows[0]!.openai_api_key_encrypted).not.toContain("sk-test-abcd1234"); // cifrada, no en claro
+      const row = await adminPool.query<{
+        transcription_provider: string | null;
+        transcription_api_key_encrypted: string | null;
+      }>(`SELECT transcription_provider, transcription_api_key_encrypted FROM settings`);
+      expect(row.rows[0]!.transcription_provider).toBe("groq");
+      expect(row.rows[0]!.transcription_api_key_encrypted).toBeTruthy();
+      expect(row.rows[0]!.transcription_api_key_encrypted).not.toContain("gsk-test-abcd1234"); // cifrada, no en claro
 
-        const configPage = await app.inject({
-          method: "GET",
-          url: "/admin/configuracion",
-          headers: { cookie: sessionCookie },
-        });
-        expect(configPage.body).toContain("••••1234");
-      } finally {
-        await adminPool.query(`UPDATE settings SET openai_api_key_encrypted = NULL`);
-      }
+      const configPage = await app.inject({ method: "GET", url: "/admin/configuracion", headers: { cookie: sessionCookie } });
+      expect(configPage.body).toContain("••••1234");
     });
 
-    it("key rechazada por OpenAI no se guarda y vuelve con error", async () => {
+    it("el proveedor elegido rechaza la key (HTTP no-ok) — no se guarda, vuelve con error", async () => {
       fetchMock.mockResolvedValueOnce({
         ok: false,
         status: 401,
-        json: async () => ({ error: { message: "Incorrect API key provided" } }),
+        json: async () => ({ error: { message: "Invalid API key" } }),
       });
 
       const response = await app.inject({
         method: "POST",
-        url: "/admin/configuracion/openai",
-        payload: new URLSearchParams({ apiKey: "sk-invalida" }).toString(),
+        url: "/admin/configuracion/transcripcion",
+        payload: new URLSearchParams({ provider: "groq", model: "whisper-large-v3-turbo", apiKey: "gsk-invalida" }).toString(),
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
       });
       expect(response.statusCode).toBe(303);
       expect(response.headers.location).toContain("error=");
 
-      const row = await adminPool.query<{ openai_api_key_encrypted: string | null }>(
-        `SELECT openai_api_key_encrypted FROM settings`,
+      const row = await adminPool.query<{ transcription_provider: string | null }>(
+        `SELECT transcription_provider FROM settings`,
       );
-      expect(row.rows[0]!.openai_api_key_encrypted).toBeNull();
+      expect(row.rows[0]!.transcription_provider).toBeNull();
     });
 
-    it("sin ninguna key (ni la nueva ni una guardada antes) devuelve error, sin llamar a OpenAI", async () => {
+    it("proveedor sin key propia ni key de sistema (Groq) devuelve error sin llamar a la red", async () => {
       const response = await app.inject({
         method: "POST",
-        url: "/admin/configuracion/openai",
-        payload: new URLSearchParams({ apiKey: "" }).toString(),
+        url: "/admin/configuracion/transcripcion",
+        payload: new URLSearchParams({ provider: "groq", model: "whisper-large-v3-turbo", apiKey: "" }).toString(),
         headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
       });
       expect(response.statusCode).toBe(303);
       expect(response.headers.location).toContain("error=");
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("puente con la key legada: una key de OpenAI ya guardada por el flujo viejo se muestra como 'OpenAI' activo, sin tocar el panel nuevo", async () => {
+      // Simula una instalación de antes de esta feature: la key vive
+      // SOLO en la columna legada (mismo mecanismo real de cifrado que
+      // usa la app), nunca se llamó a /admin/configuracion/transcripcion.
+      await adminPool.query(`UPDATE settings SET openai_api_key_encrypted = $1`, [
+        encryptSecret("sk-legado-9999"),
+      ]);
+
+      const configPage = await app.inject({ method: "GET", url: "/admin/configuracion", headers: { cookie: sessionCookie } });
+
+      expect(configPage.body).toContain("••••9999");
+      expect(configPage.body).toMatch(/<option value="openai" selected>/);
+      expect(fetchMock).not.toHaveBeenCalled(); // el puente es una lectura, nunca llama a ningún proveedor
+    });
+
+    it("'Automático' (provider vacío) limpia tanto la config nueva como la key legada de OpenAI", async () => {
+      // Deja algo guardado primero (config nueva) para confirmar que
+      // "Automático" de verdad la borra, no solo la deja sin usar.
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ text: "" }) });
+      await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transcripcion",
+        payload: new URLSearchParams({ provider: "groq", model: "whisper-large-v3-turbo", apiKey: "gsk-previa" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/configuracion/transcripcion",
+        payload: new URLSearchParams({ provider: "", model: "", apiKey: "" }).toString(),
+        headers: { cookie: sessionCookie, "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe("/admin/configuracion?guardado=1");
+
+      const row = await adminPool.query<{
+        transcription_provider: string | null;
+        transcription_api_key_encrypted: string | null;
+        openai_api_key_encrypted: string | null;
+      }>(`SELECT transcription_provider, transcription_api_key_encrypted, openai_api_key_encrypted FROM settings`);
+      expect(row.rows[0]!.transcription_provider).toBeNull();
+      expect(row.rows[0]!.transcription_api_key_encrypted).toBeNull();
+      expect(row.rows[0]!.openai_api_key_encrypted).toBeNull();
     });
   });
 

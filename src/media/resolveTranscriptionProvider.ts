@@ -70,6 +70,32 @@ export async function resolveTranscriptionProvider(): Promise<ResolvedTranscript
   return { providerKey, apiKey, baseUrl: entry.baseUrl, model };
 }
 
+export interface TranscriptionDisplayState {
+  providerKey: TranscriptionProviderKey | null;
+  model: string | null;
+  apiKey: string | null;
+}
+
+/**
+ * Estado a mostrar en el panel (Configuración → Transcripción de audio) —
+ * mismo puente con la key legada que `resolveTranscriptionProvider`, pero
+ * sin caer nunca a `env.openaiApiKey` ni lanzar: el panel necesita
+ * distinguir "de verdad no hay nada configurado" (`providerKey: null`,
+ * muestra "Automático") de "hay algo guardado, mostralo" — no resolver un
+ * proveedor utilizable para transcribir ya mismo.
+ */
+export async function describeTranscriptionConfig(): Promise<TranscriptionDisplayState> {
+  const config = await getTranscriptionConfig();
+  if (config.provider && isTranscriptionProviderKey(config.provider)) {
+    return { providerKey: config.provider, model: config.model, apiKey: config.apiKey };
+  }
+  const { apiKey: legacyApiKey } = await getOpenAiConfig();
+  if (legacyApiKey) {
+    return { providerKey: "openai", model: "whisper-1", apiKey: legacyApiKey };
+  }
+  return { providerKey: null, model: null, apiKey: null };
+}
+
 export interface TranscriptionConfigCandidate {
   provider: TranscriptionProviderKey;
   model: string;
