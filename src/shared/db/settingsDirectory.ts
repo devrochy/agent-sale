@@ -147,6 +147,55 @@ export async function clearLlmConfig(): Promise<void> {
 }
 
 /**
+ * Config de OCR/visión (comprobantes de pago y fotos de producto, ver
+ * `src/vision/`) — mismo criterio que getLlmConfig: única función que lee
+ * y desencripta la key. `provider`/`model` son `null` cuando no hay nada
+ * guardado ("Automático" del panel) — el resolver (`vision/index.ts`)
+ * interpreta eso como "usar Claude vision con la key de sistema", el
+ * mismo comportamiento hardcodeado de antes de esta feature.
+ */
+export interface OcrConfig {
+  provider: string | null;
+  model: string | null;
+  apiKey: string | null;
+}
+
+export async function getOcrConfig(): Promise<OcrConfig> {
+  const result = await pool.query<{
+    ocr_provider: string | null;
+    ocr_model: string | null;
+    ocr_api_key_encrypted: string | null;
+  }>("SELECT ocr_provider, ocr_model, ocr_api_key_encrypted FROM settings");
+  const row = result.rows[0];
+  return {
+    provider: row?.ocr_provider ?? null,
+    model: row?.ocr_model ?? null,
+    apiKey: row?.ocr_api_key_encrypted ? decryptSecret(row.ocr_api_key_encrypted) : null,
+  };
+}
+
+/**
+ * Guarda la elección de proveedor/modelo/API key de OCR — llamar solo
+ * después de validar la combinación con una llamada de prueba real (ver
+ * "Probar y guardar" en adminPanel.ts), nunca antes.
+ */
+export async function saveOcrConfig(config: {
+  provider: string;
+  model: string;
+  apiKey?: string | null;
+}): Promise<void> {
+  await pool.query(
+    "UPDATE settings SET ocr_provider = $1, ocr_model = $2, ocr_api_key_encrypted = $3",
+    [config.provider, config.model, config.apiKey ? encryptSecret(config.apiKey) : null],
+  );
+}
+
+/** Vuelve al "Automático" del panel — Claude vision con la key de sistema. */
+export async function clearOcrConfig(): Promise<void> {
+  await pool.query("UPDATE settings SET ocr_provider = NULL, ocr_model = NULL, ocr_api_key_encrypted = NULL");
+}
+
+/**
  * Config BYOK de Wompi (Fase 12.4, ver
  * ADR-024-cobros-wompi-confirmacion-automatica.md) — mismo criterio que
  * getLlmConfig: única función que lee y desencripta las llaves de Wompi,

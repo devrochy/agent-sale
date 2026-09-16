@@ -1,11 +1,12 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { env } from "../../config/env.js";
+import { callVisionModel, type VisionProviderConfig } from "../../vision/callVisionModel.js";
 
 /**
- * Descripción de una foto de producto — llamada puntual a Claude visión,
- * fuera del LLM conversacional (mismo criterio que `ocrComprobante.ts`).
- * La descripción resultante reemplaza el body del mensaje como si el
- * cliente la hubiera tipeado (ver `orchestrator/mediaIngestion.ts`).
+ * Descripción de una foto de producto — llamada puntual a un modelo de
+ * visión, fuera del LLM conversacional (mismo criterio que
+ * `ocrComprobante.ts`). La descripción resultante reemplaza el body del
+ * mensaje como si el cliente la hubiera tipeado (ver
+ * `orchestrator/mediaIngestion.ts`). El proveedor/modelo/key ya viene
+ * resuelto por el caller (ver `vision/index.ts` → `resolveVisionProvider`).
  */
 
 const PROMPT_DESCRIPCION =
@@ -51,32 +52,12 @@ export function parsearDescripcion(texto: string): string | null {
   }
 }
 
-export async function describirImagenProducto(buffer: Buffer, mimeType: string): Promise<string | null> {
-  if (!env.anthropicApiKey) {
-    throw new Error("No hay ANTHROPIC_API_KEY configurada — no se puede describir la imagen");
-  }
+export async function describirImagenProducto(
+  buffer: Buffer,
+  mimeType: string,
+  visionConfig: VisionProviderConfig,
+): Promise<string | null> {
   const mediaType: MediaType = MIME_TYPES_SOPORTADOS.has(mimeType) ? (mimeType as MediaType) : "image/jpeg";
-  // Timeout explícito (ver env.llmTimeoutMs y el incidente 2026-09-13): sin
-  // esto el SDK usa su default de ~10 min, y esta llamada corre dentro del
-  // mismo consumer secuencial de mensajes que el resto del pipeline.
-  const client = new Anthropic({ apiKey: env.anthropicApiKey, timeout: env.llmTimeoutMs });
-  const response = await client.messages.create({
-    model: "claude-sonnet-5",
-    max_tokens: 100,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: mediaType, data: buffer.toString("base64") } },
-          { type: "text", text: PROMPT_DESCRIPCION },
-        ],
-      },
-    ],
-  });
-
-  const textBlock = response.content.find((block) => block.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
-    return null;
-  }
-  return parsearDescripcion(textBlock.text);
+  const texto = await callVisionModel(visionConfig, buffer, mediaType, PROMPT_DESCRIPCION, 100);
+  return texto ? parsearDescripcion(texto) : null;
 }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parsearDescripcion } from "../../../../src/domains/catalog/describirImagenProducto.js";
 
 // Mismo criterio que ocrComprobante.test.ts: mockear el SDK entero,
@@ -16,18 +16,47 @@ vi.mock("@anthropic-ai/sdk", () => ({
 
 const { describirImagenProducto } = await import("../../../../src/domains/catalog/describirImagenProducto.js");
 
+const ANTHROPIC_CONFIG = { providerKey: "anthropic" as const, apiKey: "sk-ant-test", model: "claude-sonnet-5" };
+
+function jsonResponse(body: unknown): Response {
+  return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as Response;
+}
+
 describe("describirImagenProducto", () => {
   beforeEach(() => {
     mockCreate.mockReset();
     mockConstructor.mockReset();
   });
 
-  it("construye el cliente con timeout explícito (ver env.llmTimeoutMs, incidente 2026-09-13)", async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("construye el cliente con la key/timeout del config recibido (proveedor Anthropic, default)", async () => {
     mockCreate.mockResolvedValue({ content: [{ type: "text", text: '{"producto": "casco integral negro"}' }] });
 
-    await describirImagenProducto(Buffer.from("imagen-falsa"), "image/png");
+    await describirImagenProducto(Buffer.from("imagen-falsa"), "image/png", ANTHROPIC_CONFIG);
 
-    expect(mockConstructor).toHaveBeenCalledWith(expect.objectContaining({ timeout: expect.any(Number) }));
+    expect(mockConstructor).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "sk-ant-test", timeout: expect.any(Number) }),
+    );
+  });
+
+  it("describe el producto igual si el proveedor elegido es Gemini (el parseo no depende del proveedor)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ candidates: [{ content: { parts: [{ text: '{"producto": "guantes de cuero café"}' }] } }] }),
+      ),
+    );
+
+    const resultado = await describirImagenProducto(Buffer.from("imagen-falsa"), "image/png", {
+      providerKey: "gemini",
+      apiKey: "AIza-test",
+      model: "gemini-2.5-flash-lite",
+    });
+
+    expect(resultado).toBe("guantes de cuero café");
   });
 });
 

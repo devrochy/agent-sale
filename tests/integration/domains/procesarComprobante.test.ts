@@ -36,6 +36,11 @@ import { deleteProduct, seedProduct } from "../../helpers/seedCatalog.js";
 const { Pool } = pg;
 const adminPool = new Pool({ connectionString: process.env.MIGRATIONS_DATABASE_URL });
 
+// `analizarComprobante` está mockeado a nivel de módulo en este archivo —
+// el contenido de `visionConfig` no importa para estos tests, solo que el
+// campo (ahora requerido en ProcesarComprobanteInput) esté presente.
+const FAKE_VISION_CONFIG = { providerKey: "anthropic" as const, apiKey: "sk-test", model: "claude-sonnet-5" };
+
 const PHONE = `whatsapp:+5730000${Date.now().toString().slice(-6)}`;
 const CUENTA_TIENDA: TransferAccount = {
   entity: "Bancolombia",
@@ -174,6 +179,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-aprobado-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(resultado).toBe("aprobado");
@@ -192,6 +198,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-monto-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(resultado).toBe("rechazado_datos");
@@ -213,6 +220,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-cuenta-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(resultado).toBe("rechazado_datos");
@@ -230,6 +238,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-ilegible-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(resultado).toBe("pedir_otra_foto");
@@ -256,6 +265,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-escala-1-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
     await procesarComprobante({
       orderId,
@@ -263,6 +273,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-escala-2-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
     vi.mocked(sendToConversation).mockClear();
     vi.mocked(sendWhatsAppMessage).mockClear();
@@ -274,6 +285,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-escala-3-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(resultado).toBe("escalado");
@@ -300,6 +312,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-dup-1-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
     const segundo = await procesarComprobante({
       orderId,
@@ -307,6 +320,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-dup-2-${Date.now()}`, // otra foto, no un reintento del mismo mensaje
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(primero).toBe("aprobado");
@@ -328,6 +342,7 @@ describe("procesarComprobante", () => {
       messageSid: `wamid-comprobante-error-ocr-${Date.now()}`,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(resultado).toBe("error_tecnico");
@@ -343,7 +358,14 @@ describe("procesarComprobante", () => {
     vi.mocked(analizarComprobante).mockResolvedValueOnce({ monto: 200000, cuentaDestino: "111-222333-44" });
     const messageSid = `wamid-comprobante-cache-${Date.now()}`;
 
-    await procesarComprobante({ orderId, inboundMediaId, messageSid, buffer: Buffer.from("x"), mimeType: "image/jpeg" });
+    await procesarComprobante({
+      orderId,
+      inboundMediaId,
+      messageSid,
+      buffer: Buffer.from("x"),
+      mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
+    });
     // Segundo "intento" del mismo mensaje (simula un reintento de la cola
     // tras un fallo posterior al OCR) — mismo messageSid a propósito.
     const segundo = await procesarComprobante({
@@ -352,6 +374,7 @@ describe("procesarComprobante", () => {
       messageSid,
       buffer: Buffer.from("x"),
       mimeType: "image/jpeg",
+      visionConfig: FAKE_VISION_CONFIG,
     });
 
     expect(segundo).toBe("aprobado");
