@@ -260,6 +260,11 @@ interface PedidoRow {
   status_reason: string | null;
   address_confirmed_at: string | null;
   items: OrderItemJson[];
+  receipt_id: string | null;
+  inbound_media_id: string | null;
+  receipt_resultado: string | null;
+  ocr_monto: string | null;
+  ocr_cuenta: string | null;
 }
 
 /**
@@ -6793,6 +6798,7 @@ export async function renderPedidosPage(
               o.delivery_address, o.delivery_id_document, o.delivery_full_name, o.delivery_municipality, o.delivery_city,
               o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason, o.address_confirmed_at,
               c.external_id, c.name AS customer_name,
+              lr.receipt_id, lr.inbound_media_id, lr.resultado AS receipt_resultado, lr.ocr_monto, lr.ocr_cuenta,
               COALESCE(
                 json_agg(json_build_object('name', p.name, 'quantity', oi.quantity, 'unit_price', oi.unit_price))
                   FILTER (WHERE oi.id IS NOT NULL),
@@ -6803,7 +6809,14 @@ export async function renderPedidosPage(
        LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN product_variants pv ON pv.id = oi.variant_id
        LEFT JOIN products p ON p.id = pv.product_id
-       GROUP BY o.id, c.external_id, c.name
+       LEFT JOIN LATERAL (
+         SELECT pr.id AS receipt_id, pr.inbound_media_id, pr.resultado, pr.ocr_monto, pr.ocr_cuenta
+           FROM payment_receipts pr
+          WHERE pr.order_id = o.id
+          ORDER BY pr.created_at DESC
+          LIMIT 1
+       ) lr ON true
+       GROUP BY o.id, c.external_id, c.name, lr.receipt_id, lr.inbound_media_id, lr.resultado, lr.ocr_monto, lr.ocr_cuenta
        ORDER BY o.created_at DESC`,
     );
     return result.rows;
@@ -6891,7 +6904,50 @@ export async function renderPedidosPage(
         row.wompi_payment_link_url && row.payment_status === "pendiente"
           ? `<a class="paylink" href="${escapeHtml(row.wompi_payment_link_url)}" target="_blank" rel="noopener noreferrer">Enlace de pago</a>`
           : "";
-      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}`;
+
+      // Botón para ver el comprobante subido, cualquiera sea su resultado
+      // (aprobado/rechazado/pendiente) — antes solo era visible desde la
+      // sección de arriba, y solo para los que ya escalaron a revisión
+      // manual. La imagen se carga on-demand vía GET /admin/media/:id, no
+      // como data URI (ver esa ruta en gateway/server.ts) — embeberla acá
+      // infla el HTML de la tabla entera con cada imagen del historial.
+      const comprobanteDialogId = `comprobante-${row.id}`;
+      const verComprobante = row.inbound_media_id
+        ? `<button type="button" data-open-dialog="${comprobanteDialogId}" class="btn btn--ghost btn--sm">Ver comprobante</button>`
+        : "";
+      const lecturaOcr = row.inbound_media_id
+        ? [
+            row.ocr_monto !== null ? `Monto leído: ${formatCOP(Number(row.ocr_monto))}` : "Monto: no se pudo leer",
+            row.ocr_cuenta ? `Cuenta leída: ${escapeHtml(row.ocr_cuenta)}` : "Cuenta: no se pudo leer",
+          ].join(" · ")
+        : "";
+      // Aprobar/rechazar a mano ya no depende de que el comprobante haya
+      // escalado (agotados los 2 intentos automáticos) — con el pago
+      // todavía pendiente, el admin lo resuelve directo desde acá.
+      const accionesComprobante =
+        row.payment_status === "pendiente"
+          ? `<form method="POST" action="/admin/comprobantes/${row.id}/rechazar" data-confirm="¿Rechazar el pago de ${escapeHtml(row.public_order_number)}? El cliente va a tener que mandar un pedido nuevo si quiere reintentar.">
+               <input type="hidden" name="receiptId" value="${row.receipt_id}">
+               <button type="submit" class="btn btn--ghost act--redline">Rechazar</button>
+             </form>
+             <form method="POST" action="/admin/comprobantes/${row.id}/aprobar" data-confirm="¿Aprobar el pago de ${escapeHtml(row.public_order_number)}? El pedido queda marcado como pagado.">
+               <input type="hidden" name="receiptId" value="${row.receipt_id}">
+               <button type="submit" class="btn btn--primary">Aprobar</button>
+             </form>`
+          : "";
+      const comprobanteDialog = row.inbound_media_id
+        ? `<dialog id="${comprobanteDialogId}" class="modal">
+             <div class="blockhead"><h2>Comprobante — ${escapeHtml(row.public_order_number)}</h2></div>
+             <p class="hint">${lecturaOcr}</p>
+             <img src="/admin/media/${row.inbound_media_id}" alt="Comprobante de transferencia del pedido ${escapeHtml(row.public_order_number)}" style="max-width:100%;border-radius:8px;">
+             <div class="formfoot">
+               ${accionesComprobante}
+               <button type="button" data-close-dialog="${comprobanteDialogId}" class="btn btn--ghost">Cerrar</button>
+             </div>
+           </dialog>`
+        : "";
+
+      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}${verComprobante}`;
 
       // La guía es un dato de la entrega, no una columna aparte: junta con
       // el método y la dirección se lee como "cómo le llega esto al
@@ -6989,7 +7045,8 @@ export async function renderPedidosPage(
       <tr class="expandrow" id="${itemsId}"><td colspan="8"><div class="variantgrid">${items}</div></td></tr>
       ${direccionDialog}
       ${domicilioDialog}
-      ${guiaDialog}`;
+      ${guiaDialog}
+      ${comprobanteDialog}`;
     })
     .join("\n");
 
