@@ -136,6 +136,11 @@ describe("callVisionModel", () => {
       const body = JSON.parse((init as RequestInit).body as string);
       expect(body.messages[0].content[0]).toMatchObject({ type: "image_url" });
       expect(body.messages[0].content[0].image_url.url).toContain("data:image/png;base64,");
+      // deepseek-flash razona por defecto y ese razonamiento consume el
+      // mismo `max_tokens` que la respuesta — sin desactivarlo, el modelo
+      // agota el presupuesto pensando y nunca escribe el JSON de respuesta
+      // (confirmado contra la API real, ver comentario en callVisionModel.ts).
+      expect(body.thinking).toEqual({ type: "disabled" });
     });
 
     it("lanza si la respuesta HTTP no es ok", async () => {
