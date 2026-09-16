@@ -8,7 +8,7 @@ vi.mock("../../../src/gateway/sendMessage.js", () => ({
 }));
 
 import { sendToConversation, getWhatsAppMessageStatus } from "../../../src/gateway/sendMessage.js";
-import { tryCaptureSurveyReply } from "../../../src/orchestrator/satisfactionSurvey.js";
+import { sendSurveyOnClose, tryCaptureSurveyReply } from "../../../src/orchestrator/satisfactionSurvey.js";
 import { pool as appPool } from "../../../src/shared/db/pool.js";
 import { logger } from "../../../src/shared/observability/logger.js";
 
@@ -23,6 +23,8 @@ const PHONES = {
   scoreAlto: "whatsapp:+573020000005",
   scoreBajo: "whatsapp:+573020000006",
   ventanaVencida: "whatsapp:+573020000007",
+  conversacionAbierta: "whatsapp:+573020000008",
+  idempotencia: "whatsapp:+573020000009",
 };
 
 async function seedConversation(
@@ -31,6 +33,7 @@ async function seedConversation(
     surveyHoursAgo: number | null;
     alreadyProcessed?: boolean;
     existingScore?: number;
+    status?: "open" | "closed";
   },
 ): Promise<string> {
   const customer = await adminPool.query<{ id: string }>(
@@ -41,13 +44,16 @@ async function seedConversation(
     opts.surveyHoursAgo === null
       ? null
       : new Date(Date.now() - opts.surveyHoursAgo * 60 * 60 * 1000);
+  const status = opts.status ?? "closed";
   const conversation = await adminPool.query<{ id: string }>(
     `INSERT INTO conversations
        (customer_id, status, closed_at, survey_sent_at, survey_reply_processed_at, satisfaction_score)
-     VALUES ($1, 'closed', now(), $2, $3, $4)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
     [
       customer.rows[0]!.id,
+      status,
+      status === "closed" ? new Date() : null,
       surveySentAt,
       opts.alreadyProcessed ? new Date() : null,
       opts.existingScore ?? null,
@@ -195,5 +201,44 @@ describe("tryCaptureSurveyReply", () => {
     await tryCaptureSurveyReply(PHONES.ventanaVencida, "whatsapp", "5", logger);
 
     expect(sendToConversation).not.toHaveBeenCalled();
+  });
+
+  it("conversación todavía 'open' con encuesta pendiente: se captura igual (la encuesta ya no depende de que esté cerrada, ver notificarClientePagoAprobado)", async () => {
+    const conversationId = await seedConversation(PHONES.conversacionAbierta, {
+      surveyHoursAgo: 1,
+      status: "open",
+    });
+
+    await tryCaptureSurveyReply(PHONES.conversacionAbierta, "whatsapp", "5", logger);
+
+    const row = await adminPool.query<{ satisfaction_score: number }>(
+      `SELECT satisfaction_score FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(row.rows[0]!.satisfaction_score).toBe(5);
+    expect(sendToConversation).toHaveBeenCalledWith(conversationId, expect.stringContaining("/resena/"));
+  });
+});
+
+describe("sendSurveyOnClose", () => {
+  beforeEach(() => {
+    vi.mocked(sendToConversation).mockResolvedValue("SM_TEST_SID");
+    vi.mocked(getWhatsAppMessageStatus).mockResolvedValue({ status: "delivered", errorCode: null });
+  });
+
+  it("una segunda llamada sobre la misma conversación no vuelve a mandar la encuesta (guard de idempotencia)", async () => {
+    const conversationId = await seedConversation(PHONES.idempotencia, { surveyHoursAgo: null });
+
+    await sendSurveyOnClose(conversationId);
+    expect(sendToConversation).toHaveBeenCalledTimes(1);
+
+    await sendSurveyOnClose(conversationId);
+    expect(sendToConversation).toHaveBeenCalledTimes(1); // no un segundo envío
+
+    const row = await adminPool.query<{ survey_sent_at: Date }>(
+      `SELECT survey_sent_at FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(row.rows[0]!.survey_sent_at).not.toBeNull();
   });
 });

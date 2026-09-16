@@ -19,24 +19,32 @@ const SURVEY_TEXT =
 const SURVEY_REPLY_WINDOW_HOURS = 48;
 
 /**
- * Se llama desde `resolverConversacion` (src/advisor/handoffView.ts) justo
- * después de cerrar la conversación — best-effort, un fallo acá no debe
- * afectar el cierre en sí (que ya quedó confirmado en la base antes de
- * llamar a esta función).
+ * Dos call-sites (resolverTicket al cerrar un ticket a mano, y
+ * notificarClientePagoAprobado al aprobar un pago — ver
+ * domains/commerce/notificarPagoCliente.ts): best-effort, un fallo acá no
+ * debe afectar la acción que la disparó (que ya quedó confirmada en la
+ * base antes de llamar a esta función). El guard `survey_sent_at IS NULL`
+ * es lo que evita mandarla dos veces a la misma conversación si las dos
+ * llegan a coincidir (ej. un admin aprueba el pago de un comprobante
+ * escalado y después resuelve el mismo ticket).
  */
 export async function sendSurveyOnClose(conversationId: string): Promise<void> {
   const surveyLogger = logger.child({ conversation_id: conversationId });
   try {
+    const marked = await withTransaction((client) =>
+      client.query<{ id: string }>(
+        `UPDATE conversations SET survey_sent_at = now() WHERE id = $1 AND survey_sent_at IS NULL RETURNING id`,
+        [conversationId],
+      ),
+    );
+    if (marked.rows.length === 0) {
+      return;
+    }
     // La búsqueda del teléfono que había acá la hace ahora
     // `sendToConversation`, que además resuelve por qué conexión responder
     // (Fase 19). Una conversación inexistente lanza y cae en el catch de
     // abajo, igual de best-effort que antes.
     const sid = await sendToConversation(conversationId, SURVEY_TEXT);
-    await withTransaction((client) =>
-      client.query(`UPDATE conversations SET survey_sent_at = now() WHERE id = $1`, [
-        conversationId,
-      ]),
-    );
     await appendMessage(conversationId, "outbound", "agent", SURVEY_TEXT);
     await verifyDelivery(sid, "Encuesta de satisfacción", surveyLogger);
   } catch (error) {
@@ -58,11 +66,10 @@ async function findPendingSurvey(
        FROM conversations c
        JOIN customers cu ON cu.id = c.customer_id
        WHERE cu.channel = $2 AND cu.external_id = $1
-         AND c.status = 'closed'
          AND c.survey_sent_at IS NOT NULL
          AND c.survey_reply_processed_at IS NULL
          AND c.survey_sent_at >= now() - interval '${SURVEY_REPLY_WINDOW_HOURS} hours'
-       ORDER BY c.closed_at DESC
+       ORDER BY c.survey_sent_at DESC
        LIMIT 1`,
       [customerExternalId, channel],
     );
@@ -105,8 +112,13 @@ function buildReviewFormLink(token: string): string {
  *
  * `survey_reply_processed_at` se marca siempre que se encuentra una
  * encuesta pendiente, haya o no calificación reconocible en el mensaje —
- * un solo intento por conversación cerrada, así no se revisan mensajes
- * futuros no relacionados como si fueran la respuesta de la encuesta.
+ * un solo intento por conversación, así no se revisan mensajes futuros no
+ * relacionados como si fueran la respuesta de la encuesta. `findPendingSurvey`
+ * ya no exige `status='closed'` (la encuesta también se manda al aprobar
+ * un pago, cuando la conversación puede seguir abierta hasta 12h — ver
+ * jobs/closeInactivePaidConversations.ts) — `survey_sent_at`/
+ * `survey_reply_processed_at`/la ventana de 48h ya alcanzan para no
+ * confundir una respuesta.
  */
 export async function tryCaptureSurveyReply(
   customerExternalId: string,
