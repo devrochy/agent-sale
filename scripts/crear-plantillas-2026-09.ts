@@ -105,6 +105,20 @@ async function main() {
       },
     },
     {
+      // UTILITY, no MARKETING: es sobre completar un pago ya en curso, no
+      // publicidad (ver src/jobs/recordarComprobantePendiente.ts) —
+      // debería aprobarse más rápido que carrito_abandonado.
+      name: "recordatorio_comprobante",
+      input: {
+        connectionId,
+        name: "recordatorio_comprobante",
+        category: "UTILITY",
+        language: "es",
+        body: "Hola {{1}}, todavía no nos llegó el comprobante de tu pedido #{{2}} por {{3}}. ¿Nos lo compartís cuando puedas para confirmarlo?",
+        bodyExamples: "Juan Pérez, FM-0001, $150.000",
+      },
+    },
+    {
       name: "pedido_cancelado",
       input: {
         connectionId,

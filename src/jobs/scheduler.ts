@@ -4,6 +4,7 @@ import { runCazadorDeVentas } from "./cazadorDeVentas.js";
 import { runCloseExpiredOrders } from "./closeExpiredOrders.js";
 import { sendDailyReports } from "./dailyReport.js";
 import { runReactivarCotizacionesFrias } from "./reactivarCotizacionesFrias.js";
+import { runRecordarComprobantePendiente } from "./recordarComprobantePendiente.js";
 
 /**
  * Jobs programados (ADR-018, docs/fase-12-capacidades-proactivas-agente/):
@@ -73,6 +74,21 @@ export function startJobScheduler(): void {
         logger.error(
           { error, event: "jobs.cerrar_pedidos_vencidos_fallido" },
           "Falló la corrida del cierre de pedidos vencidos",
+        );
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
+  cron.schedule(
+    "0 * * * *",
+    async () => {
+      try {
+        await runRecordarComprobantePendiente();
+      } catch (error) {
+        logger.error(
+          { error, event: "jobs.recordar_comprobante_pendiente_fallido" },
+          "Falló la corrida del recordatorio de comprobante pendiente",
         );
       }
     },
