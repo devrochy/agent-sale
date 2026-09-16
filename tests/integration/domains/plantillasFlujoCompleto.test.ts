@@ -137,6 +137,9 @@ beforeAll(async () => {
     { type: "BODY", text: "Antes de alistar tu pedido #{{1}}, confirmanos: ¿la dirección sigue siendo {{2}}?" },
     { type: "BUTTONS", buttons: [{ type: "QUICK_REPLY", text: "Confirmar dirección" }] },
   ]);
+  // Con botón, a propósito: refleja el estado real de la plantilla vieja
+  // en Meta (con el link roto) — notificarPagoCliente.ts la usa de
+  // respaldo mientras "pago_aprobado_v2" (sin botón) no esté aprobada.
   await crearPlantillaAprobada("pago_aprobado", [
     { type: "BODY", text: "¡Tu pago del pedido #{{1}} por {{2}} fue aprobado!" },
     {
@@ -598,7 +601,7 @@ describe("notificaciones de pago al cliente", () => {
     return created.order_id!;
   }
 
-  it("marcarPagoAprobado + notificarClientePagoAprobado manda pago_aprobado con el botón de reseña", async () => {
+  it("sin 'pago_aprobado_v2' aprobada -> usa la vieja 'pago_aprobado' como respaldo (con el botón, ya sin token real) y encadena la encuesta", async () => {
     // Wompi no configurado en este fixture → crearPedido con pago_en_linea
     // devuelve wompi_no_configurado y no llega a "confirmed". Se crea con
     // transferencia (que sí queda 'confirmed') y se fuerza payment_status
@@ -612,15 +615,64 @@ describe("notificaciones de pago al cliente", () => {
     const total = await marcarPagoAprobado(orderId, `tx-flujo-${Date.now()}`);
     expect(total).not.toBeNull();
 
+    // Dos envíos: la plantilla de pago aprobado y, encadenado, el texto
+    // libre de la encuesta 1-5 (sendSurveyOnClose) — la reseña ya no va
+    // pegada a la plantilla, se unificó en un solo camino con
+    // resolverTicket.
     fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.pagoaprobado" }] }));
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.encuesta" }] }));
     await notificarClientePagoAprobado(orderId);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [, init] = fetchMock.mock.calls[0]!;
-    const payload = JSON.parse((init as RequestInit).body as string);
-    expect(payload.template.name).toBe("pago_aprobado");
-    const boton = payload.template.components.find((c: { type: string }) => c.type === "button");
-    expect(boton.parameters[0].text).toMatch(/^[A-Za-z0-9_-]+$/); // token de reseña
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, initPlantilla] = fetchMock.mock.calls[0]!;
+    const payloadPlantilla = JSON.parse((initPlantilla as RequestInit).body as string);
+    expect(payloadPlantilla.template.name).toBe("pago_aprobado");
+    // Sigue mandando el botón (Meta exige un parámetro por cada componente
+    // declarado en la plantilla vieja), pero ya no lleva un token de
+    // reseña real — el link de verdad llega por la encuesta.
+    const boton = payloadPlantilla.template.components.find((c: { type: string }) => c.type === "button");
+    expect(boton).toBeDefined();
+
+    const [, initEncuesta] = fetchMock.mock.calls[1]!;
+    const payloadEncuesta = JSON.parse((initEncuesta as RequestInit).body as string);
+    expect(payloadEncuesta.text.body).toContain("¿Cómo calificarías tu experiencia");
+
+    const conversacion = await adminPool.query<{ survey_sent_at: string | null }>(
+      `SELECT survey_sent_at FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(conversacion.rows[0]!.survey_sent_at).not.toBeNull();
+
+    await adminPool.query(`UPDATE conversations SET survey_sent_at = NULL, survey_reply_processed_at = NULL WHERE id = $1`, [
+      conversationId,
+    ]);
+  });
+
+  it("con 'pago_aprobado_v2' aprobada -> la usa de preferencia, sin botón", async () => {
+    await crearPlantillaAprobada("pago_aprobado_v2", [
+      { type: "BODY", text: "🎉 ¡Pago aprobado! Tu pedido #{{1}} por {{2}} ya está confirmado." },
+    ]);
+
+    const orderId = await nuevoPedidoConfirmado("transferencia");
+    await adminPool.query(`UPDATE orders SET payment_status = 'pendiente' WHERE id = $1`, [orderId]);
+    const total = await marcarPagoAprobado(orderId, `tx-flujo-v2-${Date.now()}`);
+    expect(total).not.toBeNull();
+
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.pagoaprobado.v2" }] }));
+    fetchMock.mockResolvedValueOnce(okJsonResponse({ messages: [{ id: "wamid.encuesta.v2" }] }));
+    await notificarClientePagoAprobado(orderId);
+
+    const [, initPlantilla] = fetchMock.mock.calls[0]!;
+    const payloadPlantilla = JSON.parse((initPlantilla as RequestInit).body as string);
+    expect(payloadPlantilla.template.name).toBe("pago_aprobado_v2");
+    expect(payloadPlantilla.template.components.find((c: { type: string }) => c.type === "button")).toBeUndefined();
+
+    await adminPool.query(`UPDATE conversations SET survey_sent_at = NULL, survey_reply_processed_at = NULL WHERE id = $1`, [
+      conversationId,
+    ]);
+    await adminPool.query(`DELETE FROM whatsapp_templates WHERE connection_id = $1 AND name = 'pago_aprobado_v2'`, [
+      connectionId,
+    ]);
   });
 
   it("marcarPagoRechazado + notificarClientePagoRechazado manda pago_rechazado", async () => {

@@ -103,6 +103,57 @@ describe("resolveConversation — conversationBotPaused (Fase 18)", () => {
   });
 });
 
+describe("resolveConversation — reapertura de conversación cerrada reciente", () => {
+  const PHONE_RECIENTE = "whatsapp:+573000000107";
+  const PHONE_VIEJA = "whatsapp:+573000000108";
+
+  afterAll(async () => {
+    await adminPool.query(
+      `DELETE FROM conversations WHERE customer_id IN (SELECT id FROM customers WHERE external_id IN ($1, $2))`,
+      [PHONE_RECIENTE, PHONE_VIEJA],
+    );
+    await adminPool.query(`DELETE FROM customers WHERE external_id IN ($1, $2)`, [
+      PHONE_RECIENTE,
+      PHONE_VIEJA,
+    ]);
+  });
+
+  it("cerrada hace menos de 24h -> se reabre y reusa la misma fila (mismo state/historial)", async () => {
+    const primera = await resolveConversation(PHONE_RECIENTE, "Cliente Recurrente");
+    await adminPool.query(
+      `UPDATE conversations SET status = 'closed', closed_at = now() - interval '2 hours', state = '{"step":"resuelto"}'::jsonb WHERE id = $1`,
+      [primera.conversationId],
+    );
+
+    const segunda = await resolveConversation(PHONE_RECIENTE);
+
+    expect(segunda.conversationId).toBe(primera.conversationId);
+    expect(segunda.state).toEqual({ step: "resuelto" });
+    const fila = await adminPool.query<{ status: string; closed_at: string | null }>(
+      `SELECT status, closed_at FROM conversations WHERE id = $1`,
+      [primera.conversationId],
+    );
+    expect(fila.rows[0]).toMatchObject({ status: "open", closed_at: null });
+  });
+
+  it("cerrada hace más de 24h -> abre una conversación nueva, no reusa la vieja", async () => {
+    const primera = await resolveConversation(PHONE_VIEJA, "Cliente Ausente");
+    await adminPool.query(
+      `UPDATE conversations SET status = 'closed', closed_at = now() - interval '25 hours' WHERE id = $1`,
+      [primera.conversationId],
+    );
+
+    const segunda = await resolveConversation(PHONE_VIEJA);
+
+    expect(segunda.conversationId).not.toBe(primera.conversationId);
+    const filaVieja = await adminPool.query<{ status: string }>(
+      `SELECT status FROM conversations WHERE id = $1`,
+      [primera.conversationId],
+    );
+    expect(filaVieja.rows[0]!.status).toBe("closed");
+  });
+});
+
 describe("resolveConversation — la conversación sigue al último número usado (Fase 19, Etapa B)", () => {
   it("el mismo cliente por dos conexiones es UNA conversación, apuntando a la última", async () => {
     const twilio = await saveConnection({

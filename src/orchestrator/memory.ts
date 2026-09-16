@@ -108,6 +108,42 @@ export async function resolveConversation(
       };
     }
 
+    // Sin conversación `open`: si la más reciente `closed` se cerró hace
+    // menos de 24h, se reabre y se reusa (mismo carrito/estado/historial)
+    // en vez de arrancar una conversación nueva vacía — un cliente que
+    // pagó y vuelve a escribir horas después para pedir algo más no debe
+    // perder el hilo. Pasado ese margen, una conversación nueva es más
+    // sana que arrastrar contexto viejo.
+    const reabrible = await client.query<{
+      id: string;
+      state: Record<string, unknown>;
+      bot_paused: boolean;
+      connection_id: string | null;
+    }>(
+      `SELECT id, state, bot_paused, connection_id FROM conversations
+       WHERE customer_id = $1 AND status = 'closed' AND closed_at >= now() - interval '24 hours'
+       ORDER BY closed_at DESC LIMIT 1`,
+      [customerId],
+    );
+    if (reabrible.rows[0]) {
+      await client.query(`UPDATE conversations SET status = 'open', closed_at = NULL WHERE id = $1`, [
+        reabrible.rows[0].id,
+      ]);
+      if (origin?.connectionId && origin.connectionId !== reabrible.rows[0].connection_id) {
+        await client.query(
+          `UPDATE conversations SET connection_id = $1, channel = $2 WHERE id = $3`,
+          [origin.connectionId, channel, reabrible.rows[0].id],
+        );
+      }
+      return {
+        conversationId: reabrible.rows[0].id,
+        customerId,
+        state: reabrible.rows[0].state,
+        customerBotPaused,
+        conversationBotPaused: reabrible.rows[0].bot_paused,
+      };
+    }
+
     const created = await client.query<{ id: string; state: Record<string, unknown>; bot_paused: boolean }>(
       `INSERT INTO conversations (customer_id, status, state, channel, connection_id)
        VALUES ($1, 'open', '{}'::jsonb, $2, $3)

@@ -1,10 +1,11 @@
-import { env } from "../../config/env.js";
 import { appendMessage } from "../../orchestrator/memory.js";
-import { createReviewToken, withTransaction } from "../../shared/db/index.js";
+import { sendSurveyOnClose } from "../../orchestrator/satisfactionSurvey.js";
+import { withTransaction } from "../../shared/db/index.js";
 import { canonicalToMetaRecipient } from "../../gateway/channels/meta/addresses.js";
 import {
   findUrlButtonIndex,
   resolveApprovedTemplate,
+  type ResolveApprovedTemplateResult,
 } from "../../gateway/channels/meta/resolveApprovedTemplate.js";
 import { sendTemplateMessage } from "../../gateway/channels/meta/templates.js";
 
@@ -45,16 +46,41 @@ async function fetchOrder(orderId: string): Promise<OrderRow | null> {
   });
 }
 
-function buildReviewLink(token: string): string {
-  return `${new URL(env.publicWebhookUrl).origin}/resena/${token}`;
+/**
+ * Plantilla "pago_aprobado" — el botón "Dejar reseña" quedó apuntando a
+ * un dominio de túnel Cloudflare efímero desde que se aprobó (roto en
+ * producción). Meta no permite editar una plantilla aprobada, y borrar y
+ * recrear con el MISMO nombre bloquea el nombre por semanas (ver
+ * scripts/recrear-plantilla-pago-aprobado.ts) — la solución real es
+ * "pago_aprobado_v2", sin ese botón: la reseña ya no depende de ningún
+ * botón/dominio fijo, se unificó con la encuesta de satisfacción 1-5
+ * (orchestrator/satisfactionSurvey.ts) que genera el link real en el
+ * momento, como texto libre.
+ *
+ * Mientras "pago_aprobado_v2" no esté aprobada por Meta (puede tardar
+ * días), se sigue usando la vieja "pago_aprobado" como respaldo — sin
+ * este fallback, un pedido pagado se quedaría sin ningún aviso de "pago
+ * aprobado" durante ese lapso, que es peor que el botón roto que ya
+ * tiene hoy. El botón de la vieja sigue apuntando al dominio muerto (eso
+ * no tiene arreglo sin la v2), pero el aviso y la encuesta con el link
+ * real de reseña sí llegan igual.
+ */
+async function resolverPlantillaPagoAprobado(
+  connectionId: string | null,
+): Promise<{ resuelta: ResolveApprovedTemplateResult; esVersionSinBoton: boolean }> {
+  const v2 = await resolveApprovedTemplate(connectionId, "pago_aprobado_v2");
+  if (v2.ok) {
+    return { resuelta: v2, esVersionSinBoton: true };
+  }
+  const original = await resolveApprovedTemplate(connectionId, "pago_aprobado");
+  return { resuelta: original, esVersionSinBoton: false };
 }
 
-/** Plantilla "pago_aprobado" — body (número de pedido, monto) + botón URL "Dejar reseña" con el token de reseña como sufijo dinámico. */
 export async function notificarClientePagoAprobado(orderId: string): Promise<void> {
   const order = await fetchOrder(orderId);
   if (!order) return;
 
-  const resuelta = await resolveApprovedTemplate(order.connection_id, "pago_aprobado");
+  const { resuelta, esVersionSinBoton } = await resolverPlantillaPagoAprobado(order.connection_id);
   if (!resuelta.ok) return;
 
   const total = Number(order.total);
@@ -67,32 +93,34 @@ export async function notificarClientePagoAprobado(orderId: string): Promise<voi
       ],
     },
   ];
-  const indiceBotonUrl = findUrlButtonIndex(resuelta.template);
-  let reviewLink: string | null = null;
-  if (indiceBotonUrl >= 0) {
-    const token = await createReviewToken(order.conversation_id);
-    reviewLink = buildReviewLink(token);
-    components.push({
-      type: "button",
-      sub_type: "url",
-      index: String(indiceBotonUrl),
-      parameters: [{ type: "text", text: token }],
-    });
+  if (!esVersionSinBoton) {
+    // Respaldo sobre la plantilla vieja: el botón sigue ahí (Meta exige
+    // un parámetro por cada componente declarado), pero ya no apunta a
+    // un token de reseña real — el dominio está muerto de todos modos.
+    const indiceBotonUrl = findUrlButtonIndex(resuelta.template);
+    if (indiceBotonUrl >= 0) {
+      components.push({
+        type: "button",
+        sub_type: "url",
+        index: String(indiceBotonUrl),
+        parameters: [{ type: "text", text: order.public_order_number }],
+      });
+    }
   }
 
   await sendTemplateMessage(
     resuelta.connection.credentials,
     resuelta.connection.externalId,
     canonicalToMetaRecipient(order.customer_external_id),
-    "pago_aprobado",
+    resuelta.template.name,
     resuelta.template.language,
     components,
   );
 
-  const texto = reviewLink
-    ? `¡Tu pago del pedido #${order.public_order_number} por ${formatearMonto(total)} fue aprobado! 🎉 Contanos cómo fue tu experiencia: ${reviewLink}`
-    : `¡Tu pago del pedido #${order.public_order_number} por ${formatearMonto(total)} fue aprobado! 🎉`;
+  const texto = `¡Tu pago del pedido #${order.public_order_number} por ${formatearMonto(total)} fue aprobado! 🎉`;
   await appendMessage(order.conversation_id, "outbound", "agent", texto);
+
+  await sendSurveyOnClose(order.conversation_id);
 }
 
 /** Plantilla "pago_rechazado" — sin botones, solo avisa que el pago no se pudo procesar. */
