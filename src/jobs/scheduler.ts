@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { logger } from "../shared/observability/logger.js";
 import { runCazadorDeVentas } from "./cazadorDeVentas.js";
 import { runCloseExpiredOrders } from "./closeExpiredOrders.js";
+import { runCloseInactivePaidConversations } from "./closeInactivePaidConversations.js";
 import { sendDailyReports } from "./dailyReport.js";
 import { runReactivarCotizacionesFrias } from "./reactivarCotizacionesFrias.js";
 
@@ -73,6 +74,21 @@ export function startJobScheduler(): void {
         logger.error(
           { error, event: "jobs.cerrar_pedidos_vencidos_fallido" },
           "Falló la corrida del cierre de pedidos vencidos",
+        );
+      }
+    },
+    { timezone: "America/Bogota" },
+  );
+
+  cron.schedule(
+    "0 * * * *",
+    async () => {
+      try {
+        await runCloseInactivePaidConversations();
+      } catch (error) {
+        logger.error(
+          { error, event: "jobs.cerrar_conversaciones_pagadas_inactivas_fallido" },
+          "Falló la corrida del cierre de conversaciones pagadas inactivas",
         );
       }
     },
