@@ -12,6 +12,10 @@ import { logger } from "../../shared/observability/logger.js";
 // "guardrail_stock" se agregó en la Fase 12.1 (migrations/0019), mismo
 // criterio: interno, extiende el guardrail de precios a disponibilidad
 // (ver docs/fase-12-capacidades-proactivas-agente/analisis-superpoderes.md).
+// "cancelacion_pedido_pagado" (migrations/0066): interno también — lo
+// dispara cancelarPedido.ts cuando se pide cancelar un pedido que ya
+// tiene payment_status='pagado', para que un admin gestione la devolución
+// antes de aprobar la cancelación de verdad.
 export type EscalationReason =
   | "compatibilidad_tecnica"
   | "monto_alto"
@@ -20,7 +24,8 @@ export type EscalationReason =
   | "queja"
   | "guardrail_precio"
   | "fuera_de_alcance"
-  | "guardrail_stock";
+  | "guardrail_stock"
+  | "cancelacion_pedido_pagado";
 
 export interface EscalarHumanoInput {
   reason: EscalationReason;

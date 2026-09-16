@@ -263,6 +263,8 @@ interface PedidoRow {
   receipt_resultado: string | null;
   ocr_monto: string | null;
   ocr_cuenta: string | null;
+  cancellation_requested_at: string | null;
+  cancellation_reason: string | null;
 }
 
 /**
@@ -6741,6 +6743,7 @@ export async function renderPedidosPage(
       `SELECT o.id, o.public_order_number, o.status, o.payment_method, o.payment_status, o.delivery_method, o.total, o.created_at,
               o.delivery_address, o.delivery_id_document, o.delivery_full_name, o.delivery_municipality, o.delivery_city,
               o.tracking_number, o.carrier, o.wompi_payment_link_url, o.status_reason, o.address_confirmed_at,
+              o.cancellation_requested_at, o.cancellation_reason,
               c.external_id, c.name AS customer_name,
               lr.receipt_id, lr.inbound_media_id, lr.resultado AS receipt_resultado, lr.ocr_monto, lr.ocr_cuenta,
               COALESCE(
@@ -6891,7 +6894,32 @@ export async function renderPedidosPage(
            </dialog>`
         : "";
 
-      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}${verComprobante}`;
+      // Un pedido ya pagado no se cancela de inmediato (ver cancelarPedido
+      // en este mismo archivo) — queda acá, en la misma columna de Pago,
+      // hasta que el admin la aprueba (después de gestionar la devolución
+      // por fuera del sistema) o la rechaza.
+      const cancelacionDialogId = `cancelacion-${row.id}`;
+      const verCancelacionPendiente = row.cancellation_requested_at
+        ? `<button type="button" data-open-dialog="${cancelacionDialogId}" class="chip chip--amber chip--action">Cancelación pendiente</button>`
+        : "";
+      const cancelacionDialog = row.cancellation_requested_at
+        ? `<dialog id="${cancelacionDialogId}" class="modal">
+             <div class="blockhead"><h2>Cancelación pendiente — ${escapeHtml(row.public_order_number)}</h2></div>
+             <p class="hint">Este pedido ya está pagado (${formatCOP(Number(row.total))}). Antes de aprobar, gestioná la devolución del dinero por fuera del sistema.</p>
+             ${row.cancellation_reason ? `<p class="hint">Motivo: ${escapeHtml(row.cancellation_reason)}</p>` : ""}
+             <div class="formfoot">
+               <form method="POST" action="/admin/pedidos/${row.id}/cancelacion/rechazar" data-confirm="¿Rechazar la cancelación de ${escapeHtml(row.public_order_number)}? El pedido sigue abierto normalmente.">
+                 <button type="submit" class="btn btn--ghost act--redline">Rechazar</button>
+               </form>
+               <form method="POST" action="/admin/pedidos/${row.id}/cancelacion/aprobar" data-confirm="¿Aprobar la cancelación de ${escapeHtml(row.public_order_number)}? Confirmá que ya gestionaste la devolución del dinero — esto cancela el pedido y libera el stock.">
+                 <button type="submit" class="btn btn--primary">Aprobar cancelación</button>
+               </form>
+               <button type="button" data-close-dialog="${cancelacionDialogId}" class="btn btn--ghost">Cerrar</button>
+             </div>
+           </dialog>`
+        : "";
+
+      const pagoCell = `${escapeHtml(etiquetaMetodoPago(row.payment_method))}${linkPago}${verComprobante}${verCancelacionPendiente}`;
 
       // La guía es un dato de la entrega, no una columna aparte: junta con
       // el método y la dirección se lee como "cómo le llega esto al
@@ -6990,7 +7018,8 @@ export async function renderPedidosPage(
       ${direccionDialog}
       ${domicilioDialog}
       ${guiaDialog}
-      ${comprobanteDialog}`;
+      ${comprobanteDialog}
+      ${cancelacionDialog}`;
     })
     .join("\n");
 
@@ -7066,19 +7095,134 @@ export async function renderPedidosPage(
  * mueve el webhook de Wompi y el despacho el registro de guía; estas dos
  * necesitan que alguien las afirme.
  *
- * Cancelar no revierte el pago ni libera stock: es un cambio de estado, no
- * una devolución. Lo que se deshace con plata de por medio se resuelve
- * fuera del panel, y fingir lo contrario acá sería peor que no ofrecerlo.
+ * Cancelar libera el stock reservado, pero nunca revierte un pago por sí
+ * solo: si el pedido ya estaba pagado, cancelar acá NO lo marca cancelado
+ * de inmediato — queda pendiente de aprobación hasta que el admin
+ * gestione la devolución del dinero por fuera del sistema (ver
+ * aprobarCancelacionPedido/rechazarCancelacionPedido más abajo). Fingir
+ * que la plata se resuelve sola sería peor que no ofrecer el botón.
  */
 export async function marcarPedidoEntregado(orderId: string): Promise<void> {
   await cambiarEstadoPedido(orderId, "entregado");
 }
 
+/**
+ * Inverso exacto del descuento de stock de crearPedido.ts — mismo query
+ * duplicado en cancelarPedido.ts (tool del LLM) y en closeExpiredOrders.ts,
+ * mismo criterio del proyecto de no extraer un módulo compartido para
+ * esto (ver el mismo patrón entre crearPedido.ts/agregarItemPedido.ts).
+ */
+async function releaseStockPedido(orderId: string): Promise<void> {
+  await withTransaction((client) =>
+    client.query(
+      `UPDATE inventory i
+       SET stock_quantity = i.stock_quantity + oi.quantity
+       FROM order_items oi
+       WHERE oi.order_id = $1 AND i.variant_id = oi.variant_id`,
+      [orderId],
+    ),
+  );
+}
+
+/**
+ * Un pedido ya pagado no se cancela de inmediato acá tampoco — mismo
+ * criterio que la tool `cancelar_pedido` (ver cancelarPedido.ts): cancelar
+ * implica devolverle la plata al cliente, así que queda "solicitada"
+ * (`cancellation_requested_at`) hasta que el admin la aprueba con
+ * `aprobarCancelacionPedido`, después de gestionar la devolución por
+ * fuera del sistema. A diferencia de la tool, acá NO se escala a un
+ * ticket: el admin que hace clic ya lo sabe, no hace falta notificarle a
+ * sí mismo.
+ */
+// Mismo criterio que cancelarPedido.ts (tool del LLM): solo transferencia
+// y pago en línea representan plata ya cobrada de verdad cuando
+// payment_status='pagado' — efectivo_contraentrega/tarjeta nacen en
+// 'pagado' como default histórico (crearPedido.ts), sin cobro real hasta
+// la entrega.
+const METODOS_CON_COBRO_REAL_PEDIDO = new Set(["transferencia", "pago_en_linea"]);
+
 export async function cancelarPedido(orderId: string, admin: AdminRecord): Promise<void> {
+  const order = await withTransaction((client) =>
+    client.query<{ payment_status: string; payment_method: string }>(
+      `SELECT payment_status, payment_method FROM orders WHERE id = $1`,
+      [orderId],
+    ),
+  );
+  const row = order.rows[0];
+  if (!row) return;
+
+  if (row.payment_status === "pagado" && METODOS_CON_COBRO_REAL_PEDIDO.has(row.payment_method)) {
+    await withTransaction((client) =>
+      client.query(
+        `UPDATE orders SET cancellation_requested_at = now(), cancellation_reason = $2
+          WHERE id = $1 AND status = 'abierto' AND cancellation_requested_at IS NULL`,
+        [orderId, `Cancelación solicitada desde el panel por ${admin.username}.`],
+      ),
+    );
+    return;
+  }
+
   await cambiarEstadoPedido(orderId, "cancelado", `Cancelado desde el panel por ${admin.username}.`);
+  await releaseStockPedido(orderId);
   // Plantilla "pedido_cancelado" (best-effort: si todavía no está aprobada
   // por Meta, la cancelación en sí ya quedó hecha igual).
   await notificarPedidoCancelado(orderId);
+}
+
+/**
+ * Aprueba una cancelación de pedido pagado que estaba pendiente (ver
+ * cancelarPedido más arriba) — recién acá se cancela de verdad: se asume
+ * que el admin ya gestionó la devolución del dinero por fuera del
+ * sistema antes de tocar este botón.
+ */
+export async function aprobarCancelacionPedido(orderId: string, admin: AdminRecord): Promise<boolean> {
+  const marcado = await withTransaction((client) =>
+    client.query<{ id: string }>(
+      `SELECT id FROM orders WHERE id = $1 AND status = 'abierto' AND cancellation_requested_at IS NOT NULL`,
+      [orderId],
+    ),
+  );
+  if (marcado.rows.length === 0) {
+    return false;
+  }
+
+  await cambiarEstadoPedido(orderId, "cancelado", `Cancelación aprobada por ${admin.username}.`);
+  await releaseStockPedido(orderId);
+  await notificarPedidoCancelado(orderId);
+  return true;
+}
+
+/**
+ * Rechaza la solicitud de cancelación — el pedido sigue abierto tal cual
+ * estaba, sin tocar `status` ni el stock. Necesario para no dejar una
+ * solicitud pendiente sin salida (ej. el cliente se arrepintió, o fue un
+ * pedido de cancelación por error).
+ */
+export async function rechazarCancelacionPedido(orderId: string, admin: AdminRecord): Promise<boolean> {
+  const result = await withTransaction((client) =>
+    client.query<{ conversation_id: string; public_order_number: string }>(
+      `UPDATE orders SET cancellation_requested_at = NULL, cancellation_reason = NULL
+        WHERE id = $1 AND status = 'abierto' AND cancellation_requested_at IS NOT NULL
+      RETURNING conversation_id, public_order_number`,
+      [orderId],
+    ),
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return false;
+  }
+
+  try {
+    const texto = `${admin.username} revisó tu solicitud de cancelación del pedido ${row.public_order_number} — el pedido sigue en pie, seguimos con tu compra normal.`;
+    await sendToConversation(row.conversation_id, texto);
+    await appendMessage(row.conversation_id, "outbound", "agent", texto);
+  } catch (error) {
+    logger.warn(
+      { error, event: "pedido.rechazo_cancelacion_no_notificado", order_id: orderId },
+      "Cancelación rechazada, pero no se pudo avisar al cliente",
+    );
+  }
+  return true;
 }
 
 export async function renderAliadosPage(

@@ -11,6 +11,7 @@ import {
   activarCategoria,
   activarColaborador,
   activarPromocion,
+  aprobarCancelacionPedido,
   cambiarContrasenaPropia,
   cancelarPedido,
   confirmarImportacionCsv,
@@ -56,6 +57,7 @@ import {
   previsualizarImportacionCsv,
   reactivarBot,
   reasignarTicketABot,
+  rechazarCancelacionPedido,
   renderAliadosPage,
   renderAnaliticaPage,
   renderCategoriasPage,
@@ -614,6 +616,22 @@ export async function buildServer() {
     const { orderId } = request.params as { orderId: string };
     await cancelarPedido(orderId, request.admin!);
     return reply.status(303).redirect("/admin/pedidos?guardado=1");
+  });
+
+  app.post("/admin/pedidos/:orderId/cancelacion/aprobar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    const ok = await aprobarCancelacionPedido(orderId, request.admin!);
+    return reply
+      .status(303)
+      .redirect(ok ? "/admin/pedidos?guardado=1" : "/admin/pedidos?error=No se pudo aprobar la cancelación.");
+  });
+
+  app.post("/admin/pedidos/:orderId/cancelacion/rechazar", async (request, reply) => {
+    const { orderId } = request.params as { orderId: string };
+    const ok = await rechazarCancelacionPedido(orderId, request.admin!);
+    return reply
+      .status(303)
+      .redirect(ok ? "/admin/pedidos?guardado=1" : "/admin/pedidos?error=No se pudo rechazar la cancelación.");
   });
 
   // Sirve la imagen de un media entrante (comprobante de transferencia, o
