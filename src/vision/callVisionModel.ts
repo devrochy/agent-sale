@@ -110,6 +110,15 @@ async function callDeepSeekVision(
     body: JSON.stringify({
       model: config.model,
       max_tokens: maxTokens,
+      // deepseek-flash tiene razonamiento activado por defecto, y ese
+      // razonamiento (reasoning_content) consume del mismo `max_tokens` que
+      // la respuesta final — con los presupuestos chicos que usan los
+      // prompts de acá (describir producto, clasificar, OCR), el modelo
+      // gastaba todo pensando y nunca llegaba a escribir el JSON de
+      // respuesta (`finish_reason: "length"`, `content: ""`). Confirmado en
+      // vivo contra la API real. Ver
+      // https://api-docs.deepseek.com/guides/thinking_mode/.
+      thinking: { type: "disabled" },
       messages: [
         {
           role: "user",
