@@ -126,17 +126,25 @@ import {
   testLlmConfig,
   type ProviderKey,
 } from "../orchestrator/llm/index.js";
+import {
+  describeTranscriptionConfig,
+  isTranscriptionProviderKey,
+  testTranscriptionConfig,
+  TRANSCRIPTION_PROVIDER_CATALOG,
+  type TranscriptionProviderKey,
+} from "../media/resolveTranscriptionProvider.js";
 import { isTono } from "../orchestrator/toneBlocks.js";
 import { createPaymentLink, MIN_AMOUNT_COP } from "../payments/wompiClient.js";
 import { isVisionProviderKey, testVisionConfig, VISION_PROVIDER_CATALOG, type VisionProviderKey } from "../vision/index.js";
 import {
   clearLlmConfig,
   clearOcrConfig,
+  clearOpenAiConfig,
+  clearTranscriptionConfig,
   getBehaviorConfig,
   getBrandVoiceConfig,
   getLlmConfig,
   getOcrConfig,
-  getOpenAiConfig,
   getReportFrequencyDays,
   getReportRecipient,
   getReviewLink,
@@ -146,10 +154,10 @@ import {
   saveBrandVoiceConfig,
   saveLlmConfig,
   saveOcrConfig,
-  saveOpenAiConfig,
   saveReportFrequencyDays,
   saveReportRecipient,
   saveReviewLink,
+  saveTranscriptionConfig,
   saveWompiConfig,
   setBotPaused,
   type SettingsSummary,
@@ -2410,6 +2418,7 @@ const CLIENT_SCRIPT = `
   }
   wireProviderModelSelect("llm", "llm-catalog-data");
   wireProviderModelSelect("ocr", "ocr-catalog-data");
+  wireProviderModelSelect("transcripcion", "transcripcion-catalog-data");
 
   /* ---------- copiar al portapapeles (ej. URL de webhook en Conexiones) ---------- */
   document.querySelectorAll("[data-copy]").forEach(function (btn) {
@@ -9231,6 +9240,22 @@ function ocrCatalogForClient(): Record<VisionProviderKey, { models: { id: string
   ) as Record<VisionProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }>;
 }
 
+/** Mismo criterio que llmCatalogForClient/ocrCatalogForClient, para el selector de proveedor de transcripción. */
+function transcriptionCatalogForClient(): Record<
+  TranscriptionProviderKey,
+  { models: { id: string; label: string }[]; keyPlaceholder: string }
+> {
+  return Object.fromEntries(
+    (Object.keys(TRANSCRIPTION_PROVIDER_CATALOG) as TranscriptionProviderKey[]).map((key) => [
+      key,
+      {
+        models: TRANSCRIPTION_PROVIDER_CATALOG[key].models,
+        keyPlaceholder: TRANSCRIPTION_PROVIDER_CATALOG[key].keyPlaceholder,
+      },
+    ]),
+  ) as Record<TranscriptionProviderKey, { models: { id: string; label: string }[]; keyPlaceholder: string }>;
+}
+
 /**
  * Configuración (Fase 11.4, ver docs/fase-11-panel-admin-dashboard/
  * configuracion-comportamiento.md y ADR-020): kill-switch del bot +
@@ -9266,10 +9291,22 @@ export async function renderConfiguracionPage(
   const wompiConfig = await getWompiConfig();
   const maskedWompiKey = wompiConfig.privateKey ? `••••${wompiConfig.privateKey.slice(-4)}` : null;
   const maskedEventsSecret = wompiConfig.eventsSecret ? `••••${wompiConfig.eventsSecret.slice(-4)}` : null;
-  const openAiConfig = await getOpenAiConfig();
-  const maskedOpenAiKey = openAiConfig.apiKey ? `••••${openAiConfig.apiKey.slice(-4)}` : null;
-  const openAiKeyHint = maskedOpenAiKey
-    ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedOpenAiKey)}</span>. Dejar el campo vacío para conservarla.`
+  const transcriptionDisplay = await describeTranscriptionConfig();
+  const currentTranscriptionProviderKey = transcriptionDisplay.providerKey;
+  const currentTranscriptionEntry = currentTranscriptionProviderKey
+    ? TRANSCRIPTION_PROVIDER_CATALOG[currentTranscriptionProviderKey]
+    : null;
+  const currentTranscriptionModel = transcriptionDisplay.model ?? currentTranscriptionEntry?.defaultModel ?? "";
+  const maskedTranscriptionKey = transcriptionDisplay.apiKey ? `••••${transcriptionDisplay.apiKey.slice(-4)}` : null;
+  const transcriptionProviderOptions = (Object.keys(TRANSCRIPTION_PROVIDER_CATALOG) as TranscriptionProviderKey[])
+    .map((key) => {
+      const entry = TRANSCRIPTION_PROVIDER_CATALOG[key];
+      const selected = key === currentTranscriptionProviderKey ? " selected" : "";
+      return `<option value="${key}"${selected}>${escapeHtml(entry.label)}</option>`;
+    })
+    .join("\n");
+  const transcriptionKeyHint = maskedTranscriptionKey
+    ? `Ya hay una guardada: <span class="mono">${escapeHtml(maskedTranscriptionKey)}</span>. Dejar el campo vacío para conservarla.`
     : "Sin key propia — sin ella, el asistente no puede transcribir audio.";
   const currentProviderKey = llmConfig.provider && isProviderKey(llmConfig.provider) ? llmConfig.provider : null;
   const currentEntry = currentProviderKey ? PROVIDER_CATALOG[currentProviderKey] : null;
@@ -9509,16 +9546,29 @@ export async function renderConfiguracionPage(
     <section class="block" aria-label="Transcripción de audio">
       <div class="blockhead"><h2>Transcripción de audio</h2><span class="hint">BYOK</span></div>
       <div class="panel connection">
-        <form method="POST" action="/admin/configuracion/openai">
+        <form method="POST" action="/admin/configuracion/transcripcion">
           <div class="field">
-            <label for="openai-apikey">API key de OpenAI</label>
-            <input type="password" id="openai-apikey" name="apiKey" autocomplete="off">
-            <p class="hint">${openAiKeyHint}</p>
+            <label for="transcripcion-provider">Proveedor</label>
+            <select id="transcripcion-provider" name="provider" data-provider-select="transcripcion">
+              <option value=""${currentTranscriptionProviderKey ? "" : " selected"}>Automático (recomendado)</option>
+              ${transcriptionProviderOptions}
+            </select>
+            <p class="hint">Sin seleccionar, usa OpenAI Whisper con la key de abajo.</p>
+          </div>
+          <div class="field">
+            <label for="transcripcion-model">Modelo</label>
+            <select id="transcripcion-model" name="model" data-model-select="transcripcion" data-initial-model="${escapeHtml(currentTranscriptionModel)}"></select>
+          </div>
+          <div class="field">
+            <label for="transcripcion-apikey">API key propia (opcional)</label>
+            <input type="password" id="transcripcion-apikey" name="apiKey" data-apikey-input="transcripcion" autocomplete="off">
+            <p class="hint">${transcriptionKeyHint}</p>
           </div>
           <div class="formfoot"><button type="submit" class="btn btn--primary">Probar y guardar</button></div>
         </form>
-        <p class="hint">Se usa para transcribir las notas de voz que llegan por WhatsApp (Whisper) — sin esta key, el asistente le pide al cliente que escriba el mensaje.</p>
+        <script type="application/json" id="transcripcion-catalog-data">${JSON.stringify(transcriptionCatalogForClient())}</script>
       </div>
+      <p class="hint">Se usa para transcribir las notas de voz que llegan por WhatsApp — sin proveedor configurado, el asistente le pide al cliente que escriba el mensaje.</p>
     </section>
     </div>
     <div class="cfgpanel" data-cfg-panel="reportes" role="tabpanel" aria-label="Reportes y reseñas" hidden>
@@ -10068,37 +10118,48 @@ export async function guardarCobros(
 }
 
 /**
- * API key de OpenAI, usada por `media/transcribirAudio.ts` (Whisper) para
- * transcribir notas de voz entrantes — mismo criterio de "Probar y
- * guardar" que Cobros/Modelo de IA: antes de persistir se valida con una
- * llamada liviana y barata (`GET /v1/models`, no cuesta nada y no requiere
- * mandar audio real) para no guardar una key que después falla en el
- * primer audio real que llegue. Campo vacío conserva el valor ya guardado.
+ * "Probar y guardar" del proveedor de transcripción de audio (OpenAI
+ * Whisper / Groq) — mismo criterio exacto que guardarModeloIa/
+ * guardarOcrConfig, sin `routingMode` (mismo motivo que OCR: transcribir
+ * es una llamada puntual por audio, no una conversación).
+ *
+ * `provider === ""` (Automático) limpia TANTO las columnas nuevas como la
+ * key legada de OpenAI (`clearOpenAiConfig`) — sin esto, el puente de
+ * `resolveTranscriptionProvider`/`describeTranscriptionConfig` volvería a
+ * mostrar "OpenAI" apenas se recargara la página, porque la key legada
+ * seguiría ahí. Es una limpieza deliberada, no un efecto secundario: el
+ * admin eligió "Automático" explícitamente y guardó.
  */
-export async function guardarOpenAiConfig(
-  input: { apiKey: string },
+export async function guardarTranscripcionConfig(
+  input: { provider: string; model: string; apiKey: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const existing = await getOpenAiConfig();
-  const apiKey = input.apiKey.trim() || existing.apiKey;
-
-  if (!apiKey) {
-    return { ok: false, error: "Hace falta la API key de OpenAI." };
+  if (input.provider === "") {
+    await clearTranscriptionConfig();
+    await clearOpenAiConfig();
+    return { ok: true };
   }
 
+  if (!isTranscriptionProviderKey(input.provider)) {
+    return { ok: false, error: "Proveedor no válido." };
+  }
+  const entry = TRANSCRIPTION_PROVIDER_CATALOG[input.provider];
+  const model = entry.models.some((m) => m.id === input.model) ? input.model : entry.defaultModel;
+
+  const existing = await describeTranscriptionConfig();
+  const trimmedKey = input.apiKey.trim();
+  // Mismo criterio que guardarModeloIa/guardarOcrConfig: campo vacío
+  // conserva la key ya activa (bridge-aware, ver describeTranscriptionConfig)
+  // solo si el proveedor no cambió.
+  const apiKey = trimmedKey ? trimmedKey : existing.providerKey === input.provider ? existing.apiKey : null;
+
   try {
-    const response = await fetch("https://api.openai.com/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
-      return { ok: false, error: body.error?.message ?? `OpenAI rechazó la key (HTTP ${response.status}).` };
-    }
+    await testTranscriptionConfig({ provider: input.provider, model, apiKey });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Error desconocido probando la conexión con OpenAI.";
+    const message = error instanceof Error ? error.message : "Error desconocido probando la conexión.";
     return { ok: false, error: message };
   }
 
-  await saveOpenAiConfig({ apiKey });
+  await saveTranscriptionConfig({ provider: input.provider, model, apiKey });
   return { ok: true };
 }
 

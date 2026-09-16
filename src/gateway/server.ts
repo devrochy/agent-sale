@@ -42,7 +42,7 @@ import {
   guardarInfoLead,
   guardarModeloIa,
   guardarOcrConfig,
-  guardarOpenAiConfig,
+  guardarTranscripcionConfig,
   guardarPerfil,
   guardarPermisosColaborador,
   guardarPromocion,
@@ -942,9 +942,17 @@ export async function buildServer() {
     return reply.status(303).redirect(redirectUrl);
   });
 
-  app.post("/admin/configuracion/openai", async (request, reply) => {
-    const { apiKey } = request.body as { apiKey?: string };
-    const result = await guardarOpenAiConfig({ apiKey: apiKey ?? "" });
+  app.post("/admin/configuracion/transcripcion", async (request, reply) => {
+    const { provider, model, apiKey } = request.body as {
+      provider?: string;
+      model?: string;
+      apiKey?: string;
+    };
+    const result = await guardarTranscripcionConfig({
+      provider: provider ?? "",
+      model: model ?? "",
+      apiKey: apiKey ?? "",
+    });
     const redirectUrl = result.ok
       ? "/admin/configuracion?guardado=1"
       : `/admin/configuracion?error=${encodeURIComponent(result.error)}`;
