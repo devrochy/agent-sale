@@ -2,6 +2,7 @@ import { Writable } from "node:stream";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
 import {
+  LOG_ERROR_SERIALIZERS,
   logger,
   REDACT_PATHS,
   sanitizarUrl,
@@ -35,6 +36,27 @@ describe("logger", () => {
     pino({ redact: { paths: REDACT_PATHS, censor: "[REDACTED]" } }, stream).info(objeto, "test");
     return JSON.parse(lines[0]!) as Record<string, unknown>;
   }
+
+  it("serializa un Error bajo `error` (no lo deja en `{}`)", () => {
+    // El caso real: el dead-letter de Meta logueaba `"error":{}` porque pino
+    // solo auto-serializa `err`. Sin esto no se ve el message del proveedor
+    // de transcripción que rechazó el audio.
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk, _enc, callback) {
+        lines.push(chunk.toString());
+        callback();
+      },
+    });
+    pino({ serializers: LOG_ERROR_SERIALIZERS }, stream).error(
+      { error: new Error("El proveedor de transcripción rechazó el audio: HTTP 429") },
+      "Error procesando mensaje",
+    );
+
+    const parsed = JSON.parse(lines[0]!) as { error: { message?: string; stack?: string } };
+    expect(parsed.error.message).toContain("HTTP 429");
+    expect(parsed.error.stack).toBeTruthy();
+  });
 
   it("censura los campos configurados en redact (PII fuera de logs)", () => {
     const parsed = loguearYCapturar({
