@@ -88,6 +88,19 @@ export const REDACT_PATHS = [
   "*.destinatario",
 ];
 
+/**
+ * Pino solo serializa automáticamente la clave `err`; con cualquier otra
+ * clave un `Error` se serializa como `{}` (sus props son no enumerables), y
+ * medio código loguea `{ error }`. Sin esto, un fallo de transcripción queda
+ * invisible en los logs — que es exactamente lo que pasó con el dead-letter
+ * de Meta: `"error":{}` sin message ni stack. Exportado para que el test
+ * ejercite esta lista y no una copia (mismo criterio que REDACT_PATHS).
+ */
+export const LOG_ERROR_SERIALIZERS = {
+  err: pino.stdSerializers.err,
+  error: pino.stdSerializers.err,
+};
+
 export const logger = pino({
   level: env.logLevel,
   redact: {
@@ -100,6 +113,7 @@ export const logger = pino({
   // dejaría los logs HTTP sin valor. Se reemplaza el serializer de `req`
   // conservando los mismos campos que emite Fastify por defecto.
   serializers: {
+    ...LOG_ERROR_SERIALIZERS,
     req(request: RequestLoggeable) {
       return {
         method: request.method,

@@ -520,7 +520,7 @@ export async function processConversation(
         );
         await client.query(
           `UPDATE conversations SET
-             costo_total_usd = costo_total_usd + coalesce($2, 0),
+             costo_total_usd = costo_total_usd + coalesce($2::numeric, 0),
              tokens_entrada_total = tokens_entrada_total + $3,
              tokens_salida_total = tokens_salida_total + $4
            WHERE id = $1`,
