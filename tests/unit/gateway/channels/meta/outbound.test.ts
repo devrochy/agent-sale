@@ -39,7 +39,7 @@ describe("metaOutboundAdapter.sendText", () => {
   it("manda un texto por la Graph API del phone number id de la conexión", async () => {
     fetchMock.mockResolvedValue(respuesta({ messages: [{ id: "wamid.ENVIADO" }] }));
 
-    const id = await metaOutboundAdapter.sendText(conexion(), "whatsapp:+573184935933", "Hola");
+    const id = await metaOutboundAdapter.sendText(conexion(), "whatsapp:+573001234567", "Hola");
 
     expect(id).toBe("wamid.ENVIADO");
     const [url, init] = fetchMock.mock.calls[0]!;
@@ -50,7 +50,7 @@ describe("metaOutboundAdapter.sendText", () => {
     expect(JSON.parse(init.body)).toEqual({
       messaging_product: "whatsapp",
       recipient_type: "individual",
-      to: "573184935933",
+      to: "573001234567",
       type: "text",
       text: { body: "Hola" },
     });
@@ -61,7 +61,7 @@ describe("metaOutboundAdapter.sendText", () => {
 
     await metaOutboundAdapter.sendText(
       conexion(),
-      "whatsapp:+573184935933",
+      "whatsapp:+573001234567",
       "Mirá esto",
       "https://x.test/a.jpg",
     );

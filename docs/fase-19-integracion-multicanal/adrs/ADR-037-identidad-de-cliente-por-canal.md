@@ -7,7 +7,7 @@ que no tenga teléfono.
 ## Contexto
 
 `customers.phone_number` era `NOT NULL UNIQUE` y guardaba la dirección canónica
-del canal (`whatsapp:+573184935933`), no un teléfono. La columna venía haciendo
+del canal (`whatsapp:+573001234567`), no un teléfono. La columna venía haciendo
 dos trabajos a la vez y con WhatsApp como único canal la diferencia no se notaba.
 
 Instagram y Messenger la rompen por los dos lados:

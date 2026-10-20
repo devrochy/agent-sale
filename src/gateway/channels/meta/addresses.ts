@@ -6,7 +6,7 @@
  * porque está grabado en `customers.external_id`, en `admins.phone` y en los
  * helpers del panel. **El adapter es el único dueño de traducirlo.**
  *
- * Meta manda y recibe el `wa_id` en dígitos pelados: `573184935933`.
+ * Meta manda y recibe el `wa_id` en dígitos pelados: `573001234567`.
  *
  * Regla crítica: el `wa_id` se hace **round-trip verbatim**, sin "corregirlo".
  * Para algunos países el `wa_id` no coincide con el número que uno marcaría
@@ -16,12 +16,12 @@
  * pedidos, `bot_paused` y datos de entrega.
  */
 
-/** `573184935933` → `whatsapp:+573184935933` */
+/** `573001234567` → `whatsapp:+573001234567` */
 export function metaWaIdToCanonical(waId: string): string {
   return `whatsapp:+${waId.replace(/^\+/, "")}`;
 }
 
-/** `whatsapp:+573184935933` → `573184935933` */
+/** `whatsapp:+573001234567` → `573001234567` */
 export function canonicalToMetaRecipient(canonical: string): string {
   return canonical.replace(/^whatsapp:/, "").replace(/^\+/, "");
 }

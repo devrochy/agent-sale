@@ -22,7 +22,7 @@ Meta sí los permite dentro de la ventana de 24 h, sin aprobación.
 ### El formato canónico de dirección no cambia, y el adapter lo traduce
 
 El sistema guarda `whatsapp:+E164` (regla de ADR-029). Meta manda y recibe el
-`wa_id` en dígitos pelados: `573184935933`.
+`wa_id` en dígitos pelados: `573001234567`.
 
 `channels/meta/addresses.ts` es el único punto que traduce, y la regla es
 **round-trip verbatim del `wa_id`, sin normalizarlo**:

@@ -99,9 +99,9 @@ function mensaje(wamid: string, texto: string) {
           {
             value: {
               metadata: { display_phone_number: "573001112222", phone_number_id: PHONE_NUMBER_ID },
-              contacts: [{ profile: { name: "Rob" }, wa_id: "573184935933" }],
+              contacts: [{ profile: { name: "Rob" }, wa_id: "573001234567" }],
               messages: [
-                { from: "573184935933", id: wamid, timestamp: "1786300000", type: "text", text: { body: texto } },
+                { from: "573001234567", id: wamid, timestamp: "1786300000", type: "text", text: { body: texto } },
               ],
             },
           },
@@ -165,7 +165,7 @@ describe("POST /webhooks/meta — mensajes entrantes", () => {
     expect(fields[fields.indexOf("channel") + 1]).toBe("whatsapp");
     // La dirección llega traducida al canónico del sistema, no como la manda
     // Meta (dígitos pelados) — si no, sería otro cliente distinto.
-    expect(fields[fields.indexOf("customer_phone") + 1]).toBe("whatsapp:+573184935933");
+    expect(fields[fields.indexOf("customer_phone") + 1]).toBe("whatsapp:+573001234567");
     expect(fields[fields.indexOf("customer_name") + 1]).toBe("Rob");
   });
 
@@ -215,7 +215,7 @@ describe("POST /webhooks/meta — callbacks de estado de entrega", () => {
                     id: WAMIDS[2]!,
                     status: "failed",
                     timestamp: "1786300100",
-                    recipient_id: "573184935933",
+                    recipient_id: "573001234567",
                     errors: [{ code: 131047, message: "Re-engagement message" }],
                   },
                 ],

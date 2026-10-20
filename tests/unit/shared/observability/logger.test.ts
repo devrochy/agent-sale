@@ -53,7 +53,7 @@ describe("logger", () => {
     // número completo salía en claro cada vez que Meta reportaba una entrega
     // fallida.
     const parsed = loguearYCapturar({
-      destinatario: "whatsapp:+573184935933",
+      destinatario: "whatsapp:+573001234567",
       error_code: 131047,
     });
 

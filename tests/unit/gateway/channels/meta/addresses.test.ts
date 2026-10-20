@@ -11,15 +11,15 @@ import {
  */
 describe("traducción de direcciones de Meta", () => {
   it("convierte el wa_id al canónico del sistema", () => {
-    expect(metaWaIdToCanonical("573184935933")).toBe("whatsapp:+573184935933");
+    expect(metaWaIdToCanonical("573001234567")).toBe("whatsapp:+573001234567");
   });
 
   it("convierte el canónico al destinatario que espera Meta", () => {
-    expect(canonicalToMetaRecipient("whatsapp:+573184935933")).toBe("573184935933");
+    expect(canonicalToMetaRecipient("whatsapp:+573001234567")).toBe("573001234567");
   });
 
   it("hace round-trip sin perder ni agregar nada", () => {
-    for (const waId of ["573184935933", "5215512345678", "5491112345678", "14155238886"]) {
+    for (const waId of ["573001234567", "5215512345678", "5491112345678", "14155238886"]) {
       expect(canonicalToMetaRecipient(metaWaIdToCanonical(waId))).toBe(waId);
     }
   });
@@ -33,10 +33,10 @@ describe("traducción de direcciones de Meta", () => {
   });
 
   it("tolera un wa_id que ya venga con +", () => {
-    expect(metaWaIdToCanonical("+573184935933")).toBe("whatsapp:+573184935933");
+    expect(metaWaIdToCanonical("+573001234567")).toBe("whatsapp:+573001234567");
   });
 
   it("tolera un canónico sin + (dato viejo)", () => {
-    expect(canonicalToMetaRecipient("whatsapp:573184935933")).toBe("573184935933");
+    expect(canonicalToMetaRecipient("whatsapp:573001234567")).toBe("573001234567");
   });
 });

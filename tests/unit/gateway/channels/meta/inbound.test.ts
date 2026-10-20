@@ -37,10 +37,10 @@ function mensajeEntrante(overrides: Record<string, unknown> = {}) {
                 display_phone_number: "573001234567",
                 phone_number_id: PHONE_NUMBER_ID,
               },
-              contacts: [{ profile: { name: "Rob" }, wa_id: "573184935933" }],
+              contacts: [{ profile: { name: "Rob" }, wa_id: "573001234567" }],
               messages: [
                 {
-                  from: "573184935933",
+                  from: "573001234567",
                   id: "wamid.HBgMNTczMTg0OTM1OTMz",
                   timestamp: "1786300000",
                   type: "text",
@@ -74,7 +74,7 @@ function callbackDeEstado(status: string, error?: { code: number; message: strin
                   id: "wamid.SALIENTE",
                   status,
                   timestamp: "1786300100",
-                  recipient_id: "573184935933",
+                  recipient_id: "573001234567",
                   ...(error ? { errors: [{ code: error.code, message: error.message }] } : {}),
                 },
               ],
@@ -198,7 +198,7 @@ describe("metaInboundAdapter.parseInbound", () => {
     expect(resto).toHaveLength(0);
     expect(mensaje).toEqual({
       externalMessageId: "wamid.HBgMNTczMTg0OTM1OTMz",
-      customerExternalId: "whatsapp:+573184935933",
+      customerExternalId: "whatsapp:+573001234567",
       customerName: "Rob",
       body: "Hola, tienen cascos?",
       receivedAt: new Date(1786300000 * 1000).toISOString(),
@@ -208,11 +208,11 @@ describe("metaInboundAdapter.parseInbound", () => {
   it("devuelve todos los mensajes de un lote", () => {
     const lote = mensajeEntrante({
       contacts: [
-        { profile: { name: "Rob" }, wa_id: "573184935933" },
+        { profile: { name: "Rob" }, wa_id: "573001234567" },
         { profile: { name: "Ana" }, wa_id: "573009999999" },
       ],
       messages: [
-        { from: "573184935933", id: "wamid.1", timestamp: "1786300000", type: "text", text: { body: "Uno" } },
+        { from: "573001234567", id: "wamid.1", timestamp: "1786300000", type: "text", text: { body: "Uno" } },
         { from: "573009999999", id: "wamid.2", timestamp: "1786300001", type: "text", text: { body: "Dos" } },
       ],
     });
@@ -220,7 +220,7 @@ describe("metaInboundAdapter.parseInbound", () => {
     const mensajes = metaInboundAdapter.parseInbound(request(lote));
     expect(mensajes.map((m) => m.body)).toEqual(["Uno", "Dos"]);
     expect(mensajes.map((m) => m.customerExternalId)).toEqual([
-      "whatsapp:+573184935933",
+      "whatsapp:+573001234567",
       "whatsapp:+573009999999",
     ]);
     expect(mensajes[1]!.customerName).toBe("Ana");
@@ -233,7 +233,7 @@ describe("metaInboundAdapter.parseInbound", () => {
   it("ignora los tipos que el pipeline no procesa, sin encolar un cuerpo vacío", () => {
     const conImagen = mensajeEntrante({
       messages: [
-        { from: "573184935933", id: "wamid.img", timestamp: "1786300000", type: "image", image: { id: "x" } },
+        { from: "573001234567", id: "wamid.img", timestamp: "1786300000", type: "image", image: { id: "x" } },
       ],
     });
     expect(metaInboundAdapter.parseInbound(request(conImagen))).toEqual([]);
@@ -246,7 +246,7 @@ describe("metaInboundAdapter.parseInbound", () => {
 
   it("cae a la hora actual si el timestamp no es usable", () => {
     const sinTimestamp = mensajeEntrante({
-      messages: [{ from: "573184935933", id: "wamid.1", type: "text", text: { body: "Hola" } }],
+      messages: [{ from: "573001234567", id: "wamid.1", type: "text", text: { body: "Hola" } }],
     });
     const receivedAt = metaInboundAdapter.parseInbound(request(sinTimestamp))[0]!.receivedAt;
     expect(Date.parse(receivedAt)).not.toBeNaN();
@@ -271,7 +271,7 @@ describe("metaInboundAdapter.parseDeliveryStatuses", () => {
     expect(estado).toEqual({
       externalMessageId: "wamid.SALIENTE",
       status: "failed",
-      recipientExternalId: "whatsapp:+573184935933",
+      recipientExternalId: "whatsapp:+573001234567",
       errorCode: 131047,
       errorMessage: "Re-engagement message",
     });

@@ -169,7 +169,7 @@ vacío reventaría un `new URL("")` en mitad de una tool call.
 
 El prefijo `whatsapp:` es **sintaxis de transporte de Twilio**, y el adapter es
 el único dueño de traducirlo: nada fuera del adapter puede asumirlo. Meta manda
-`573184935933` (sin `+`, sin prefijo). Si el adapter de Meta normaliza mal en
+`573001234567` (sin `+`, sin prefijo). Si el adapter de Meta normaliza mal en
 la Etapa B, el mismo humano se parte en dos filas de `customers` y se rompen
 historial de pedidos, `bot_paused` y datos de entrega.
 
